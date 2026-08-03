@@ -38,6 +38,11 @@ public:
 	
 	// if the display component should be shimmed. this must be true when GetComponent is run or it will never be shimmed
 	bool shimDisplayComponent = false;
+	// if the frame delivery component (IVRDriverDirectModeComponent / IVRVirtualDisplay) should be wrapped.
+	// this must be true when GetComponent is run or it will never be wrapped.
+	// note this is intentionally not gated on shimActive: GenericHeadsetShim sets shimActive
+	// to false at the end of activation, but vrcompositor fetches these components afterwards.
+	bool shimFrameComponent = false;
 	// original display component
 	vr::IVRDisplayComponent *displayComponent = NULL;
 	virtual bool PreDisplayComponentIsDisplayOnDesktop(bool &returnValue){return true;};

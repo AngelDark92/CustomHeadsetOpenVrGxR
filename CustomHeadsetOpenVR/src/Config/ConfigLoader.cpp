@@ -323,6 +323,36 @@ void ConfigLoader::ParseConfig(){
 				if(customShaderData["colorMultiplier"]["b"].is_number()){ colorMultiplier.b = customShaderData["colorMultiplier"]["b"].get<double>(); }
 			}
 		}
+		if(data["streamFrame"].is_object()){
+			json streamFrameData = data["streamFrame"];
+			if(streamFrameData["enable"].is_boolean()){
+				newConfig.streamFrame.enable = streamFrameData["enable"].get<bool>();
+			}
+			if(streamFrameData["saturation"].is_number()){
+				newConfig.streamFrame.saturation = streamFrameData["saturation"].get<double>();
+			}
+			if(streamFrameData["k1"].is_number()){
+				newConfig.streamFrame.k1 = streamFrameData["k1"].get<double>();
+			}
+			if(streamFrameData["k2"].is_number()){
+				newConfig.streamFrame.k2 = streamFrameData["k2"].get<double>();
+			}
+			if(streamFrameData["centerOffsetXLeft"].is_number()){
+				newConfig.streamFrame.centerOffsetXLeft = streamFrameData["centerOffsetXLeft"].get<double>();
+			}
+			if(streamFrameData["centerOffsetXRight"].is_number()){
+				newConfig.streamFrame.centerOffsetXRight = streamFrameData["centerOffsetXRight"].get<double>();
+			}
+			if(streamFrameData["centerOffsetY"].is_number()){
+				newConfig.streamFrame.centerOffsetY = streamFrameData["centerOffsetY"].get<double>();
+			}
+			if(streamFrameData["skipColorWhileDashboardOpen"].is_boolean()){
+				newConfig.streamFrame.skipColorWhileDashboardOpen = streamFrameData["skipColorWhileDashboardOpen"].get<bool>();
+			}
+			if(streamFrameData["processAtSubmitLayer"].is_boolean()){
+				newConfig.streamFrame.processAtSubmitLayer = streamFrameData["processAtSubmitLayer"].get<bool>();
+			}
+		}
 		if(data["forceTracking"].is_boolean()){
 			newConfig.forceTracking = data["forceTracking"].get<bool>();
 		}

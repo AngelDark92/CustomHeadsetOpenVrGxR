@@ -29,6 +29,16 @@ vr::EVRInitError CustomHeadsetDeviceProvider::Init(vr::IVRDriverContext *pDriver
 	InjectHooks(this, pDriverContext);
 	hidModifier.InjectHooks();
 	
+	// arm the host hooks. the TrackedDeviceAdded/PoseUpdated hooks are only installed when a
+	// driver requests IVRServerDriverHost through the hooked GetGenericInterface. drivers fetch
+	// their host interface eagerly during their own init (VR_INIT_SERVER_DRIVER_CONTEXT ->
+	// InitServer), so any driver that loaded before this one (e.g. vrlink) never triggers the
+	// detour, and if no driver loads after this one the host hooks are never installed and no
+	// devices get wrapped. requesting the interface here goes through the now hooked vtable and
+	// installs the host hooks immediately, independent of driver load order.
+	vr::EVRInitError hostHookError = vr::VRInitError_None;
+	pDriverContext->GetGenericInterface(vr::IVRServerDriverHost_Version, &hostHookError);
+	
 	// the shim classes can be used to implement entirely new headsets, not just shim existing ones
 	if(driverConfig.fakeHeadset.enable){
 		FakeHeadset* fakeHeadsetImplementation = new FakeHeadset();

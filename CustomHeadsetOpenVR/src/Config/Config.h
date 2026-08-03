@@ -44,6 +44,30 @@ struct StationaryDimmingConfig{
 };
 
 
+struct StreamFrameConfig{
+	// process direct mode layer textures before the streaming driver consumes them
+	bool enable = false;
+	// saturation with 50 being normal, same semantics as customShader.saturation
+	double saturation = 50;
+	// radial distortion pre perturbation, applied to the streamed eye images to
+	// compensate an imperfect distortion profile on the standalone headset.
+	// positive values push content outward from the center at the output.
+	double k1 = 0;
+	double k2 = 0;
+	// optical center offset from the texture center, in uv units, per eye
+	double centerOffsetXLeft = 0;
+	double centerOffsetXRight = 0;
+	double centerOffsetY = 0;
+	// skip the color adjustment while the dashboard is open, because the
+	// compositor shader replacement already applies it to the flattened scene
+	// in that state and it would be applied twice
+	bool skipColorWhileDashboardOpen = true;
+	// process during SubmitLayer (using the previous frame's sync texture)
+	// instead of during Present. try this if Present time processing has no
+	// visible effect because the driver already consumes the layer at submit.
+	bool processAtSubmitLayer = false;
+};
+
 struct CustomShaderConfig{
 	// if shaders should be replaced in the compositor
 	bool enable = false;
@@ -269,6 +293,12 @@ public:
 	GeneralHeadsetConfig generalHeadset = {};
 	
 	CustomShaderConfig customShader = {};
+	
+	// processing of direct mode layer textures before a streaming driver (e.g.
+	// vrlink / Steam Link) consumes them. this is the always on path for
+	// headsets whose driver composites frames itself, where the compositor
+	// shader replacement only runs while the dashboard is open.
+	StreamFrameConfig streamFrame = {};
 	
 	// if devices should always be reported as tracking
 	bool forceTracking = false;

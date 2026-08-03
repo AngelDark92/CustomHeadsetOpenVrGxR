@@ -1,5 +1,6 @@
 #include "DeviceShim.h"
 #include "DriverLog.h"
+#include "FrameComponentShim.h"
 #include <cstring>
 
 ShimTrackedDeviceDriver::ShimTrackedDeviceDriver(ShimDefinition* shimDefinition, vr::ITrackedDeviceServerDriver* original){
@@ -36,6 +37,19 @@ void *ShimTrackedDeviceDriver::GetComponent(const char *pchComponentNameAndVersi
 		returnValue = new ShimDisplayComponent(shimDefinition, displayComponent);
 	}else if(shimDefinition->trackedDevice){
 		returnValue = shimDefinition->trackedDevice->GetComponent(pchComponentNameAndVersion);
+	}
+	// log which components are fetched from this device so the frame path can be identified
+	DriverLog("ShimTrackedDeviceDriver::GetComponent %s -> %p", pchComponentNameAndVersion, returnValue);
+	// wrap the frame delivery components so frames can be observed (and later processed)
+	// before the headset driver (e.g. vrlink) consumes them.
+	// only wrap on an exact version match with the interface this was compiled against,
+	// otherwise pass through unwrapped to avoid a mismatched vtable.
+	if(returnValue && shimDefinition->shimFrameComponent){
+		if(strcmp(pchComponentNameAndVersion, vr::IVRDriverDirectModeComponent_Version) == 0){
+			returnValue = new DirectModeComponentShim((vr::IVRDriverDirectModeComponent*)returnValue);
+		}else if(strcmp(pchComponentNameAndVersion, vr::IVRVirtualDisplay_Version) == 0){
+			returnValue = new VirtualDisplayShim((vr::IVRVirtualDisplay*)returnValue);
+		}
 	}
 	if(shimDefinition->shimActive){
 		shimDefinition->PosTrackedDeviceGetComponent(pchComponentNameAndVersion, returnValue);
