@@ -83,11 +83,16 @@ private:
 	// difference across the ring rejects sample-to-sample jitter that a
 	// plain adjacent diff amplifies). guarded by poseLogLock.
 	struct VelFixState {
-		static constexpr int ringSize = 6;
+		static constexpr int ringSize = 8;
 		double pos[ringSize][3] = {};
 		double time[ringSize] = {};
 		int count = 0;   // valid entries
 		int head = 0;    // next write slot
+		// EMA over the least squares slope, so the substituted velocity is
+		// smooth in time (discontinuities here become rendered pose jumps
+		// through the runtime's forward prediction)
+		bool haveEma = false;
+		double emaVel[3] = {};
 	};
 	std::map<uint32_t, VelFixState> velFixStates = {};
 	// returns true and writes the derived velocity when the window is usable

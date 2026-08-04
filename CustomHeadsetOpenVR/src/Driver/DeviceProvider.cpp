@@ -215,14 +215,20 @@ bool CustomHeadsetDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 			double reportedSpeed = sqrt(pose.vecVelocity[0] * pose.vecVelocity[0]
 				+ pose.vecVelocity[1] * pose.vecVelocity[1]
 				+ pose.vecVelocity[2] * pose.vecVelocity[2]);
-			// substitute only when clearly larger (hysteresis keeps calm
-			// aiming on the driver's smoother data) and physically plausible
-			// (teleports/recenters are rejected in DeriveVelocity, this is a
-			// second fence)
-			if(derivedSpeed > reportedSpeed * 1.15 && derivedSpeed > 0.5 && derivedSpeed < 20.0){
-				pose.vecVelocity[0] = derived[0];
-				pose.vecVelocity[1] = derived[1];
-				pose.vecVelocity[2] = derived[2];
+			// continuous blend, never a switch: the runtime extrapolates the
+			// rendered pose with this velocity, so any discontinuity in the
+			// output becomes a visible hand jump. weight ramps smoothly from
+			// 0 (calm: keep the driver's smooth data) to 1 (fast: use the
+			// derived velocity whose peaks are not smoothed away) between
+			// 1.0 and 2.5 m/s.
+			double s = derivedSpeed > reportedSpeed ? derivedSpeed : reportedSpeed;
+			if(derivedSpeed < 20.0 && s > 1.0){
+				double w = (s - 1.0) / 1.5;
+				if(w > 1.0){ w = 1.0; }
+				w = w * w * (3.0 - 2.0 * w); // smoothstep
+				pose.vecVelocity[0] = pose.vecVelocity[0] * (1.0 - w) + derived[0] * w;
+				pose.vecVelocity[1] = pose.vecVelocity[1] * (1.0 - w) + derived[1] * w;
+				pose.vecVelocity[2] = pose.vecVelocity[2] * (1.0 - w) + derived[2] * w;
 			}
 		}
 	}
@@ -245,16 +251,32 @@ bool CustomHeadsetDeviceProvider::DeriveVelocity(uint32_t openVRID, const vr::Dr
 		double dt = now - state.time[prev];
 		if(dt <= 0 || dt > 0.1){
 			state.count = 0;
+			state.haveEma = false;
 		}else{
 			double dx = pose.vecPosition[0] - state.pos[prev][0];
 			double dy = pose.vecPosition[1] - state.pos[prev][1];
 			double dz = pose.vecPosition[2] - state.pos[prev][2];
 			if(sqrt(dx * dx + dy * dy + dz * dz) / dt > 30.0){
 				state.count = 0;
+				state.haveEma = false;
 			}
 		}
 	}
 	
+	// skip duplicated / oversampled updates so the ring spans real time
+	if(state.count > 0){
+		int prev = (state.head + VelFixState::ringSize - 1) % VelFixState::ringSize;
+		if(now - state.time[prev] < 0.003){
+			// still allow output from the existing window
+			if(state.count < VelFixState::ringSize || !state.haveEma){
+				return false;
+			}
+			derived[0] = state.emaVel[0];
+			derived[1] = state.emaVel[1];
+			derived[2] = state.emaVel[2];
+			return true;
+		}
+	}
 	state.pos[state.head][0] = pose.vecPosition[0];
 	state.pos[state.head][1] = pose.vecPosition[1];
 	state.pos[state.head][2] = pose.vecPosition[2];
@@ -262,21 +284,47 @@ bool CustomHeadsetDeviceProvider::DeriveVelocity(uint32_t openVRID, const vr::Dr
 	state.head = (state.head + 1) % VelFixState::ringSize;
 	if(state.count < VelFixState::ringSize){
 		state.count++;
+		state.haveEma = false;
 	}
 	if(state.count < VelFixState::ringSize){
 		return false;
 	}
 	
-	// endpoint difference across the full ring (~50ms at 100Hz poses)
-	int newest = (state.head + VelFixState::ringSize - 1) % VelFixState::ringSize;
-	int oldest = state.head;
-	double span = state.time[newest] - state.time[oldest];
-	if(span <= 0.005 || span > 0.25){
+	// least squares slope of position vs time over the whole ring (~70ms at
+	// 100Hz): every sample contributes, so single-sample jitter cannot swing
+	// the estimate the way an endpoint difference can
+	double tMean = 0;
+	for(int i = 0; i < VelFixState::ringSize; i++){
+		tMean += state.time[i];
+	}
+	tMean /= VelFixState::ringSize;
+	double num[3] = {0, 0, 0};
+	double den = 0;
+	for(int i = 0; i < VelFixState::ringSize; i++){
+		double dt = state.time[i] - tMean;
+		den += dt * dt;
+		num[0] += dt * state.pos[i][0];
+		num[1] += dt * state.pos[i][1];
+		num[2] += dt * state.pos[i][2];
+	}
+	if(den <= 1e-9){
 		return false;
 	}
-	derived[0] = (state.pos[newest][0] - state.pos[oldest][0]) / span;
-	derived[1] = (state.pos[newest][1] - state.pos[oldest][1]) / span;
-	derived[2] = (state.pos[newest][2] - state.pos[oldest][2]) / span;
+	double slope[3] = { num[0] / den, num[1] / den, num[2] / den };
+	// light EMA for smoothness in time
+	if(!state.haveEma){
+		state.haveEma = true;
+		state.emaVel[0] = slope[0];
+		state.emaVel[1] = slope[1];
+		state.emaVel[2] = slope[2];
+	}else{
+		state.emaVel[0] = state.emaVel[0] * 0.5 + slope[0] * 0.5;
+		state.emaVel[1] = state.emaVel[1] * 0.5 + slope[1] * 0.5;
+		state.emaVel[2] = state.emaVel[2] * 0.5 + slope[2] * 0.5;
+	}
+	derived[0] = state.emaVel[0];
+	derived[1] = state.emaVel[1];
+	derived[2] = state.emaVel[2];
 	return true;
 }
 
