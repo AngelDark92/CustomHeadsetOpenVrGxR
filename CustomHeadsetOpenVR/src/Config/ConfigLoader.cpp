@@ -478,6 +478,9 @@ void ConfigLoader::ParseConfig(){
 			if(streamFrameData["processAtSubmitLayer"].is_boolean()){
 				newConfig.streamFrame.processAtSubmitLayer = streamFrameData["processAtSubmitLayer"].get<bool>();
 			}
+			if(streamFrameData["poseLogging"].is_boolean()){
+				newConfig.streamFrame.poseLogging = streamFrameData["poseLogging"].get<bool>();
+			}
 		}
 		if(data["forceTracking"].is_boolean()){
 			newConfig.forceTracking = data["forceTracking"].get<bool>();
@@ -728,6 +731,7 @@ void ConfigLoader::WriteInfo(){
 				{"centerOffsetY", defaultSettings.streamFrame.centerOffsetY},
 				{"skipColorWhileDashboardOpen", defaultSettings.streamFrame.skipColorWhileDashboardOpen},
 				{"processAtSubmitLayer", defaultSettings.streamFrame.processAtSubmitLayer},
+				{"poseLogging", defaultSettings.streamFrame.poseLogging},
 			}},
 			{"takeCompositorScreenshots", defaultSettings.takeCompositorScreenshots},
 			{"onlyHandlePrivateFunctionality", defaultSettings.onlyHandlePrivateFunctionality},

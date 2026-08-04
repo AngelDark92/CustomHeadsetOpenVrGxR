@@ -3,6 +3,7 @@
 #include <set>
 #include <map>
 #include <vector>
+#include <mutex>
 
 #include "openvr_driver.h"
 
@@ -56,4 +57,16 @@ private:
 	// events that are waiting for a context to be found
 	std::map<uint32_t, std::vector<QueuedEvent>> queuedEvents = {};
 	bool customShaderEnabled = false;
+	
+	// pose logging diagnostic state (streamFrame.poseLogging), per device.
+	// pose updates arrive on the source drivers' own threads, hence the lock.
+	struct PoseLogState {
+		double lastSteadyLog = 0;
+		double lastBurstLog = 0;
+		// peak linear speed observed since the last steady log line
+		double peakSpeed = 0;
+	};
+	std::map<uint32_t, PoseLogState> poseLogStates = {};
+	std::mutex poseLogLock = {};
+	void LogDevicePose(uint32_t openVRID, const vr::DriverPose_t &pose);
 };

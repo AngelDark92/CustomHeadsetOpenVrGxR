@@ -1,5 +1,6 @@
 #include "FrameComponentShim.h"
 #include "DriverLog.h"
+#include "EyeTrackingTap.h"
 #include "../Config/ConfigLoader.h"
 #include <chrono>
 #include <cmath>
@@ -186,6 +187,16 @@ void DirectModeComponentShim::Present(vr::SharedTextureHandle_t syncTexture){
 		// steady-state layer count (e.g. does the dashboard add a layer?)
 		DriverLog("FrameComponentShim: Present heartbeat frame=%llu layersThisFrame=%d",
 			(unsigned long long)frameCount, layersThisFrame);
+		// gaze tap read on the Present thread: this is the exact consumption
+		// path the dynamic pupil-swim pass will use, so exercising it in the
+		// heartbeat proves the plumbing end to end during recon. accept
+		// samples up to 250ms old so a brief hiccup doesn't read as "no ET".
+		EyeTrackingTap::Sample gaze;
+		if(eyeTrackingTap.GetLatestSample(gaze, 0.25)){
+			DriverLog("FrameComponentShim: gaze tap sample=%llu valid=%d tracked=%d target=(%.4f, %.4f, %.4f) rate=%.1fHz",
+				(unsigned long long)gaze.sampleIndex, (int)gaze.valid, (int)gaze.tracked,
+				gaze.targetX, gaze.targetY, gaze.targetZ, eyeTrackingTap.GetSampleRate());
+		}
 	}
 	lastSyncTexture = syncTexture;
 	// process the scene layer before the driver consumes it

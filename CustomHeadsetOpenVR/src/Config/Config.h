@@ -151,6 +151,11 @@ struct StreamFrameConfig{
 	// instead of during Present. try this if Present time processing has no
 	// visible effect because the driver already consumes the layer at submit.
 	bool processAtSubmitLayer = false;
+	// diagnostic: throttle-log controller/tracker poses from the PoseUpdated
+	// hook (position, velocity, tracking result), with a burst mode that
+	// captures high-velocity moments (throws). live-reloaded, so it can be
+	// toggled mid-session. groundwork for the throw/velocity fix.
+	bool poseLogging = false;
 };
 
 struct CustomShaderConfig{

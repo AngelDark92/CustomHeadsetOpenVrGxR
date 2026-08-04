@@ -14,6 +14,9 @@
 
 #include "../Config/ConfigLoader.h"
 
+#include <chrono>
+#include <cmath>
+
 
 // general driver functions
 vr::EVRInitError CustomHeadsetDeviceProvider::Init(vr::IVRDriverContext *pDriverContext){
@@ -38,6 +41,14 @@ vr::EVRInitError CustomHeadsetDeviceProvider::Init(vr::IVRDriverContext *pDriver
 	// installs the host hooks immediately, independent of driver load order.
 	vr::EVRInitError hostHookError = vr::VRInitError_None;
 	pDriverContext->GetGenericInterface(vr::IVRServerDriverHost_Version, &hostHookError);
+	
+	// arm the eye tracking tap hooks the same way. drivers that loaded before
+	// this one (vrlink) may already hold a cached IVRDriverInput pointer, but
+	// the hook patches the interface object's shared vtable, so requesting it
+	// once here installs the CreateEyeTrackingComponent /
+	// UpdateEyeTrackingComponent detours for every caller regardless of load
+	// order.
+	pDriverContext->GetGenericInterface(vr::IVRDriverInput_Version, &hostHookError);
 	
 	// the shim classes can be used to implement entirely new headsets, not just shim existing ones
 	if(driverConfig.fakeHeadset.enable){
@@ -192,7 +203,58 @@ bool CustomHeadsetDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 			pose.result = vr::TrackingResult_Running_OK;
 		}
 	}
+	// diagnostic groundwork for the controller throw/velocity fix. cheap
+	// unsynchronized bool read keeps the hot path free when disabled.
+	if(driverConfig.streamFrame.poseLogging && openVRID != vr::k_unTrackedDeviceIndex_Hmd){
+		LogDevicePose(openVRID, pose);
+	}
 	return true;
+}
+
+void CustomHeadsetDeviceProvider::LogDevicePose(uint32_t openVRID, const vr::DriverPose_t &pose){
+	double now = std::chrono::duration_cast<std::chrono::microseconds>(
+		std::chrono::steady_clock::now().time_since_epoch()).count() / 1000000.0;
+	double speed = sqrt(pose.vecVelocity[0] * pose.vecVelocity[0]
+		+ pose.vecVelocity[1] * pose.vecVelocity[1]
+		+ pose.vecVelocity[2] * pose.vecVelocity[2]);
+	double angularSpeed = sqrt(pose.vecAngularVelocity[0] * pose.vecAngularVelocity[0]
+		+ pose.vecAngularVelocity[1] * pose.vecAngularVelocity[1]
+		+ pose.vecAngularVelocity[2] * pose.vecAngularVelocity[2]);
+	
+	// steady line every 2s per device; burst lines (max 100Hz per device)
+	// while linear speed exceeds 2 m/s, which is what captures throw arcs
+	// and the velocity reported at the moment of release.
+	bool steady = false;
+	bool burst = false;
+	double peakForLog = 0;
+	{
+		std::lock_guard<std::mutex> guard(poseLogLock);
+		PoseLogState &state = poseLogStates[openVRID];
+		if(speed > state.peakSpeed){
+			state.peakSpeed = speed;
+		}
+		if(now - state.lastSteadyLog >= 2.0){
+			state.lastSteadyLog = now;
+			steady = true;
+			peakForLog = state.peakSpeed;
+			state.peakSpeed = 0;
+		}else if(speed > 2.0 && now - state.lastBurstLog >= 0.01){
+			state.lastBurstLog = now;
+			burst = true;
+		}
+	}
+	if(steady){
+		DriverLog("PoseLog: id=%u pos=(%.3f, %.3f, %.3f) |v|=%.3f |w|=%.2f peak|v|=%.3f valid=%d connected=%d result=%d timeOffset=%.4f",
+			openVRID, pose.vecPosition[0], pose.vecPosition[1], pose.vecPosition[2],
+			speed, angularSpeed, peakForLog,
+			(int)pose.poseIsValid, (int)pose.deviceIsConnected, (int)pose.result,
+			pose.poseTimeOffset);
+	}else if(burst){
+		DriverLog("PoseLog: BURST id=%u v=(%.3f, %.3f, %.3f) |v|=%.3f |w|=%.2f valid=%d result=%d timeOffset=%.4f",
+			openVRID, pose.vecVelocity[0], pose.vecVelocity[1], pose.vecVelocity[2],
+			speed, angularSpeed, (int)pose.poseIsValid, (int)pose.result,
+			pose.poseTimeOffset);
+	}
 }
 
 bool CustomHeadsetDeviceProvider::HandleDeviceAdded(const char *&pchDeviceSerialNumber, vr::ETrackedDeviceClass &eDeviceClass, vr::ITrackedDeviceServerDriver *&pDriver){

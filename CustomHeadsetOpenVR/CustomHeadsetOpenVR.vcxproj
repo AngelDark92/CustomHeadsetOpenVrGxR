@@ -26,6 +26,7 @@
     <ClInclude Include="src\Driver\DeviceShim.h" />
     <ClInclude Include="src\Driver\FrameComponentShim.h" />
     <ClInclude Include="src\Driver\FrameProcessor.h" />
+    <ClInclude Include="src\Driver\EyeTrackingTap.h" />
     <ClInclude Include="src\Driver\DriverLog.h" />
     <ClInclude Include="src\Driver\Hooking\Hooking.h" />
     <ClInclude Include="src\Driver\Hooking\InterfaceHookInjector.h" />
@@ -54,6 +55,7 @@
     <ClCompile Include="src\Driver\DeviceShim.cpp" />
     <ClCompile Include="src\Driver\FrameComponentShim.cpp" />
     <ClCompile Include="src\Driver\FrameProcessor.cpp" />
+    <ClCompile Include="src\Driver\EyeTrackingTap.cpp" />
     <ClCompile Include="src\Driver\DriverLog.cpp" />
     <ClCompile Include="src\Driver\HidModifier.cpp" />
     <ClCompile Include="src\Driver\HmdDriverFactory.cpp" />

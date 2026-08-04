@@ -32,6 +32,7 @@ struct FrameProcessSettings{
 #include <d3d11.h>
 #include <map>
 #include <mutex>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -52,7 +53,7 @@ public:
 private:
 	bool EnsureDevice();
 	bool EnsureShaders();
-	bool EnsureScratch(uint32_t width, uint32_t height);
+	bool EnsureScratch(uint32_t width, uint32_t height, DXGI_FORMAT format);
 	ID3D11Texture2D* OpenShared(vr::SharedTextureHandle_t handle);
 	bool ProcessEye(ID3D11Texture2D* texture, const vr::VRTextureBounds_t &bounds, int eye, const FrameProcessSettings &settings);
 
@@ -83,9 +84,29 @@ private:
 	int lutRowCount = 1;
 	bool lutBaked = false;
 
-	// scratch textures, recreated when the layer size changes
-	uint32_t scratchWidth = 0;
-	uint32_t scratchHeight = 0;
+	// scratch texture cache, keyed by size + format family. multiple sizes are
+	// live simultaneously during app transitions and dashboard flattening
+	// (scene frames alternate between vrcompositor's set and the app's set);
+	// a single set caused ~half a GB of alloc/free per flip, under the sync
+	// keyed mutex, which showed up as multi second stutter at app launches.
+	struct ScratchSet{
+		ID3D11Texture2D* in = nullptr;
+		ID3D11ShaderResourceView* inSRV = nullptr;
+		ID3D11Texture2D* out = nullptr;
+		ID3D11RenderTargetView* outRTV = nullptr;
+		uint64_t lastUsedMs = 0;
+	};
+	static constexpr size_t maxScratchSets = 4;
+	std::map<uint64_t, ScratchSet> scratchSets;
+	static void ReleaseScratchSet(ScratchSet &set);
+	// layer formats already reported as unsupported (log each once, not
+	// against the errorCount budget, so per-game skips stay visible)
+	std::set<unsigned> skippedFormats;
+	// periodic re-arm of the errorCount budget so a game launched late in a
+	// session still gets its 20 diagnostic lines
+	uint64_t lastErrorResetMs = 0;
+	// non owning aliases into the cache entry selected by the last
+	// EnsureScratch call, consumed by ProcessEye
 	ID3D11Texture2D* scratchIn = nullptr;      // copy of the layer texture, sampled by the shader
 	ID3D11ShaderResourceView* scratchInSRV = nullptr;
 	ID3D11Texture2D* scratchOut = nullptr;     // render target, copied back into the layer texture

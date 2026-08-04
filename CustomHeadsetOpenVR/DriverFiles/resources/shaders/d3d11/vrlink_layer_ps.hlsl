@@ -39,6 +39,11 @@ cbuffer Params : register(b0){
 	float lutRowCount;     // total rows in the lut texture (1, 2 or 4)
 	float perAxisEnable;   // blend a horizontal and a vertical curve around the ring
 	float dimAmount;       // stationary dimming, 0 bright to 1 black
+	float manualSrgb;      // 1 = views are not srgb typed (e.g. 10 bit layers):
+	                       // decode after sampling, re-encode before output
+	float ditherLsb;       // quantization steps of the output encode (255 or 1023)
+	float pad0;
+	float pad1;
 };
 Texture2D<float4> tex : register(t0);
 Texture2D<float4> lut : register(t1);
@@ -64,7 +69,13 @@ float InterleavedGradientNoise(float2 pixel){
 }
 
 float4 SampleWarped(float2 uvSrcNorm){
-	return tex.SampleLevel(samp, uvSrcNorm * boundsSize + boundsMin, 0);
+	float4 c = tex.SampleLevel(samp, uvSrcNorm * boundsSize + boundsMin, 0);
+	// srgb typed views decode in hardware; manualSrgb layers arrive encoded.
+	// (filtering then happens on encoded values, negligible for these warps)
+	if(manualSrgb > 0.5){
+		c.rgb = SrgbToLinear(c.rgb);
+	}
+	return c;
 }
 
 // sample one curve row of the lut. row centers avoid bleed between curves.
@@ -151,12 +162,17 @@ float4 main(float4 pos : SV_Position, float2 uv : TEXCOORD0) : SV_Target0{
 		// encode happens, to break up banding in dark gradients
 		float noise = InterleavedGradientNoise(pos.xy) - 0.5;
 		float3 g = LinearToSrgb(color.rgb);
-		g = saturate(g + noise / 255.0);
+		g = saturate(g + noise / max(ditherLsb, 1.0));
 		color.rgb = SrgbToLinear(g);
 	}
 
 	// ---- stationary dimming (uniform fade to black, no uneven oled wear) ----
 	color.rgb *= 1.0 - dimAmount;
+
+	// manualSrgb output is written through a non srgb view: encode explicitly
+	if(manualSrgb > 0.5){
+		color.rgb = LinearToSrgb(color.rgb);
+	}
 
 	return color;
 }

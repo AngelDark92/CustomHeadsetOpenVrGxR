@@ -47,10 +47,20 @@ cbuffer Params : register(b0){
 	float4 colorMultiplier;
 	float4 matR; float4 matG; float4 matB;
 	float lutRowBase; float lutRowCount; float perAxisEnable; float dimAmount;
+	float manualSrgb; float ditherLsb; float pad0; float pad1;
 };
 Texture2D<float4> tex : register(t0);
 Texture2D<float4> lut : register(t1);
 SamplerState samp : register(s0);
+
+float3 LinearToSrgb(float3 c){
+	c = max(c, 0.0);
+	return lerp(c * 12.92, 1.055 * pow(c, 1.0 / 2.4) - 0.055, step(0.0031308, c));
+}
+float3 SrgbToLinear(float3 c){
+	c = max(c, 0.0);
+	return lerp(c / 12.92, pow((c + 0.055) / 1.055, 2.4), step(0.04045, c));
+}
 
 float SampleLutRow(float u, float row){
 	return lut.SampleLevel(samp, float2(u, (row + 0.5) / lutRowCount), 0).x;
@@ -77,6 +87,9 @@ float4 main(float4 pos : SV_Position, float2 uv : TEXCOORD0) : SV_Target0{
 	p.y /= aspect;
 	float2 nSrc = p + center;
 	float4 color = tex.SampleLevel(samp, nSrc * boundsSize + boundsMin, 0);
+	if(manualSrgb > 0.5){
+		color.rgb = SrgbToLinear(color.rgb);
+	}
 	if(any(nSrc < 0.0) || any(nSrc > 1.0)){
 		color = float4(0, 0, 0, color.a);
 	}
@@ -85,6 +98,9 @@ float4 main(float4 pos : SV_Position, float2 uv : TEXCOORD0) : SV_Target0{
 		color.rgb = lerp(gray.xxx, color.rgb, saturation);
 	}
 	color.rgb *= 1.0 - dimAmount;
+	if(manualSrgb > 0.5){
+		color.rgb = LinearToSrgb(color.rgb);
+	}
 	return color;
 }
 )";
@@ -101,7 +117,42 @@ struct FrameProcessorConstants{
 	float colorMultiplier[4];
 	float matR[4]; float matG[4]; float matB[4];
 	float lutRowBase; float lutRowCountF; float perAxisEnable; float dimAmount;
+	float manualSrgb; float ditherLsb; float pad0; float pad1;
 };
+
+// map a layer texture format to the scratch format and shader mode used to
+// process it. scratch must be in the same dxgi format family as the layer for
+// the copies to be legal. rgba8/bgra8 use srgb typed views (hardware converts,
+// shader sees linear). r10g10b10a2 has no srgb variant, so the shader decodes
+// and re-encodes explicitly (manualSrgb) and dithers at the 10 bit lsb; the
+// only difference vs the 8 bit path is that bilinear filtering happens on
+// encoded values, which is visually negligible for near identity warps.
+static bool MapLayerFormat(DXGI_FORMAT layerFormat, DXGI_FORMAT &scratchFormat, bool &manualSrgb, float &ditherLsb){
+	switch(layerFormat){
+		case DXGI_FORMAT_R8G8B8A8_TYPELESS:
+		case DXGI_FORMAT_R8G8B8A8_UNORM:
+		case DXGI_FORMAT_R8G8B8A8_UNORM_SRGB:
+			scratchFormat = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
+			manualSrgb = false;
+			ditherLsb = 255.0f;
+			return true;
+		case DXGI_FORMAT_B8G8R8A8_TYPELESS:
+		case DXGI_FORMAT_B8G8R8A8_UNORM:
+		case DXGI_FORMAT_B8G8R8A8_UNORM_SRGB:
+			scratchFormat = DXGI_FORMAT_B8G8R8A8_UNORM_SRGB;
+			manualSrgb = false;
+			ditherLsb = 255.0f;
+			return true;
+		case DXGI_FORMAT_R10G10B10A2_TYPELESS:
+		case DXGI_FORMAT_R10G10B10A2_UNORM:
+			scratchFormat = DXGI_FORMAT_R10G10B10A2_UNORM;
+			manualSrgb = true;
+			ditherLsb = 1023.0f;
+			return true;
+		default:
+			return false;
+	}
+}
 
 static uint64_t NowMs(){
 	return (uint64_t)std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
@@ -285,43 +336,75 @@ bool FrameProcessor::EnsureShaders(){
 	return pixelShader != nullptr;
 }
 
-bool FrameProcessor::EnsureScratch(uint32_t width, uint32_t height){
-	if(scratchIn && scratchWidth == width && scratchHeight == height){
+void FrameProcessor::ReleaseScratchSet(ScratchSet &set){
+	if(set.inSRV){ set.inSRV->Release(); set.inSRV = nullptr; }
+	if(set.in){ set.in->Release(); set.in = nullptr; }
+	if(set.outRTV){ set.outRTV->Release(); set.outRTV = nullptr; }
+	if(set.out){ set.out->Release(); set.out = nullptr; }
+}
+
+bool FrameProcessor::EnsureScratch(uint32_t width, uint32_t height, DXGI_FORMAT format){
+	uint64_t key = ((uint64_t)format << 48) | ((uint64_t)width << 24) | (uint64_t)height;
+	uint64_t now = NowMs();
+	auto found = scratchSets.find(key);
+	if(found != scratchSets.end()){
+		found->second.lastUsedMs = now;
+		scratchIn = found->second.in;
+		scratchInSRV = found->second.inSRV;
+		scratchOut = found->second.out;
+		scratchOutRTV = found->second.outRTV;
 		return true;
 	}
-	if(scratchInSRV){ scratchInSRV->Release(); scratchInSRV = nullptr; }
-	if(scratchIn){ scratchIn->Release(); scratchIn = nullptr; }
-	if(scratchOutRTV){ scratchOutRTV->Release(); scratchOutRTV = nullptr; }
-	if(scratchOut){ scratchOut->Release(); scratchOut = nullptr; }
 
+	ScratchSet set;
 	D3D11_TEXTURE2D_DESC desc = {};
 	desc.Width = width;
 	desc.Height = height;
 	desc.MipLevels = 1;
 	desc.ArraySize = 1;
-	desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
+	desc.Format = format;
 	desc.SampleDesc.Count = 1;
 	desc.Usage = D3D11_USAGE_DEFAULT;
 
 	desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-	if(FAILED(device->CreateTexture2D(&desc, nullptr, &scratchIn))){
+	if(FAILED(device->CreateTexture2D(&desc, nullptr, &set.in))){
 		PROCESSOR_ERROR("FrameProcessor: failed to create scratchIn %ux%u", width, height);
 		return false;
 	}
-	if(FAILED(device->CreateShaderResourceView(scratchIn, nullptr, &scratchInSRV))){
+	if(FAILED(device->CreateShaderResourceView(set.in, nullptr, &set.inSRV))){
+		ReleaseScratchSet(set);
 		return false;
 	}
 	desc.BindFlags = D3D11_BIND_RENDER_TARGET;
-	if(FAILED(device->CreateTexture2D(&desc, nullptr, &scratchOut))){
+	if(FAILED(device->CreateTexture2D(&desc, nullptr, &set.out))){
 		PROCESSOR_ERROR("FrameProcessor: failed to create scratchOut %ux%u", width, height);
+		ReleaseScratchSet(set);
 		return false;
 	}
-	if(FAILED(device->CreateRenderTargetView(scratchOut, nullptr, &scratchOutRTV))){
+	if(FAILED(device->CreateRenderTargetView(set.out, nullptr, &set.outRTV))){
+		ReleaseScratchSet(set);
 		return false;
 	}
-	scratchWidth = width;
-	scratchHeight = height;
-	DriverLog("FrameProcessor: created scratch textures %ux%u", width, height);
+	set.lastUsedMs = now;
+
+	// bound the cache: evict the least recently used entry beyond the cap
+	while(scratchSets.size() >= maxScratchSets){
+		auto lru = scratchSets.begin();
+		for(auto it = scratchSets.begin(); it != scratchSets.end(); ++it){
+			if(it->second.lastUsedMs < lru->second.lastUsedMs){
+				lru = it;
+			}
+		}
+		ReleaseScratchSet(lru->second);
+		scratchSets.erase(lru);
+	}
+	auto inserted = scratchSets.emplace(key, set).first;
+	scratchIn = inserted->second.in;
+	scratchInSRV = inserted->second.inSRV;
+	scratchOut = inserted->second.out;
+	scratchOutRTV = inserted->second.outRTV;
+	DriverLog("FrameProcessor: created scratch textures %ux%u format=%u (%zu sets cached)",
+		width, height, (unsigned)format, scratchSets.size());
 	return true;
 }
 
@@ -523,16 +606,33 @@ void FrameProcessor::EvictAll(){
 		pair.second->Release();
 	}
 	openedTextures.clear();
+	// scratch sets are cheap to repopulate and app teardown is the natural
+	// moment to return the memory (sets are hundreds of MB at high supersample)
+	for(auto &pair : scratchSets){
+		ReleaseScratchSet(pair.second);
+	}
+	scratchSets.clear();
+	scratchIn = nullptr;
+	scratchInSRV = nullptr;
+	scratchOut = nullptr;
+	scratchOutRTV = nullptr;
 }
 
 bool FrameProcessor::ProcessEye(ID3D11Texture2D* texture, const vr::VRTextureBounds_t &bounds, int eye, const FrameProcessSettings &settings){
 	D3D11_TEXTURE2D_DESC desc = {};
 	texture->GetDesc(&desc);
-	if(desc.Format != DXGI_FORMAT_R8G8B8A8_UNORM_SRGB && desc.Format != DXGI_FORMAT_R8G8B8A8_UNORM && desc.Format != DXGI_FORMAT_R8G8B8A8_TYPELESS){
-		PROCESSOR_ERROR("FrameProcessor: unexpected layer format %u, skipping", (unsigned)desc.Format);
+	DXGI_FORMAT mappedScratchFormat = DXGI_FORMAT_UNKNOWN;
+	bool manualSrgb = false;
+	float ditherLsb = 255.0f;
+	if(!MapLayerFormat(desc.Format, mappedScratchFormat, manualSrgb, ditherLsb)){
+		// log each unsupported format once per session, outside the error
+		// budget, so a game launched late still reports why it is untouched
+		if(skippedFormats.insert((unsigned)desc.Format).second){
+			DriverLog("FrameProcessor: unsupported layer format %u, this app's frames are not processed", (unsigned)desc.Format);
+		}
 		return false;
 	}
-	if(!EnsureScratch(desc.Width, desc.Height)){
+	if(!EnsureScratch(desc.Width, desc.Height, mappedScratchFormat)){
 		return false;
 	}
 
@@ -569,6 +669,8 @@ bool FrameProcessor::ProcessEye(ID3D11Texture2D* texture, const vr::VRTextureBou
 	constants.lutRowCountF = (float)lutRowCount;
 	constants.perAxisEnable = config.distortion.perAxis ? 1.0f : 0.0f;
 	constants.dimAmount = (float)settings.dimAmount;
+	constants.manualSrgb = manualSrgb ? 1.0f : 0.0f;
+	constants.ditherLsb = ditherLsb;
 	double centerOffsetX = eye == 0 ? config.centerOffsetXLeft : config.centerOffsetXRight;
 	constants.center[0] = (float)(0.5 + centerOffsetX);
 	constants.center[1] = (float)(0.5 + config.centerOffsetY);
@@ -640,6 +742,14 @@ bool FrameProcessor::ProcessSceneLayer(vr::SharedTextureHandle_t leftEye, vr::Sh
 	const vr::VRTextureBounds_t &leftBounds, const vr::VRTextureBounds_t &rightBounds,
 	vr::SharedTextureHandle_t syncTexture, const FrameProcessSettings &settings){
 	std::lock_guard<std::mutex> guard(lock);
+
+	// re-arm the diagnostic budget every 5 minutes so problems in apps
+	// launched later in the session are not silenced by earlier errors
+	uint64_t nowMs = NowMs();
+	if(nowMs - lastErrorResetMs > 300000){
+		lastErrorResetMs = nowMs;
+		errorCount = 0;
+	}
 
 	if(!EnsureDevice() || !EnsureShaders()){
 		return false;
