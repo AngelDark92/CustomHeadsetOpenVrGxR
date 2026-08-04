@@ -481,6 +481,9 @@ void ConfigLoader::ParseConfig(){
 			if(streamFrameData["poseLogging"].is_boolean()){
 				newConfig.streamFrame.poseLogging = streamFrameData["poseLogging"].get<bool>();
 			}
+			if(streamFrameData["velocityFix"].is_boolean()){
+				newConfig.streamFrame.velocityFix = streamFrameData["velocityFix"].get<bool>();
+			}
 			if(streamFrameData["syncTimeoutMs"].is_number()){
 				newConfig.streamFrame.syncTimeoutMs = streamFrameData["syncTimeoutMs"].get<int>();
 			}
@@ -736,6 +739,7 @@ void ConfigLoader::WriteInfo(){
 				{"processAtSubmitLayer", defaultSettings.streamFrame.processAtSubmitLayer},
 				{"poseLogging", defaultSettings.streamFrame.poseLogging},
 				{"syncTimeoutMs", defaultSettings.streamFrame.syncTimeoutMs},
+				{"velocityFix", defaultSettings.streamFrame.velocityFix},
 			}},
 			{"takeCompositorScreenshots", defaultSettings.takeCompositorScreenshots},
 			{"onlyHandlePrivateFunctionality", defaultSettings.onlyHandlePrivateFunctionality},

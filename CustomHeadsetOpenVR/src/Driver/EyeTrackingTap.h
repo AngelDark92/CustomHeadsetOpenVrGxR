@@ -79,6 +79,14 @@ private:
 	double rateWindowStart = 0;
 	uint64_t rateWindowCount = 0;
 	double measuredRate = 0;
+
+	// raw payload watch: interpretation-free change detection on the exact
+	// bytes vrlink passes. if any bit of gaze data ever flows, this catches
+	// it even if our struct interpretation were somehow wrong.
+	uint8_t lastRaw[sizeof(vr::VREyeTrackingData_t)] = {};
+	bool haveRaw = false;
+	uint64_t distinctPayloads = 0;
+	double lastChangeLogTime = 0;
 };
 
 extern EyeTrackingTap eyeTrackingTap;

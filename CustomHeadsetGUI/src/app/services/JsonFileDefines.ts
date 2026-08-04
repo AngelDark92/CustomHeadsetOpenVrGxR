@@ -97,6 +97,9 @@ export type StreamFrameConfig = {
   centerOffsetY: number;
   skipColorWhileDashboardOpen: boolean;
   processAtSubmitLayer: boolean;
+  syncTimeoutMs: number;
+  velocityFix: boolean;
+  poseLogging: boolean;
 };
 export type CustomShaderConfig = {
   enable: boolean;

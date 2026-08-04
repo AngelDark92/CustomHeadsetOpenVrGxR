@@ -41,7 +41,10 @@ function defaultStreamFrame(): StreamFrameConfig {
     centerOffsetXRight: 0,
     centerOffsetY: 0,
     skipColorWhileDashboardOpen: false,
-    processAtSubmitLayer: false
+    processAtSubmitLayer: false,
+    syncTimeoutMs: 5,
+    velocityFix: false,
+    poseLogging: false
   };
 }
 

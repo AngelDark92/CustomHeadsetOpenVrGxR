@@ -3,6 +3,8 @@
 #include "../Helpers/EyeTrackingOutput.h"
 
 #include <chrono>
+#include <cstring>
+#include <cstdio>
 
 EyeTrackingTap eyeTrackingTap = {};
 
@@ -38,6 +40,31 @@ void EyeTrackingTap::OnUpdateComponent(vr::VRInputComponentHandle_t component,
 	}
 
 	double now = SteadyNowSeconds();
+
+	// raw payload watch, before any interpretation. hex-log the first payload
+	// and every change (throttled), so "the stream is empty" is a statement
+	// about vrlink's bytes rather than about our struct reading.
+	{
+		const uint8_t* raw = (const uint8_t*)data;
+		char hex[sizeof(vr::VREyeTrackingData_t) * 2 + 1] = {};
+		bool changed = !haveRaw || memcmp(lastRaw, raw, sizeof(lastRaw)) != 0;
+		if(changed){
+			for(size_t i = 0; i < sizeof(lastRaw); i++){
+				snprintf(hex + i * 2, 3, "%02x", raw[i]);
+			}
+			memcpy(lastRaw, raw, sizeof(lastRaw));
+			bool first = !haveRaw;
+			haveRaw = true;
+			distinctPayloads++;
+			if(first){
+				DriverLog("EyeTrackingTap: first raw payload (%zu bytes): %s", sizeof(lastRaw), hex);
+			}else if(now - lastChangeLogTime >= 1.0){
+				lastChangeLogTime = now;
+				DriverLog("EyeTrackingTap: raw payload changed (%llu distinct so far): %s",
+					(unsigned long long)distinctPayloads, hex);
+			}
+		}
+	}
 
 	Sample sample;
 	sample.active = data->bActive;
@@ -111,9 +138,10 @@ void EyeTrackingTap::OnUpdateComponent(vr::VRInputComponentHandle_t component,
 			sample.targetX, sample.targetY, sample.targetZ,
 			sample.timeOffset);
 	}else if(logSummary){
-		DriverLog("EyeTrackingTap: %llu samples rate=%.1fHz valid=%d tracked=%d "
+		DriverLog("EyeTrackingTap: %llu samples rate=%.1fHz distinctRaw=%llu valid=%d tracked=%d "
 			"target=(%.4f, %.4f, %.4f) timeOffset=%.4f",
 			(unsigned long long)indexForLog, rateForLog,
+			(unsigned long long)distinctPayloads,
 			(int)sample.valid, (int)sample.tracked,
 			sample.targetX, sample.targetY, sample.targetZ,
 			sample.timeOffset);

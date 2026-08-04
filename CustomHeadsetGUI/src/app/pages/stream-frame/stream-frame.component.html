@@ -322,5 +322,38 @@
     </div>
 </div>
 
+<div class="field">
+    <div class="title">
+        <span>Sync Timeout (ms)</span>
+        <app-field-tip info="How long to wait for the frame sync before letting a frame through unprocessed (a brief 'flash' of ungraded color). Higher values trade flashes under heavy load for slightly later frames. After a skipped frame the wait automatically escalates to break flash streaks. Default 5, sensible range 3-15." />
+        <app-reset-button [canReset]="settings.syncTimeoutMs != defaults.syncTimeoutMs" (resetClick)="reset('syncTimeoutMs')"></app-reset-button>
+    </div>
+    <div class="control">
+        <input matInput [(ngModel)]="settings.syncTimeoutMs" step="1" min="1" max="100" (ngModelChange)="save()" type="number">
+    </div>
+</div>
+
+<div class="field">
+    <div class="title">
+        <span>Throw Velocity Fix (experimental)</span>
+        <app-field-tip info="The driver's reported controller velocity is heavily smoothed, which makes thrown objects land short. This recomputes velocity from recent positions and substitutes it during fast motion, so releases carry true peak speed. Calm aiming keeps the driver's smoother data." />
+        <app-reset-button [canReset]="settings.velocityFix != defaults.velocityFix" (resetClick)="reset('velocityFix')"></app-reset-button>
+    </div>
+    <div class="control">
+        <mat-slide-toggle [(ngModel)]="settings.velocityFix" (ngModelChange)="save()"></mat-slide-toggle>
+    </div>
+</div>
+
+<div class="field">
+    <div class="title">
+        <span>Pose Logging (diagnostic)</span>
+        <app-field-tip info="Writes throttled controller pose lines to vrserver.txt (positions, reported vs position-derived velocity, tracking state), with burst capture during fast motion. Only needed when collecting data for a report; leave off otherwise." />
+        <app-reset-button [canReset]="settings.poseLogging != defaults.poseLogging" (resetClick)="reset('poseLogging')"></app-reset-button>
+    </div>
+    <div class="control">
+        <mat-slide-toggle [(ngModel)]="settings.poseLogging" (ngModelChange)="save()"></mat-slide-toggle>
+    </div>
+</div>
+
 }
 }

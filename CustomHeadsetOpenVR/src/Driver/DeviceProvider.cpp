@@ -203,11 +203,80 @@ bool CustomHeadsetDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 			pose.result = vr::TrackingResult_Running_OK;
 		}
 	}
-	// diagnostic groundwork for the controller throw/velocity fix. cheap
-	// unsynchronized bool read keeps the hot path free when disabled.
+	// throw/velocity fix: substitute position-derived velocity when it is
+	// meaningfully larger than the driver's smoothed report, so throw
+	// releases carry true peak speed. cheap unsynchronized bool reads keep
+	// the hot path free when both features are disabled.
+	if(driverConfig.streamFrame.velocityFix && openVRID != vr::k_unTrackedDeviceIndex_Hmd
+			&& pose.poseIsValid && pose.result == vr::TrackingResult_Running_OK){
+		double derived[3];
+		if(DeriveVelocity(openVRID, pose, derived)){
+			double derivedSpeed = sqrt(derived[0] * derived[0] + derived[1] * derived[1] + derived[2] * derived[2]);
+			double reportedSpeed = sqrt(pose.vecVelocity[0] * pose.vecVelocity[0]
+				+ pose.vecVelocity[1] * pose.vecVelocity[1]
+				+ pose.vecVelocity[2] * pose.vecVelocity[2]);
+			// substitute only when clearly larger (hysteresis keeps calm
+			// aiming on the driver's smoother data) and physically plausible
+			// (teleports/recenters are rejected in DeriveVelocity, this is a
+			// second fence)
+			if(derivedSpeed > reportedSpeed * 1.15 && derivedSpeed > 0.5 && derivedSpeed < 20.0){
+				pose.vecVelocity[0] = derived[0];
+				pose.vecVelocity[1] = derived[1];
+				pose.vecVelocity[2] = derived[2];
+			}
+		}
+	}
 	if(driverConfig.streamFrame.poseLogging && openVRID != vr::k_unTrackedDeviceIndex_Hmd){
 		LogDevicePose(openVRID, pose);
 	}
+	return true;
+}
+
+bool CustomHeadsetDeviceProvider::DeriveVelocity(uint32_t openVRID, const vr::DriverPose_t &pose, double derived[3]){
+	double now = std::chrono::duration_cast<std::chrono::microseconds>(
+		std::chrono::steady_clock::now().time_since_epoch()).count() / 1000000.0;
+	std::lock_guard<std::mutex> guard(poseLogLock);
+	VelFixState &state = velFixStates[openVRID];
+	
+	// teleport / recenter rejection: a step implying > 30 m/s from the
+	// previous sample invalidates the window
+	if(state.count > 0){
+		int prev = (state.head + VelFixState::ringSize - 1) % VelFixState::ringSize;
+		double dt = now - state.time[prev];
+		if(dt <= 0 || dt > 0.1){
+			state.count = 0;
+		}else{
+			double dx = pose.vecPosition[0] - state.pos[prev][0];
+			double dy = pose.vecPosition[1] - state.pos[prev][1];
+			double dz = pose.vecPosition[2] - state.pos[prev][2];
+			if(sqrt(dx * dx + dy * dy + dz * dz) / dt > 30.0){
+				state.count = 0;
+			}
+		}
+	}
+	
+	state.pos[state.head][0] = pose.vecPosition[0];
+	state.pos[state.head][1] = pose.vecPosition[1];
+	state.pos[state.head][2] = pose.vecPosition[2];
+	state.time[state.head] = now;
+	state.head = (state.head + 1) % VelFixState::ringSize;
+	if(state.count < VelFixState::ringSize){
+		state.count++;
+	}
+	if(state.count < VelFixState::ringSize){
+		return false;
+	}
+	
+	// endpoint difference across the full ring (~50ms at 100Hz poses)
+	int newest = (state.head + VelFixState::ringSize - 1) % VelFixState::ringSize;
+	int oldest = state.head;
+	double span = state.time[newest] - state.time[oldest];
+	if(span <= 0.005 || span > 0.25){
+		return false;
+	}
+	derived[0] = (state.pos[newest][0] - state.pos[oldest][0]) / span;
+	derived[1] = (state.pos[newest][1] - state.pos[oldest][1]) / span;
+	derived[2] = (state.pos[newest][2] - state.pos[oldest][2]) / span;
 	return true;
 }
 

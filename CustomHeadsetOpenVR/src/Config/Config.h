@@ -157,6 +157,14 @@ struct StreamFrameConfig{
 	// level streaming). after a skip the timeout escalates (3x, min 15ms) to
 	// break flash streaks, and resets on the next acquired frame.
 	int syncTimeoutMs = 5;
+	// experimental throw/velocity fix. vrlink's reported controller velocity
+	// is heavily smoothed (field data: peaks read ~50-65% of position-derived
+	// velocity during throws, ratio varies with motion phase = filter lag,
+	// not a scale factor). when enabled, linear velocity is recomputed from
+	// a ~50ms window of positions and substituted when meaningfully larger
+	// than the reported value, so releases carry true peak speed while calm
+	// motion keeps the driver's smoother data.
+	bool velocityFix = false;
 	// diagnostic: throttle-log controller/tracker poses from the PoseUpdated
 	// hook (position, velocity, tracking result), with a burst mode that
 	// captures high-velocity moments (throws). live-reloaded, so it can be
