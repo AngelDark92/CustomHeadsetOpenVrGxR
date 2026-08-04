@@ -1,8 +1,22 @@
-# CustomHeadsetOpenVR
-This is a custom headset driver for SteamVR that allows the MeganeX 8K and Dream Air to operate as native SteamVR headsets. It provides significant image customization to all native SteamVR headsets through the custom shader.  
+# CustomHeadsetOpenVR GxR
+This is a modification of SboyS3 amazing work, with the goal of supporting the Galaxy XR
 
+## Features
 
-<picture><img src="./CustomHeadsetGUI/public/CustomHeadsetCropped.png" height="96"><img/></picture>
+I'll only list the changes added here. The GxR handling uses a separate shader, so not all features of the original program apply. The following are implemented as of now:
+1. The ability to change:
+	a. saturation
+	b. contrast
+		1. Midpoint
+		2. Linear mode
+	c. gamma
+	d. ColorMultipliers
+2. Contrast Adaptive Sharpening
+3. Dithering
+4. Distortion profile adjustments
+   a. Unlike what the software does for the meganex, the galaxy xr owns it's own distortion profile. But we can still modify it by pre perturbing the image before handing it off
+   b. Currently supports the same scope of modifications as the existing profile creator, just applied as a delta profile instead of a full distortion profile
+
 
 ## Installing
 1. Download the latest release from the [releases page](https://github.com/sboys3/CustomHeadsetOpenVR/releases/latest)
@@ -18,29 +32,9 @@ You do not need to do this if you installed the driver with the GUI.
 3. Restart SteamVR
 </details>
 
-## Updating
-1. Download the latest release from the [releases page](https://github.com/sboys3/CustomHeadsetOpenVR/releases/latest)
-2. Extract the whole folder within the zip to a place you want it.
-3. Run `custom-headset-gui.exe` in `CustomHeadsetGUI`
-4. Go to the about page and install the new driver.
-
 ## Configuring
 Run `custom-headset-gui.exe` to configure settings.
 Almost all settings will be immediately applied when the file is saved without restarting SteamVR.  
-
-
-## Donations and Affiliates
-
-If you find this project helpful, consider supporting it through donations or using the affiliate links below:
-
-### Donation Links
-If my project improved your VR experience, consider donating.  
-[<img src="./CustomHeadsetGUI/public/patreon-logo.svg" height="24" alt="Patreon"> Patreon](https://patreon.com/SBoys3)  
-[<img src="./CustomHeadsetGUI/public/ko-fi-logo.svg" height="24" alt="Ko-fi"> Ko-fi](https://ko-fi.com/sboys3)  
-
-### Affiliate Links
-If my driver is a major factor in your decision of purchasing the Dream Air, use my affiliate link at no cost to you. You can use the affiliate links for other Pimax headsets to support me as well.  
-[<img src="./CustomHeadsetGUI/public/DreamAirHD.png" height="24" alt="Pimax"> Pimax with $25 off](https://pimax.com/products/pimax-dream-air/?discount=25SBOY3&ref=sboys3)  
 
 ## Building
 1. Clone the repository with `git clone https://github.com/sboys3/CustomHeadsetOpenVR.git`
@@ -64,18 +58,6 @@ To pull the latest changes, run `git pull --recurse-submodules`
 Enter `%APPDATA%/CustomHeadset` into the file browser top bar to get to the settings folder.  
 Edit the `settings.json` file based on the [Config header file](./CustomHeadsetOpenVR/src/Config/Config.h)  
 Distortion profiles go in a folder named `Distortion` and they are referenced by their name.  
-
-### Closed Source Components
-The DRM related functionality on the Dream Air is not open source, but the released driver can be used with a compiled from source driver.
-
-The `onlyHandlePrivateFunctionality` property allows you to run a compiled source driver alongside the closed-source driver. When set to `true` in the root of the config, it disables all functionality in the driver that contains private code except for the private code itself. This allows a compiled source driver to handle all the important parts of the driver. A driver without the closed source components is unaffected by the option.
-
-To use this feature:
-
-1. Build the driver from source following the steps above
-2. Rename the released driver folder, the DLL, and the name in `driver.vrdrivermanifest` to something else (e.g., `CustomHeadsetOpenVR_Private`)
-3. Set `onlyHandlePrivateFunctionality: true` in the root of your `settings.json` config file
-4. The closed-source driver will handle private functionality while your source-built driver handles everything else
 
 
 ## Features
