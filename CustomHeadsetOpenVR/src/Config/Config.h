@@ -96,6 +96,21 @@ struct StreamFrameCASConfig{
 	double strength = 0.5;
 };
 
+// fade the streamed frames to black when the headset has not moved for a
+// while, e.g. left on a desk with SteamVR running. uniform full fade, so no
+// uneven oled wear. brightness returns quickly once movement is detected.
+struct StreamFrameDimmingConfig{
+	bool enable = false;
+	// the angle in degrees that the headset has to rotate to count as moved
+	double movementThreshold = 0.4;
+	// seconds of stillness before dimming starts
+	double movementTime = 15.0;
+	// seconds to fade fully to black
+	double dimSeconds = 10.0;
+	// seconds to fade back to full brightness on movement
+	double brightenSeconds = 1.0;
+};
+
 struct StreamFrameConfig{
 	// process direct mode layer textures before the streaming driver consumes them
 	bool enable = false;
@@ -116,6 +131,7 @@ struct StreamFrameConfig{
 	StreamFrameCASConfig cas = {};
 	// add low amplitude noise before encoding to reduce banding in dark scenes
 	bool dither = false;
+	StreamFrameDimmingConfig stationaryDimming = {};
 	// radial distortion pre perturbation, applied to the streamed eye images to
 	// compensate an imperfect distortion profile on the standalone headset.
 	double k1 = 0;

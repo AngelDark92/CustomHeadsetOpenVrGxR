@@ -1,6 +1,8 @@
 #include "FrameComponentShim.h"
 #include "DriverLog.h"
 #include "../Config/ConfigLoader.h"
+#include <chrono>
+#include <cmath>
 
 // ---------------------------------------------------------------------------
 // DirectModeComponentShim
@@ -58,6 +60,7 @@ void DirectModeComponentShim::SubmitLayer(const SubmitLayerPerEye_t (&perEye)[2]
 	// later layers (e.g. the dashboard while it is open) are quads recomposited by
 	// the driver at their own pose and are left untouched.
 	if(layersThisFrame == 1){
+		UpdateStationaryDimming(perEye[0].mHmdPose);
 		haveSceneLayer = true;
 		sceneLeft = perEye[0].hTexture;
 		sceneRight = perEye[1].hTexture;
@@ -74,6 +77,58 @@ void DirectModeComponentShim::SubmitLayer(const SubmitLayerPerEye_t (&perEye)[2]
 		}
 	}
 	original->SubmitLayer(perEye);
+}
+
+static double NowSeconds(){
+	return std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+void DirectModeComponentShim::UpdateStationaryDimming(const vr::HmdMatrix34_t &pose){
+	StreamFrameDimmingConfig dimming;
+	{
+		std::lock_guard<std::mutex> configGuard(driverConfigLock);
+		dimming = driverConfig.streamFrame.stationaryDimming;
+	}
+	double now = NowSeconds();
+	if(!dimming.enable){
+		dimFactor = 0;
+		lastMovementTime = now;
+		lastDimUpdateTime = now;
+		return;
+	}
+	// orientation basis vectors of the pose
+	float x[3] = { pose.m[0][0], pose.m[1][0], pose.m[2][0] };
+	float z[3] = { pose.m[0][2], pose.m[1][2], pose.m[2][2] };
+	if(havePose){
+		float dotX = x[0] * lastPoseX[0] + x[1] * lastPoseX[1] + x[2] * lastPoseX[2];
+		float dotZ = z[0] * lastPoseZ[0] + z[1] * lastPoseZ[1] + z[2] * lastPoseZ[2];
+		float minDot = dotX < dotZ ? dotX : dotZ;
+		if(minDot > 1.0f){ minDot = 1.0f; }
+		double angleDegrees = std::acos((double)minDot) * 180.0 / 3.14159265358979;
+		if(angleDegrees > dimming.movementThreshold){
+			lastMovementTime = now;
+			lastPoseX[0] = x[0]; lastPoseX[1] = x[1]; lastPoseX[2] = x[2];
+			lastPoseZ[0] = z[0]; lastPoseZ[1] = z[1]; lastPoseZ[2] = z[2];
+		}
+	}else{
+		havePose = true;
+		lastMovementTime = now;
+		lastPoseX[0] = x[0]; lastPoseX[1] = x[1]; lastPoseX[2] = x[2];
+		lastPoseZ[0] = z[0]; lastPoseZ[1] = z[1]; lastPoseZ[2] = z[2];
+	}
+	double delta = now - lastDimUpdateTime;
+	if(delta < 0 || delta > 1){ delta = 0; }
+	lastDimUpdateTime = now;
+	bool still = now - lastMovementTime > dimming.movementTime;
+	if(still){
+		double rate = dimming.dimSeconds > 0.01 ? 1.0 / dimming.dimSeconds : 100.0;
+		dimFactor += delta * rate;
+	}else{
+		double rate = dimming.brightenSeconds > 0.01 ? 1.0 / dimming.brightenSeconds : 100.0;
+		dimFactor -= delta * rate;
+	}
+	if(dimFactor < 0){ dimFactor = 0; }
+	if(dimFactor > 1){ dimFactor = 1; }
 }
 
 bool DirectModeComponentShim::GetActiveSettings(FrameProcessSettings &settings, bool &processAtSubmit){
@@ -95,6 +150,9 @@ bool DirectModeComponentShim::GetActiveSettings(FrameProcessSettings &settings, 
 		config.srgbMatrix.size() == 9);
 	// cas and dither are not affected by the dashboard gating
 	colorActive |= config.cas.enable || config.dither;
+	// the pass must also run while any dimming is applied
+	settings.dimAmount = dimFactor;
+	colorActive |= settings.dimAmount > 0.0001;
 	bool spline = config.distortion.mode == "spline";
 	auto curveActive = [spline](double k1, double k2, const std::vector<StreamFrameDistortionPoint> &points){
 		if(spline){

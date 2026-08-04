@@ -70,6 +70,13 @@ export type StreamFrameCASConfig = {
   enable: boolean;
   strength: number;
 };
+export type StreamFrameDimmingConfig = {
+  enable: boolean;
+  movementThreshold: number;
+  movementTime: number;
+  dimSeconds: number;
+  brightenSeconds: number;
+};
 export type StreamFrameConfig = {
   enable: boolean;
   saturation: number;
@@ -81,6 +88,7 @@ export type StreamFrameConfig = {
   srgbMatrix: number[];
   cas: StreamFrameCASConfig;
   dither: boolean;
+  stationaryDimming: StreamFrameDimmingConfig;
   k1: number;
   k2: number;
   distortion: StreamFrameDistortionConfig;

@@ -375,6 +375,24 @@ void ConfigLoader::ParseConfig(){
 			if(streamFrameData["dither"].is_boolean()){
 				newConfig.streamFrame.dither = streamFrameData["dither"].get<bool>();
 			}
+			if(streamFrameData["stationaryDimming"].is_object()){
+				json dimmingData = streamFrameData["stationaryDimming"];
+				if(dimmingData["enable"].is_boolean()){
+					newConfig.streamFrame.stationaryDimming.enable = dimmingData["enable"].get<bool>();
+				}
+				if(dimmingData["movementThreshold"].is_number()){
+					newConfig.streamFrame.stationaryDimming.movementThreshold = dimmingData["movementThreshold"].get<double>();
+				}
+				if(dimmingData["movementTime"].is_number()){
+					newConfig.streamFrame.stationaryDimming.movementTime = dimmingData["movementTime"].get<double>();
+				}
+				if(dimmingData["dimSeconds"].is_number()){
+					newConfig.streamFrame.stationaryDimming.dimSeconds = dimmingData["dimSeconds"].get<double>();
+				}
+				if(dimmingData["brightenSeconds"].is_number()){
+					newConfig.streamFrame.stationaryDimming.brightenSeconds = dimmingData["brightenSeconds"].get<double>();
+				}
+			}
 			if(streamFrameData["distortion"].is_object()){
 				json distortionData = streamFrameData["distortion"];
 				if(distortionData["mode"].is_string()){
@@ -683,6 +701,13 @@ void ConfigLoader::WriteInfo(){
 					{"strength", defaultSettings.streamFrame.cas.strength},
 				}},
 				{"dither", defaultSettings.streamFrame.dither},
+				{"stationaryDimming", {
+					{"enable", defaultSettings.streamFrame.stationaryDimming.enable},
+					{"movementThreshold", defaultSettings.streamFrame.stationaryDimming.movementThreshold},
+					{"movementTime", defaultSettings.streamFrame.stationaryDimming.movementTime},
+					{"dimSeconds", defaultSettings.streamFrame.stationaryDimming.dimSeconds},
+					{"brightenSeconds", defaultSettings.streamFrame.stationaryDimming.brightenSeconds},
+				}},
 				{"k1", defaultSettings.streamFrame.k1},
 				{"k2", defaultSettings.streamFrame.k2},
 				{"distortion", {

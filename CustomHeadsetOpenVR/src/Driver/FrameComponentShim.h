@@ -51,6 +51,17 @@ private:
 	// snapshot current settings; returns false if processing is disabled or identity
 	bool GetActiveSettings(FrameProcessSettings &settings, bool &processAtSubmit);
 
+	// stationary dimming state: last hmd orientation basis, time of last
+	// detected movement, and the current dim factor (0 bright .. 1 black)
+	bool havePose = false;
+	float lastPoseX[3] = {1, 0, 0};
+	float lastPoseZ[3] = {0, 0, 1};
+	double lastMovementTime = 0;
+	double lastDimUpdateTime = 0;
+	double dimFactor = 0;
+	// track stillness from a submitted pose and advance the dim factor
+	void UpdateStationaryDimming(const vr::HmdMatrix34_t &pose);
+
 	FrameProcessor processor;
 };
 

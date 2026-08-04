@@ -38,7 +38,7 @@ cbuffer Params : register(b0){
 	float lutRowBase;      // first lut row for this eye (rows: eye major, axis minor)
 	float lutRowCount;     // total rows in the lut texture (1, 2 or 4)
 	float perAxisEnable;   // blend a horizontal and a vertical curve around the ring
-	float pad2;
+	float dimAmount;       // stationary dimming, 0 bright to 1 black
 };
 Texture2D<float4> tex : register(t0);
 Texture2D<float4> lut : register(t1);
@@ -154,6 +154,9 @@ float4 main(float4 pos : SV_Position, float2 uv : TEXCOORD0) : SV_Target0{
 		g = saturate(g + noise / 255.0);
 		color.rgb = SrgbToLinear(g);
 	}
+
+	// ---- stationary dimming (uniform fade to black, no uneven oled wear) ----
+	color.rgb *= 1.0 - dimAmount;
 
 	return color;
 }

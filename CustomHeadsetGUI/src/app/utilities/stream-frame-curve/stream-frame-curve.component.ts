@@ -289,11 +289,16 @@ export class StreamFrameCurveComponent implements AfterViewInit {
     const cfg = this.settings();
     if (cfg.distortion.mode !== 'spline') return -1;
     const canvas = this.curveCanvas().nativeElement;
+    // grab radius of 10 css pixels, converted to canvas units so hit testing
+    // feels the same when the window scales the canvas down or up
+    const rect = canvas.getBoundingClientRect();
+    const cssToCanvas = rect.width > 0 ? canvas.width / rect.width : 1;
+    const radius = 10 * cssToCanvas;
     const points = this.activeCurve(false).points;
     for (let i = 0; i < points.length; i++) {
       const pt = points[i];
       const dx = this.toX(pt.r, canvas.width) - x, dy = this.toY(pt.scale, canvas.height) - y;
-      if (dx * dx + dy * dy < 100) return i;
+      if (dx * dx + dy * dy < radius * radius) return i;
     }
     return -1;
   }

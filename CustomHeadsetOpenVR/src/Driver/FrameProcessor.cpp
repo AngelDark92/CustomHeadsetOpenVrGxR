@@ -46,7 +46,7 @@ cbuffer Params : register(b0){
 	float2 boundsSize; float2 texelSize;
 	float4 colorMultiplier;
 	float4 matR; float4 matG; float4 matB;
-	float lutRowBase; float lutRowCount; float perAxisEnable; float pad2;
+	float lutRowBase; float lutRowCount; float perAxisEnable; float dimAmount;
 };
 Texture2D<float4> tex : register(t0);
 Texture2D<float4> lut : register(t1);
@@ -84,6 +84,7 @@ float4 main(float4 pos : SV_Position, float2 uv : TEXCOORD0) : SV_Target0{
 		float gray = dot(color.rgb, float3(0.299, 0.587, 0.114));
 		color.rgb = lerp(gray.xxx, color.rgb, saturation);
 	}
+	color.rgb *= 1.0 - dimAmount;
 	return color;
 }
 )";
@@ -99,7 +100,7 @@ struct FrameProcessorConstants{
 	float boundsSize[2]; float texelSize[2];
 	float colorMultiplier[4];
 	float matR[4]; float matG[4]; float matB[4];
-	float lutRowBase; float lutRowCountF; float perAxisEnable; float pad2;
+	float lutRowBase; float lutRowCountF; float perAxisEnable; float dimAmount;
 };
 
 static uint64_t NowMs(){
@@ -567,6 +568,7 @@ bool FrameProcessor::ProcessEye(ID3D11Texture2D* texture, const vr::VRTextureBou
 	constants.lutRowBase = config.distortion.perEye ? (float)(eye * axisCount) : 0.0f;
 	constants.lutRowCountF = (float)lutRowCount;
 	constants.perAxisEnable = config.distortion.perAxis ? 1.0f : 0.0f;
+	constants.dimAmount = (float)settings.dimAmount;
 	double centerOffsetX = eye == 0 ? config.centerOffsetXLeft : config.centerOffsetXRight;
 	constants.center[0] = (float)(0.5 + centerOffsetX);
 	constants.center[1] = (float)(0.5 + config.centerOffsetY);

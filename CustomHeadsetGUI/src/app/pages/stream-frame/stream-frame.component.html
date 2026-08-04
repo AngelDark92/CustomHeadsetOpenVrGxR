@@ -155,6 +155,27 @@
 </div>
 
 <div class="field">
+    <div class="title">
+        <span>Stationary Dimming</span>
+        <app-field-tip info="Fades the streamed image uniformly to black when the headset has not moved for a while, protecting the OLED panels e.g. when the headset is left on a desk. Restores quickly on movement." />
+    </div>
+    <div class="control">
+        <mat-slide-toggle [(ngModel)]="settings.stationaryDimming.enable" (ngModelChange)="save()"></mat-slide-toggle>
+    </div>
+</div>
+@if(settings.stationaryDimming.enable){
+<div class="field">
+    <div class="title"><span>Dimming Timing</span>
+        <app-field-tip info="Seconds of stillness before dimming starts, and seconds to fade fully to black." />
+    </div>
+    <div class="control rgb-control">
+        <span>after</span><input matInput [(ngModel)]="settings.stationaryDimming.movementTime" step="1" min="2" (ngModelChange)="save()" type="number">
+        <span>fade</span><input matInput [(ngModel)]="settings.stationaryDimming.dimSeconds" step="1" min="1" (ngModelChange)="save()" type="number">
+    </div>
+</div>
+}
+
+<div class="field">
     <div class="section-title"><span>Distortion Correction</span></div>
 </div>
 <div class="field">
@@ -255,6 +276,23 @@
         <span>x left</span><input matInput [(ngModel)]="settings.centerOffsetXLeft" step="0.001" (ngModelChange)="save()" type="number">
         <span>x right</span><input matInput [(ngModel)]="settings.centerOffsetXRight" step="0.001" (ngModelChange)="save()" type="number">
         <span>y</span><input matInput [(ngModel)]="settings.centerOffsetY" step="0.001" (ngModelChange)="save()" type="number">
+    </div>
+</div>
+
+<div class="field">
+    <div class="section-title"><span>Share Distortion Profile</span></div>
+</div>
+<div class="field">
+    <div class="note">Export copies your distortion settings (curves, mode, center offsets) as text to share. To use someone else's profile, paste it below and press Import.</div>
+</div>
+<div class="field share-field">
+    <div class="control share-control">
+        <div class="share-buttons">
+            <button mat-stroked-button (click)="exportProfile()">Export current</button>
+            <button mat-stroked-button (click)="importProfile()">Import from text</button>
+            @if(shareStatus()){<span class="share-status">{{shareStatus()}}</span>}
+        </div>
+        <textarea [ngModel]="shareText()" (ngModelChange)="shareText.set($event)" rows="6" placeholder="Paste a profile here to import, or press Export current"></textarea>
     </div>
 </div>
 

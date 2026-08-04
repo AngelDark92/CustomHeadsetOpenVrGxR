@@ -26,6 +26,7 @@ function defaultStreamFrame(): StreamFrameConfig {
     srgbMatrix: [],
     cas: { enable: false, strength: 0.5 },
     dither: false,
+    stationaryDimming: { enable: false, movementThreshold: 0.4, movementTime: 15, dimSeconds: 10, brightenSeconds: 1 },
     k1: 0,
     k2: 0,
     distortion: {
@@ -128,6 +129,72 @@ export class StreamFrameComponent {
       this.matrixError.set('');
     }
     this.save();
+  }
+
+  // ---- distortion profile sharing ----
+  shareText = signal('');
+  shareStatus = signal('');
+  exportProfile() {
+    if (!this.settings) return;
+    const s = this.settings;
+    const profile = {
+      type: 'streamFrameDistortionProfile',
+      version: 1,
+      name: 'My Galaxy XR profile',
+      distortion: JSON.parse(JSON.stringify(s.distortion)),
+      k1: s.k1,
+      k2: s.k2,
+      centerOffsetXLeft: s.centerOffsetXLeft,
+      centerOffsetXRight: s.centerOffsetXRight,
+      centerOffsetY: s.centerOffsetY
+    };
+    // the annulus is a tuning diagnostic, not part of a shareable profile
+    delete profile.distortion.annulus;
+    const text = JSON.stringify(profile, null, 2);
+    this.shareText.set(text);
+    this.shareStatus.set('Profile exported below. Copy it anywhere.');
+    navigator.clipboard?.writeText(text).then(
+      () => this.shareStatus.set('Profile copied to clipboard.'),
+      () => {}
+    );
+  }
+  importProfile() {
+    if (!this.settings) return;
+    let parsed: any;
+    try {
+      parsed = JSON.parse(this.shareText());
+    } catch (e: any) {
+      this.shareStatus.set('Not valid JSON: ' + e.message);
+      return;
+    }
+    if (parsed?.type !== 'streamFrameDistortionProfile' || typeof parsed.distortion !== 'object') {
+      this.shareStatus.set('Not a stream frame distortion profile.');
+      return;
+    }
+    const num = (v: any, fallback: number) => (Number.isFinite(v) ? v : fallback);
+    const s = this.settings;
+    const d = parsed.distortion;
+    s.distortion.mode = d.mode === 'spline' ? 'spline' : 'k1k2';
+    s.distortion.perEye = !!d.perEye;
+    s.distortion.perAxis = !!d.perAxis;
+    const parsePoints = (arr: any) => Array.isArray(arr)
+      ? arr.filter((p: any) => Number.isFinite(p?.r) && Number.isFinite(p?.scale)).map((p: any) => ({ r: p.r, scale: p.scale }))
+      : [];
+    s.distortion.points = parsePoints(d.points);
+    s.distortion.curves = {};
+    if (d.curves && typeof d.curves === 'object') {
+      for (const key of Object.keys(d.curves)) {
+        const c = d.curves[key];
+        s.distortion.curves[key] = { k1: num(c?.k1, 0), k2: num(c?.k2, 0), points: parsePoints(c?.points) };
+      }
+    }
+    s.k1 = num(parsed.k1, 0);
+    s.k2 = num(parsed.k2, 0);
+    s.centerOffsetXLeft = num(parsed.centerOffsetXLeft, 0);
+    s.centerOffsetXRight = num(parsed.centerOffsetXRight, 0);
+    s.centerOffsetY = num(parsed.centerOffsetY, 0);
+    this.save();
+    this.shareStatus.set('Profile applied' + (parsed.name ? ': ' + parsed.name : '.'));
   }
 
   onMatrixTextChanged(text: string) {

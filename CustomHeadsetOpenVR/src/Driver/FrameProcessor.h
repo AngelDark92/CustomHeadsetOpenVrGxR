@@ -23,6 +23,8 @@ struct FrameProcessSettings{
 	// false while dashboard is open (compositor shader already applies the color
 	// adjustments to the flattened scene in that state). does not gate cas/dither.
 	bool applyColor = true;
+	// stationary dimming factor, 0 bright to 1 black, applied after everything
+	double dimAmount = 0;
 };
 
 #ifdef _WIN32
