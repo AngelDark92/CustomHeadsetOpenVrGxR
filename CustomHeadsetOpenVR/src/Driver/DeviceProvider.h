@@ -73,6 +73,12 @@ private:
 		double lastPos[3] = {0, 0, 0};
 		double lastSampleTime = 0;
 		double fdSpeedEma = 0;
+		// quaternion-derived angular speed, same idea as fdSpeed: compare
+		// against the driver's reported |w| to see if angular velocity is
+		// smoothed the same way linear velocity is
+		bool haveQuat = false;
+		vr::HmdQuaternion_t lastQuat = {1, 0, 0, 0};
+		double fdAngSpeedEma = 0;
 	};
 	std::map<uint32_t, PoseLogState> poseLogStates = {};
 	std::mutex poseLogLock = {};
@@ -97,4 +103,7 @@ private:
 	std::map<uint32_t, VelFixState> velFixStates = {};
 	// returns true and writes the derived velocity when the window is usable
 	bool DeriveVelocity(uint32_t openVRID, const vr::DriverPose_t &pose, double derived[3]);
+	// cached device classes (Prop_DeviceClass_Int32), resolved on first pose
+	std::map<uint32_t, int> deviceClasses = {};
+	int GetDeviceClass(uint32_t openVRID);
 };

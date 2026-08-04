@@ -488,6 +488,24 @@ void ConfigLoader::ParseConfig(){
 				newConfig.streamFrame.syncTimeoutMs = streamFrameData["syncTimeoutMs"].get<int>();
 			}
 		}
+		if(data["controllers"].is_object()){
+			json controllersData = data["controllers"];
+			const char* axes[3] = {"x", "y", "z"};
+			if(controllersData["rotationOffsetDeg"].is_object()){
+				for(int i = 0; i < 3; i++){
+					if(controllersData["rotationOffsetDeg"][axes[i]].is_number()){
+						newConfig.controllers.rotationOffsetDeg[i] = controllersData["rotationOffsetDeg"][axes[i]].get<double>();
+					}
+				}
+			}
+			if(controllersData["positionOffsetCm"].is_object()){
+				for(int i = 0; i < 3; i++){
+					if(controllersData["positionOffsetCm"][axes[i]].is_number()){
+						newConfig.controllers.positionOffsetCm[i] = controllersData["positionOffsetCm"][axes[i]].get<double>();
+					}
+				}
+			}
+		}
 		if(data["forceTracking"].is_boolean()){
 			newConfig.forceTracking = data["forceTracking"].get<bool>();
 		}
@@ -692,6 +710,18 @@ void ConfigLoader::WriteInfo(){
 				}},
 			}},
 			{"forceTracking", defaultSettings.forceTracking},
+			{"controllers", {
+				{"rotationOffsetDeg", {
+					{"x", defaultSettings.controllers.rotationOffsetDeg[0]},
+					{"y", defaultSettings.controllers.rotationOffsetDeg[1]},
+					{"z", defaultSettings.controllers.rotationOffsetDeg[2]},
+				}},
+				{"positionOffsetCm", {
+					{"x", defaultSettings.controllers.positionOffsetCm[0]},
+					{"y", defaultSettings.controllers.positionOffsetCm[1]},
+					{"z", defaultSettings.controllers.positionOffsetCm[2]},
+				}},
+			}},
 			{"streamFrame", {
 				{"enable", defaultSettings.streamFrame.enable},
 				{"saturation", defaultSettings.streamFrame.saturation},

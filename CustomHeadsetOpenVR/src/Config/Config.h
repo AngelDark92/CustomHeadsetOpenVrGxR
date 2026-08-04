@@ -172,6 +172,16 @@ struct StreamFrameConfig{
 	bool poseLogging = false;
 };
 
+// pose adjustments for streamed controllers, applied in the PoseUpdated hook.
+// rotation is a local frame euler offset in degrees (x = pitch: positive
+// tilts the top of the controller back toward the user), position is a local
+// frame offset in cm. lets the grip/aim angle be matched to what games
+// expect from other controller types. live reloaded.
+struct ControllersConfig{
+	double rotationOffsetDeg[3] = {0, 0, 0};
+	double positionOffsetCm[3] = {0, 0, 0};
+};
+
 struct CustomShaderConfig{
 	// if shaders should be replaced in the compositor
 	bool enable = false;
@@ -403,6 +413,9 @@ public:
 	// headsets whose driver composites frames itself, where the compositor
 	// shader replacement only runs while the dashboard is open.
 	StreamFrameConfig streamFrame = {};
+	
+	// streamed controller pose adjustments
+	ControllersConfig controllers = {};
 	
 	// if devices should always be reported as tracking
 	bool forceTracking = false;
