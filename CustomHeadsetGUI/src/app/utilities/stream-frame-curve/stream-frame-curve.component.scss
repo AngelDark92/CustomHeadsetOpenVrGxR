@@ -4,17 +4,22 @@
     display: flex;
     flex-direction: column;
     gap: 0.5rem;
+    // keep the editor a sane width: without this the column flex container
+    // stretches the plot canvas to the full window width on wide windows
+    max-width: 42rem;
 
     canvas {
         background-color: var(--mat-sys-surface-container-high);
         border: 0.1rem solid var(--mat-sys-outline);
         border-radius: 0.25rem;
+        align-self: flex-start;
+        width: 100%;
         max-width: 100%;
         touch-action: none;
     }
 
     .preview {
-        align-self: flex-start;
+        width: auto;
     }
 
     .curve-tabs button.active-tab {
