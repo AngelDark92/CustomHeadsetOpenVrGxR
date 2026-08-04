@@ -16,6 +16,7 @@ I'll only list the changes added here. The GxR handling uses a separate shader, 
 4. Distortion profile adjustments
    a. Unlike what the software does for the meganex, the galaxy xr owns it's own distortion profile. But we can still modify it by pre perturbing the image before handing it off
    b. Currently supports the same scope of modifications as the existing profile creator, just applied as a delta profile instead of a full distortion profile
+5. You can now export and import distortion delta profiles for easy sharing. 
 
 
 ## Installing
