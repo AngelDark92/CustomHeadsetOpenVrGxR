@@ -139,9 +139,6 @@ export class StreamFrameCurveComponent implements AfterViewInit {
     }
     return 1 + (s - 1) * exaggeration;
   }
-  private scaleAt(r: number, exaggeration: number): number {
-    return this.scaleAtCurve(this.activeCurve(false), r, exaggeration);
-  }
   private rawScale(curve: StreamFrameCurveData, r: number): number {
     const cfg = this.settings();
     if (cfg.distortion.mode === 'spline') {
@@ -173,16 +170,6 @@ export class StreamFrameCurveComponent implements AfterViewInit {
     }
     return 1 + (s - 1) * exaggeration;
   }
-  // a source point at radius rs appears at radius r solving r*s(r)=rs
-  private invertRadial(rs: number, exaggeration: number): number {
-    if (rs <= 0) return 0;
-    let lo = 0, hi = 2.0;
-    for (let i = 0; i < 40; i++) {
-      const mid = (lo + hi) / 2;
-      if (mid * this.scaleAt(mid, exaggeration) < rs) lo = mid; else hi = mid;
-    }
-    return (lo + hi) / 2;
-  }
 
   // ---- coordinate mapping for the curve plot ----
   private toX(r: number, w: number) { return r * w; }
@@ -202,8 +189,6 @@ export class StreamFrameCurveComponent implements AfterViewInit {
     const w = canvas.width, h = canvas.height;
     ctx.clearRect(0, 0, w, h);
     const cfg = this.settings();
-    const style = getComputedStyle(canvas);
-    const fg = style.getPropertyValue('color') || '#ccc';
 
     // annulus band
     const an = cfg.distortion.annulus;
@@ -251,7 +236,6 @@ export class StreamFrameCurveComponent implements AfterViewInit {
         ctx.fill();
       }
     }
-    void fg;
   }
 
   private drawPreview() {

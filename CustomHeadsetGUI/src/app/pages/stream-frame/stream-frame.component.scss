@@ -9,6 +9,10 @@
         padding: 0.5rem 0;
     }
 
+    .warning-note {
+        color: var(--mat-sys-error);
+    }
+
     .rgb-control {
         display: flex;
         align-items: center;

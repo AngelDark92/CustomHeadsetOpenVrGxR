@@ -16,6 +16,12 @@
 
 @if(settings.enable){
 
+@if(customShaderConflict()){
+<div class="field">
+    <div class="note warning-note">The Custom Shader is also enabled with color adjustments for this headset. While the dashboard is open its adjustments stack with these, changing the image. Recommended setup for streamed headsets: disable the Custom Shader (or set its values to neutral) and use only this page.</div>
+</div>
+}
+
 <div class="field">
     <div class="section-title"><span>Color</span></div>
 </div>

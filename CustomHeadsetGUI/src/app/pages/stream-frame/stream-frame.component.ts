@@ -102,6 +102,17 @@ export class StreamFrameComponent {
     });
   }
 
+  // custom shader also applying color to streamed frames while the dashboard is
+  // open causes double application and the "works only with dashboard" confusion
+  customShaderConflict(): boolean {
+    const cs = this.rootSetting?.customShader;
+    const sf = this.settings;
+    if (!cs || !sf || !sf.enable) return false;
+    if (!cs.enable || !cs.enableForOther) return false;
+    if (sf.skipColorWhileDashboardOpen) return false;
+    return (cs as any).saturation !== 50 || cs.contrast !== 50;
+  }
+
   save() {
     if (this.rootSetting) {
       this.dss.save(this.rootSetting);

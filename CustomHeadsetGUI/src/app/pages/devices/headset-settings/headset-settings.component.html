@@ -138,7 +138,7 @@
       <app-field-tip i18n-info info="Displays information about the resolution SteamVR will be run at and what the optimal resolution is. Settings like fov will affect this. This will only be updated while the headset is actively running under this driver." />
     </div>
     <div class="control">
-      @if(headsetMatches() && steamVRRunning()?.running && dis.values(); as info) {
+      @if(headsetMatches() && steamVRRunning()!.running && dis.values(); as info) {
         @if(info.resolution; as res) {
           @if(res.fovX) {
             @if(res.combinedFovX) {
