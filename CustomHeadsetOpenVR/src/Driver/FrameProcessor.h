@@ -59,6 +59,9 @@ private:
 
 	std::mutex lock;
 	bool deviceFailed = false;
+	// consecutive frames skipped on sync acquire timeout, drives the
+	// escalating timeout that breaks flash streaks under load
+	int consecutiveSyncSkips = 0;
 
 	ID3D11Device* device = nullptr;
 	ID3D11DeviceContext* context = nullptr;

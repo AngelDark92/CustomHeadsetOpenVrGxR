@@ -770,12 +770,28 @@ bool FrameProcessor::ProcessSceneLayer(vr::SharedTextureHandle_t leftEye, vr::Sh
 		PROCESSOR_ERROR("FrameProcessor: sync texture has no keyed mutex, skipping processing");
 		return false;
 	}
-	HRESULT hr = mutex->AcquireSync(0, 5);
+	// base timeout from config; after a skipped frame escalate so a transient
+	// long hold costs one flash instead of a visible streak of them. clamped
+	// to keep a misconfigured value from stalling the pipeline.
+	int baseTimeout = settings.config.syncTimeoutMs;
+	if(baseTimeout < 1){ baseTimeout = 1; }
+	if(baseTimeout > 100){ baseTimeout = 100; }
+	uint32_t timeout = (uint32_t)baseTimeout;
+	if(consecutiveSyncSkips > 0){
+		uint32_t escalated = (uint32_t)baseTimeout * 3;
+		timeout = escalated < 15 ? 15 : escalated;
+	}
+	HRESULT hr = mutex->AcquireSync(0, timeout);
 	if(hr != S_OK){
 		// timeout or abandoned: skip this frame rather than stall the pipeline
+		consecutiveSyncSkips++;
 		mutex->Release();
-		PROCESSOR_ERROR("FrameProcessor: AcquireSync returned 0x%08X, skipping frame", (unsigned)hr);
+		PROCESSOR_ERROR("FrameProcessor: AcquireSync returned 0x%08X, skipping frame (%d consecutive)", (unsigned)hr, consecutiveSyncSkips);
 		return false;
+	}
+	if(consecutiveSyncSkips > 0){
+		DriverLog("FrameProcessor: sync recovered after %d skipped frames", consecutiveSyncSkips);
+		consecutiveSyncSkips = 0;
 	}
 
 	bool ok = true;

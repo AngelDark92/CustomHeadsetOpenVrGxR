@@ -481,6 +481,9 @@ void ConfigLoader::ParseConfig(){
 			if(streamFrameData["poseLogging"].is_boolean()){
 				newConfig.streamFrame.poseLogging = streamFrameData["poseLogging"].get<bool>();
 			}
+			if(streamFrameData["syncTimeoutMs"].is_number()){
+				newConfig.streamFrame.syncTimeoutMs = streamFrameData["syncTimeoutMs"].get<int>();
+			}
 		}
 		if(data["forceTracking"].is_boolean()){
 			newConfig.forceTracking = data["forceTracking"].get<bool>();
@@ -732,6 +735,7 @@ void ConfigLoader::WriteInfo(){
 				{"skipColorWhileDashboardOpen", defaultSettings.streamFrame.skipColorWhileDashboardOpen},
 				{"processAtSubmitLayer", defaultSettings.streamFrame.processAtSubmitLayer},
 				{"poseLogging", defaultSettings.streamFrame.poseLogging},
+				{"syncTimeoutMs", defaultSettings.streamFrame.syncTimeoutMs},
 			}},
 			{"takeCompositorScreenshots", defaultSettings.takeCompositorScreenshots},
 			{"onlyHandlePrivateFunctionality", defaultSettings.onlyHandlePrivateFunctionality},

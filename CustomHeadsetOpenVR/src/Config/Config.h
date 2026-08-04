@@ -151,6 +151,12 @@ struct StreamFrameConfig{
 	// instead of during Present. try this if Present time processing has no
 	// visible effect because the driver already consumes the layer at submit.
 	bool processAtSubmitLayer = false;
+	// keyed mutex acquire timeout for the frame sync texture, in ms. when it
+	// expires the frame passes through unprocessed (a visible "flash" of
+	// ungraded color), which happens under heavy load (shader compilation,
+	// level streaming). after a skip the timeout escalates (3x, min 15ms) to
+	// break flash streaks, and resets on the next acquired frame.
+	int syncTimeoutMs = 5;
 	// diagnostic: throttle-log controller/tracker poses from the PoseUpdated
 	// hook (position, velocity, tracking result), with a burst mode that
 	// captures high-velocity moments (throws). live-reloaded, so it can be
