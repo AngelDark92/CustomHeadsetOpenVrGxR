@@ -53,9 +53,17 @@ export type StreamFrameAnnulusConfig = {
   rMax: number;
   feather: number;
 };
+export type StreamFrameCurveData = {
+  k1: number;
+  k2: number;
+  points: StreamFrameDistortionPoint[];
+};
 export type StreamFrameDistortionConfig = {
   mode: string;
   points: StreamFrameDistortionPoint[];
+  perEye: boolean;
+  perAxis: boolean;
+  curves: { [key: string]: StreamFrameCurveData };
   annulus: StreamFrameAnnulusConfig;
 };
 export type StreamFrameCASConfig = {

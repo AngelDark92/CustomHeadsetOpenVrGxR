@@ -35,6 +35,10 @@ cbuffer Params : register(b0){
 	float4 matR;           // rows of the 3x3 linear rgb color matrix
 	float4 matG;
 	float4 matB;
+	float lutRowBase;      // first lut row for this eye (rows: eye major, axis minor)
+	float lutRowCount;     // total rows in the lut texture (1, 2 or 4)
+	float perAxisEnable;   // blend a horizontal and a vertical curve around the ring
+	float pad2;
 };
 Texture2D<float4> tex : register(t0);
 Texture2D<float4> lut : register(t1);
@@ -63,14 +67,28 @@ float4 SampleWarped(float2 uvSrcNorm){
 	return tex.SampleLevel(samp, uvSrcNorm * boundsSize + boundsMin, 0);
 }
 
+// sample one curve row of the lut. row centers avoid bleed between curves.
+float SampleLutRow(float u, float row){
+	return lut.SampleLevel(samp, float2(u, (row + 0.5) / lutRowCount), 0).x;
+}
+
 float4 main(float4 pos : SV_Position, float2 uv : TEXCOORD0) : SV_Target0{
 	// the viewport covers exactly the bounds region, so uv is already bounds normalized
 	// ---- distortion resample ----
 	float2 p = uv - center;
 	p.y *= aspect;
 	float r = length(p);
-	// radial scale from the baked curve (k1k2 polynomial or spline)
-	float s = lut.SampleLevel(samp, float2(r / lutMaxR, 0.5), 0).x;
+	// radial scale from the baked curve rows (k1k2 polynomial or spline).
+	// per axis blends the horizontal and vertical curves by the squared cosine
+	// of the ring angle, giving an elliptic correction.
+	float u = r / lutMaxR;
+	float s;
+	if(perAxisEnable > 0.5){
+		float wH = (p.x * p.x) / max(dot(p, p), 1e-9);
+		s = SampleLutRow(u, lutRowBase) * wH + SampleLutRow(u, lutRowBase + 1) * (1.0 - wH);
+	}else{
+		s = SampleLutRow(u, lutRowBase);
+	}
 	if(annulusEnable > 0.5){
 		// diagnostic band: only apply the displacement within [annulusMin, annulusMax],
 		// feathered so the mask boundary squashes smoothly instead of shearing

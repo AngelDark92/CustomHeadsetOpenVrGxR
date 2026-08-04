@@ -168,7 +168,26 @@
     </div>
 </div>
 
-@if(settings.distortion.mode == 'k1k2'){
+<div class="field">
+    <div class="title">
+        <span>Per Eye Curves</span>
+        <app-field-tip info="Separate correction curves for the left and right eye. Existing curve is copied to both eyes as a starting point." />
+    </div>
+    <div class="control">
+        <mat-slide-toggle [(ngModel)]="settings.distortion.perEye" (ngModelChange)="save()"></mat-slide-toggle>
+    </div>
+</div>
+<div class="field">
+    <div class="title">
+        <span>Per Axis Curves</span>
+        <app-field-tip info="Separate horizontal and vertical curves blended around the ring, capturing elliptic error such as lens tilt. Existing curve is copied to both axes as a starting point." />
+    </div>
+    <div class="control">
+        <mat-slide-toggle [(ngModel)]="settings.distortion.perAxis" (ngModelChange)="save()"></mat-slide-toggle>
+    </div>
+</div>
+
+@if(settings.distortion.mode == 'k1k2' && !settings.distortion.perEye && !settings.distortion.perAxis){
 <div class="field">
     <div class="title">
         <span>k1</span>
@@ -240,7 +259,7 @@
 <div class="field">
     <div class="title">
         <span>Skip Color While Dashboard Open</span>
-        <app-field-tip info="Avoids the color adjustments being applied twice while the custom shader also processes the flattened scene with the dashboard open. Turn this off if the custom shader is disabled or neutral." />
+        <app-field-tip info="Only needed if the custom shader is also enabled with color adjustments: avoids applying them twice while the dashboard is open. Recommended setup for streamed headsets is custom shader off and this off." />
         <app-reset-button [canReset]="settings.skipColorWhileDashboardOpen != defaults.skipColorWhileDashboardOpen" (resetClick)="reset('skipColorWhileDashboardOpen')"></app-reset-button>
     </div>
     <div class="control">

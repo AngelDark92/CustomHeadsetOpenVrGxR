@@ -3,7 +3,7 @@ import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { MatButtonModule } from '@angular/material/button';
 import { MatSelectModule } from '@angular/material/select';
-import { StreamFrameConfig, StreamFrameDistortionPoint } from '../../services/JsonFileDefines';
+import { StreamFrameConfig, StreamFrameCurveData, StreamFrameDistortionPoint } from '../../services/JsonFileDefines';
 import { DriverSettingService } from '../../services/driver-setting.service';
 
 // math mirrored from FrameProcessor.cpp / vrlink_layer_ps.hlsl / streamframe-visualizer.html
@@ -51,6 +51,15 @@ export class StreamFrameCurveComponent implements AfterViewInit {
   scaleRangeOptions = [0.01, 0.02, 0.05, 0.1, 0.2];
   exaggeration = signal(8);
 
+  // which curve is being edited: 'base' or a named per eye / per axis curve
+  curveKey = signal('base');
+  curveLabels: { [key: string]: string | undefined } = {
+    base: 'Curve', left: 'Left eye', right: 'Right eye',
+    horizontal: 'Horizontal', vertical: 'Vertical',
+    leftHorizontal: 'Left / horizontal', leftVertical: 'Left / vertical',
+    rightHorizontal: 'Right / horizontal', rightVertical: 'Right / vertical'
+  };
+
   private dragIndex = -1;
   private viewReady = false;
 
@@ -71,17 +80,92 @@ export class StreamFrameCurveComponent implements AfterViewInit {
     this.draw();
   }
 
+  // ---- curve selection ----
+  curveKeys(): string[] {
+    const d = this.settings().distortion;
+    if (d.perEye && d.perAxis) return ['leftHorizontal', 'leftVertical', 'rightHorizontal', 'rightVertical'];
+    if (d.perEye) return ['left', 'right'];
+    if (d.perAxis) return ['horizontal', 'vertical'];
+    return ['base'];
+  }
+  // the storage behind a curve key. 'base' lives at the legacy locations,
+  // named curves are seeded from the base curve on first access.
+  curveData(key: string, seed: boolean): StreamFrameCurveData {
+    const cfg = this.settings();
+    if (key === 'base') {
+      // facade over the legacy storage so all code paths look the same
+      const self = this;
+      return {
+        get k1() { return cfg.k1; }, set k1(v: number) { cfg.k1 = v; void self; },
+        get k2() { return cfg.k2; }, set k2(v: number) { cfg.k2 = v; },
+        get points() { return cfg.distortion.points; }, set points(v) { cfg.distortion.points = v; }
+      } as StreamFrameCurveData;
+    }
+    if (!cfg.distortion.curves) cfg.distortion.curves = {};
+    let curve = cfg.distortion.curves[key];
+    if (!curve && seed) {
+      curve = {
+        k1: cfg.k1, k2: cfg.k2,
+        points: JSON.parse(JSON.stringify(cfg.distortion.points))
+      };
+      cfg.distortion.curves[key] = curve;
+    }
+    return curve ?? { k1: cfg.k1, k2: cfg.k2, points: cfg.distortion.points };
+  }
+  activeCurve(seed = true): StreamFrameCurveData {
+    // keep the selected key valid when toggles change
+    const keys = this.curveKeys();
+    if (!keys.includes(this.curveKey())) {
+      this.curveKey.set(keys[0]);
+    }
+    return this.curveData(this.curveKey(), seed);
+  }
+
   // ---- shared curve math (annulus + exaggeration applied for the preview only) ----
-  private scaleAt(r: number, exaggeration: number): number {
+  private scaleAtCurve(curve: StreamFrameCurveData, r: number, exaggeration: number): number {
     const cfg = this.settings();
     let s: number;
     if (cfg.distortion.mode === 'spline') {
-      const points = [...cfg.distortion.points].sort((a, b) => a.r - b.r);
+      const points = [...curve.points].sort((a, b) => a.r - b.r);
       s = evaluateCurve(points, r);
     } else {
-      s = 1 + (cfg.k1 || 0) * r * r + (cfg.k2 || 0) * r * r * r * r;
+      s = 1 + (curve.k1 || 0) * r * r + (curve.k2 || 0) * r * r * r * r;
     }
     const an = cfg.distortion.annulus;
+    if (an?.enable) {
+      const f = an.feather ?? 0.05;
+      const w = smoothstep(an.rMin - f, an.rMin + f, r) * (1 - smoothstep(an.rMax - f, an.rMax + f, r));
+      s = 1 + (s - 1) * w;
+    }
+    return 1 + (s - 1) * exaggeration;
+  }
+  private scaleAt(r: number, exaggeration: number): number {
+    return this.scaleAtCurve(this.activeCurve(false), r, exaggeration);
+  }
+  private rawScale(curve: StreamFrameCurveData, r: number): number {
+    const cfg = this.settings();
+    if (cfg.distortion.mode === 'spline') {
+      const points = [...curve.points].sort((a, b) => a.r - b.r);
+      return evaluateCurve(points, r);
+    }
+    return 1 + (curve.k1 || 0) * r * r + (curve.k2 || 0) * r * r * r * r;
+  }
+  // the full directional field for the preview: per axis blends the horizontal
+  // and vertical curves of the previewed eye by the squared direction cosine,
+  // exactly like the shader, then applies annulus and exaggeration
+  private directionalScale(r: number, wH: number, exaggeration: number): number {
+    const cfg = this.settings();
+    const d = cfg.distortion;
+    let s: number;
+    if (d.perAxis) {
+      const eyePrefix = d.perEye ? (this.curveKey().startsWith('right') ? 'right' : 'left') : '';
+      const hKey = eyePrefix ? eyePrefix + 'Horizontal' : 'horizontal';
+      const vKey = eyePrefix ? eyePrefix + 'Vertical' : 'vertical';
+      s = this.rawScale(this.curveData(hKey, false), r) * wH + this.rawScale(this.curveData(vKey, false), r) * (1 - wH);
+    } else {
+      s = this.rawScale(this.activeCurve(false), r);
+    }
+    const an = d.annulus;
     if (an?.enable) {
       const f = an.feather ?? 0.05;
       const w = smoothstep(an.rMin - f, an.rMin + f, r) * (1 - smoothstep(an.rMax - f, an.rMax + f, r));
@@ -136,18 +220,31 @@ export class StreamFrameCurveComponent implements AfterViewInit {
     ctx.fillText('s=' + (1 - this.scaleRange()).toFixed(3), 4, h - 4);
     ctx.fillText('r=0', 2, this.toY(1, h) + 14);
     ctx.fillText('r=1', w - 28, this.toY(1, h) + 14);
-    // curve
+    // sibling curves dimmed for comparison, active curve bright on top
+    const activeKey = this.curveKey();
+    for (const key of this.curveKeys()) {
+      if (key === activeKey) continue;
+      const curve = this.curveData(key, false);
+      ctx.strokeStyle = 'rgba(95, 159, 223, 0.3)'; ctx.lineWidth = 1; ctx.beginPath();
+      for (let i = 0; i <= 300; i++) {
+        const r = i / 300;
+        const y = this.toY(this.scaleAtCurve(curve, r, 1), h);
+        if (i === 0) ctx.moveTo(this.toX(r, w), y); else ctx.lineTo(this.toX(r, w), y);
+      }
+      ctx.stroke();
+    }
+    const active = this.activeCurve(false);
     ctx.strokeStyle = '#5f9fdf'; ctx.lineWidth = 2; ctx.beginPath();
     for (let i = 0; i <= 300; i++) {
       const r = i / 300;
-      const y = this.toY(this.scaleAt(r, 1), h);
+      const y = this.toY(this.scaleAtCurve(active, r, 1), h);
       if (i === 0) ctx.moveTo(this.toX(r, w), y); else ctx.lineTo(this.toX(r, w), y);
     }
     ctx.stroke(); ctx.lineWidth = 1;
     // control points in spline mode
     if (cfg.distortion.mode === 'spline') {
-      for (let i = 0; i < cfg.distortion.points.length; i++) {
-        const pt = cfg.distortion.points[i];
+      for (let i = 0; i < active.points.length; i++) {
+        const pt = active.points[i];
         ctx.fillStyle = i === this.dragIndex ? '#ffe9a0' : '#e8b64c';
         ctx.beginPath();
         ctx.arc(this.toX(pt.r, w), this.toY(pt.scale, h), 5, 0, Math.PI * 2);
@@ -170,7 +267,14 @@ export class StreamFrameCurveComponent implements AfterViewInit {
       const px = qx - cx, py = qy - cy;
       const rs = Math.hypot(px, py);
       if (rs < 1e-6) return [qx, qy];
-      const r = this.invertRadial(rs, ex);
+      // blend weight is constant along a ray, so the inversion stays 1d
+      const wH = (px * px) / Math.max(px * px + py * py, 1e-12);
+      let lo = 0, hi = 2.0;
+      for (let i = 0; i < 40; i++) {
+        const mid = (lo + hi) / 2;
+        if (mid * this.directionalScale(mid, wH, ex) < rs) lo = mid; else hi = mid;
+      }
+      const r = (lo + hi) / 2;
       const f = r / rs;
       return [cx + px * f, cy + py * f];
     };
@@ -201,8 +305,9 @@ export class StreamFrameCurveComponent implements AfterViewInit {
     const cfg = this.settings();
     if (cfg.distortion.mode !== 'spline') return -1;
     const canvas = this.curveCanvas().nativeElement;
-    for (let i = 0; i < cfg.distortion.points.length; i++) {
-      const pt = cfg.distortion.points[i];
+    const points = this.activeCurve(false).points;
+    for (let i = 0; i < points.length; i++) {
+      const pt = points[i];
       const dx = this.toX(pt.r, canvas.width) - x, dy = this.toY(pt.scale, canvas.height) - y;
       if (dx * dx + dy * dy < 100) return i;
     }
@@ -218,10 +323,9 @@ export class StreamFrameCurveComponent implements AfterViewInit {
   }
   onPointerMove(event: PointerEvent) {
     if (this.dragIndex < 0) return;
-    const cfg = this.settings();
     const canvas = this.curveCanvas().nativeElement;
     const [x, y] = this.canvasPos(event);
-    const pt = cfg.distortion.points[this.dragIndex];
+    const pt = this.activeCurve().points[this.dragIndex];
     if (!pt) { this.dragIndex = -1; return; }
     pt.r = Math.round(this.fromX(x, canvas.width) * 1000) / 1000;
     pt.scale = Math.round(this.fromY(y, canvas.height) * 100000) / 100000;
@@ -231,8 +335,7 @@ export class StreamFrameCurveComponent implements AfterViewInit {
   onPointerUp(event: PointerEvent) {
     if (this.dragIndex < 0) return;
     this.dragIndex = -1;
-    const cfg = this.settings();
-    cfg.distortion.points.sort((a, b) => a.r - b.r);
+    this.activeCurve().points.sort((a, b) => a.r - b.r);
     this.changed.emit();
     this.draw();
     void event;
@@ -242,11 +345,12 @@ export class StreamFrameCurveComponent implements AfterViewInit {
     if (cfg.distortion.mode !== 'spline') return;
     const canvas = this.curveCanvas().nativeElement;
     const [x, y] = this.canvasPos(event);
-    cfg.distortion.points.push({
+    const points = this.activeCurve().points;
+    points.push({
       r: Math.round(this.fromX(x, canvas.width) * 1000) / 1000,
       scale: Math.round(this.fromY(y, canvas.height) * 100000) / 100000
     });
-    cfg.distortion.points.sort((a, b) => a.r - b.r);
+    points.sort((a, b) => a.r - b.r);
     this.changed.emit();
     this.draw();
   }
@@ -257,7 +361,7 @@ export class StreamFrameCurveComponent implements AfterViewInit {
     const [x, y] = this.canvasPos(event);
     const index = this.hitTest(x, y);
     if (index >= 0) {
-      cfg.distortion.points.splice(index, 1);
+      this.activeCurve().points.splice(index, 1);
       this.changed.emit();
       this.draw();
     }
@@ -265,10 +369,11 @@ export class StreamFrameCurveComponent implements AfterViewInit {
 
   convertK1K2ToSpline() {
     const cfg = this.settings();
+    const curve = this.activeCurve();
     const radii = [0, 0.15, 0.3, 0.45, 0.6, 0.75, 0.9];
-    cfg.distortion.points = radii.map(r => ({
+    curve.points = radii.map(r => ({
       r,
-      scale: Math.round((1 + cfg.k1 * r * r + cfg.k2 * r * r * r * r) * 100000) / 100000
+      scale: Math.round((1 + curve.k1 * r * r + curve.k2 * r * r * r * r) * 100000) / 100000
     }));
     cfg.distortion.mode = 'spline';
     this.changed.emit();
@@ -276,11 +381,12 @@ export class StreamFrameCurveComponent implements AfterViewInit {
   }
   resetCurve() {
     const cfg = this.settings();
+    const curve = this.activeCurve();
     if (cfg.distortion.mode === 'spline') {
-      cfg.distortion.points = [{ r: 0, scale: 1 }, { r: 0.4, scale: 1 }, { r: 0.8, scale: 1 }];
+      curve.points = [{ r: 0, scale: 1 }, { r: 0.4, scale: 1 }, { r: 0.8, scale: 1 }];
     } else {
-      cfg.k1 = 0;
-      cfg.k2 = 0;
+      curve.k1 = 0;
+      curve.k2 = 0;
     }
     this.changed.emit();
     this.draw();

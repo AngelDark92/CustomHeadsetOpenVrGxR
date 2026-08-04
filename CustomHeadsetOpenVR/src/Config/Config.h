@@ -1,6 +1,7 @@
 #pragma once
 #include <string>
 #include <vector>
+#include <map>
 #include <mutex>
 #include <tuple>
 
@@ -62,12 +63,29 @@ struct StreamFrameAnnulusConfig{
 	double feather = 0.05;
 };
 
-struct StreamFrameDistortionConfig{
-	// "k1k2" evaluates 1 + k1 r^2 + k2 r^4 from the top level k1/k2 values,
-	// "spline" interpolates the points list
-	std::string mode = "k1k2";
-	// spline control points, sorted by r internally. flat outside the range.
+// one distortion curve: k1/k2 polynomial coefficients and/or spline points,
+// which of the two is evaluated follows the global distortion mode
+struct StreamFrameCurve{
+	double k1 = 0;
+	double k2 = 0;
 	std::vector<StreamFrameDistortionPoint> points = {};
+};
+
+struct StreamFrameDistortionConfig{
+	// "k1k2" evaluates 1 + k1 r^2 + k2 r^4, "spline" interpolates the points
+	std::string mode = "k1k2";
+	// spline control points of the base curve, sorted by r internally. flat
+	// outside the range. the base k1/k2 live at the streamFrame top level.
+	std::vector<StreamFrameDistortionPoint> points = {};
+	// separate curves per eye and/or per axis. per axis blends a horizontal and
+	// a vertical curve around the ring, capturing elliptic/astigmatic error.
+	bool perEye = false;
+	bool perAxis = false;
+	// named curves used when the toggles are active. expected keys:
+	// perEye: "left", "right". perAxis: "horizontal", "vertical".
+	// both: "leftHorizontal", "leftVertical", "rightHorizontal", "rightVertical".
+	// a missing key falls back to the base curve.
+	std::map<std::string, StreamFrameCurve> curves = {};
 	StreamFrameAnnulusConfig annulus = {};
 };
 
@@ -107,10 +125,12 @@ struct StreamFrameConfig{
 	double centerOffsetXLeft = 0;
 	double centerOffsetXRight = 0;
 	double centerOffsetY = 0;
-	// skip the color adjustment while the dashboard is open, because the
-	// compositor shader replacement already applies it to the flattened scene
-	// in that state and it would be applied twice. does not affect cas/dither.
-	bool skipColorWhileDashboardOpen = true;
+	// skip the color adjustment while the dashboard is open, in case the
+	// compositor shader replacement also applies it to the flattened scene in
+	// that state. off by default: the recommended setup is to leave the custom
+	// shader disabled or neutral for streamed headsets and let this pass be the
+	// single source of truth in every state. does not affect cas/dither.
+	bool skipColorWhileDashboardOpen = false;
 	// process during SubmitLayer (using the previous frame's sync texture)
 	// instead of during Present. try this if Present time processing has no
 	// visible effect because the driver already consumes the layer at submit.

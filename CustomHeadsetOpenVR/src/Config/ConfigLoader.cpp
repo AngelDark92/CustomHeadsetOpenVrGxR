@@ -391,6 +391,38 @@ void ConfigLoader::ParseConfig(){
 						}
 					}
 				}
+				if(distortionData["perEye"].is_boolean()){
+					newConfig.streamFrame.distortion.perEye = distortionData["perEye"].get<bool>();
+				}
+				if(distortionData["perAxis"].is_boolean()){
+					newConfig.streamFrame.distortion.perAxis = distortionData["perAxis"].get<bool>();
+				}
+				if(distortionData["curves"].is_object()){
+					newConfig.streamFrame.distortion.curves.clear();
+					for(auto &curveItem : distortionData["curves"].items()){
+						if(!curveItem.value().is_object()){
+							continue;
+						}
+						StreamFrameCurve curve;
+						if(curveItem.value()["k1"].is_number()){
+							curve.k1 = curveItem.value()["k1"].get<double>();
+						}
+						if(curveItem.value()["k2"].is_number()){
+							curve.k2 = curveItem.value()["k2"].get<double>();
+						}
+						if(curveItem.value()["points"].is_array()){
+							for(auto &pointData : curveItem.value()["points"]){
+								if(pointData.is_object() && pointData["r"].is_number() && pointData["scale"].is_number()){
+									StreamFrameDistortionPoint point;
+									point.r = pointData["r"].get<double>();
+									point.scale = pointData["scale"].get<double>();
+									curve.points.push_back(point);
+								}
+							}
+						}
+						newConfig.streamFrame.distortion.curves[curveItem.key()] = curve;
+					}
+				}
 				if(distortionData["annulus"].is_object()){
 					json annulusData = distortionData["annulus"];
 					if(annulusData["enable"].is_boolean()){
@@ -656,6 +688,9 @@ void ConfigLoader::WriteInfo(){
 				{"distortion", {
 					{"mode", defaultSettings.streamFrame.distortion.mode},
 					{"points", json::array()},
+					{"perEye", defaultSettings.streamFrame.distortion.perEye},
+					{"perAxis", defaultSettings.streamFrame.distortion.perAxis},
+					{"curves", json::object()},
 					{"annulus", {
 						{"enable", defaultSettings.streamFrame.distortion.annulus.enable},
 						{"rMin", defaultSettings.streamFrame.distortion.annulus.rMin},

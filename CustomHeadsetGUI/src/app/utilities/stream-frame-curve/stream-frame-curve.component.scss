@@ -17,6 +17,11 @@
         align-self: flex-start;
     }
 
+    .curve-tabs button.active-tab {
+        border-color: var(--mat-sys-primary);
+        color: var(--mat-sys-primary);
+    }
+
     .toolbar {
         display: flex;
         align-items: center;

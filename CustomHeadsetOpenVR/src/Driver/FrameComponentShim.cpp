@@ -95,16 +95,26 @@ bool DirectModeComponentShim::GetActiveSettings(FrameProcessSettings &settings, 
 		config.srgbMatrix.size() == 9);
 	// cas and dither are not affected by the dashboard gating
 	colorActive |= config.cas.enable || config.dither;
-	bool remapActive = false;
-	if(config.distortion.mode == "spline"){
-		for(const auto &point : config.distortion.points){
-			if(point.scale != 1.0){
+	bool spline = config.distortion.mode == "spline";
+	auto curveActive = [spline](double k1, double k2, const std::vector<StreamFrameDistortionPoint> &points){
+		if(spline){
+			for(const auto &point : points){
+				if(point.scale != 1.0){
+					return true;
+				}
+			}
+			return false;
+		}
+		return k1 != 0 || k2 != 0;
+	};
+	bool remapActive = curveActive(config.k1, config.k2, config.distortion.points);
+	if(config.distortion.perEye || config.distortion.perAxis){
+		for(const auto &pair : config.distortion.curves){
+			if(curveActive(pair.second.k1, pair.second.k2, pair.second.points)){
 				remapActive = true;
 				break;
 			}
 		}
-	}else{
-		remapActive = config.k1 != 0 || config.k2 != 0;
 	}
 	return config.enable && (colorActive || remapActive);
 }

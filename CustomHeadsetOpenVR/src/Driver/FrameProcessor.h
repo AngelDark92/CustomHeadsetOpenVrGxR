@@ -75,11 +75,10 @@ private:
 	bool BakeLutIfNeeded(const StreamFrameConfig &config);
 	ID3D11Texture2D* lutTexture = nullptr;
 	ID3D11ShaderResourceView* lutSRV = nullptr;
-	// copy of the settings the current lut was baked from, for change detection
-	std::string lastLutMode = "";
-	double lastLutK1 = 0;
-	double lastLutK2 = 0;
-	std::vector<StreamFrameDistortionPoint> lastLutPoints = {};
+	// serialized copy of the settings the current lut was baked from
+	std::string lastLutKey = "";
+	// number of curve rows in the lut texture (1, 2 or 4)
+	int lutRowCount = 1;
 	bool lutBaked = false;
 
 	// scratch textures, recreated when the layer size changes

@@ -31,12 +31,15 @@ function defaultStreamFrame(): StreamFrameConfig {
     distortion: {
       mode: 'k1k2',
       points: [],
+      perEye: false,
+      perAxis: false,
+      curves: {},
       annulus: { enable: false, rMin: 0, rMax: 0.75, feather: 0.05 }
     },
     centerOffsetXLeft: 0,
     centerOffsetXRight: 0,
     centerOffsetY: 0,
-    skipColorWhileDashboardOpen: true,
+    skipColorWhileDashboardOpen: false,
     processAtSubmitLayer: false
   };
 }

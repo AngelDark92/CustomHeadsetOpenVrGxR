@@ -4,14 +4,17 @@
 #ifdef _WIN32
 
 #include <d3dcompiler.h>
+#include <dxgi.h>
 #include <filesystem>
 #include <fstream>
 #include <chrono>
 #include <cstring>
 #include <algorithm>
+#include <cstdio>
 #include "../Config/ConfigLoader.h"
 
 #pragma comment(lib, "D3D11.lib")
+#pragma comment(lib, "dxgi.lib")
 #pragma comment(lib, "D3DCompiler.lib")
 
 // log at most the first few occurrences of each kind of failure
@@ -43,16 +46,28 @@ cbuffer Params : register(b0){
 	float2 boundsSize; float2 texelSize;
 	float4 colorMultiplier;
 	float4 matR; float4 matG; float4 matB;
+	float lutRowBase; float lutRowCount; float perAxisEnable; float pad2;
 };
 Texture2D<float4> tex : register(t0);
 Texture2D<float4> lut : register(t1);
 SamplerState samp : register(s0);
 
+float SampleLutRow(float u, float row){
+	return lut.SampleLevel(samp, float2(u, (row + 0.5) / lutRowCount), 0).x;
+}
+
 float4 main(float4 pos : SV_Position, float2 uv : TEXCOORD0) : SV_Target0{
 	float2 p = uv - center;
 	p.y *= aspect;
 	float r = length(p);
-	float s = lut.SampleLevel(samp, float2(r / lutMaxR, 0.5), 0).x;
+	float u = r / lutMaxR;
+	float s;
+	if(perAxisEnable > 0.5){
+		float wH = (p.x * p.x) / max(dot(p, p), 1e-9);
+		s = SampleLutRow(u, lutRowBase) * wH + SampleLutRow(u, lutRowBase + 1) * (1.0 - wH);
+	}else{
+		s = SampleLutRow(u, lutRowBase);
+	}
 	if(annulusEnable > 0.5){
 		float w = smoothstep(annulusMin - annulusFeather, annulusMin + annulusFeather, r)
 			* (1.0 - smoothstep(annulusMax - annulusFeather, annulusMax + annulusFeather, r));
@@ -84,10 +99,51 @@ struct FrameProcessorConstants{
 	float boundsSize[2]; float texelSize[2];
 	float colorMultiplier[4];
 	float matR[4]; float matG[4]; float matB[4];
+	float lutRowBase; float lutRowCountF; float perAxisEnable; float pad2;
 };
 
 static uint64_t NowMs(){
 	return (uint64_t)std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+// find the dxgi adapter SteamVR renders on, from the hmd's reported luid.
+// on hybrid gpu systems the default adapter can be the integrated gpu, and a
+// device created there cannot open the shared layer textures (or limps across
+// adapters), which shows up as "processing enabled but nothing changes".
+static IDXGIAdapter1* FindAdapterForHmd(){
+	uint64_t luidValue = 0;
+	vr::PropertyContainerHandle_t container = vr::VRProperties()->TrackedDeviceToPropertyContainer(vr::k_unTrackedDeviceIndex_Hmd);
+	vr::ETrackedPropertyError propError = vr::TrackedProp_Success;
+	luidValue = vr::VRProperties()->GetUint64Property(container, vr::Prop_GraphicsAdapterLuid_Uint64, &propError);
+	if(propError != vr::TrackedProp_Success || luidValue == 0){
+		DriverLog("FrameProcessor: hmd adapter luid unavailable (error %d), using default adapter", (int)propError);
+		return nullptr;
+	}
+	IDXGIFactory1* factory = nullptr;
+	if(FAILED(CreateDXGIFactory1(__uuidof(IDXGIFactory1), (void**)&factory)) || !factory){
+		return nullptr;
+	}
+	IDXGIAdapter1* found = nullptr;
+	for(UINT i = 0; ; i++){
+		IDXGIAdapter1* adapter = nullptr;
+		if(factory->EnumAdapters1(i, &adapter) != S_OK || !adapter){
+			break;
+		}
+		DXGI_ADAPTER_DESC1 desc = {};
+		adapter->GetDesc1(&desc);
+		uint64_t adapterLuid = ((uint64_t)(uint32_t)desc.AdapterLuid.HighPart << 32) | (uint64_t)desc.AdapterLuid.LowPart;
+		if(adapterLuid == luidValue){
+			DriverLog("FrameProcessor: matched hmd adapter %ls", desc.Description);
+			found = adapter;
+			break;
+		}
+		adapter->Release();
+	}
+	factory->Release();
+	if(!found){
+		DriverLog("FrameProcessor: no adapter matched hmd luid %llx, using default adapter", (unsigned long long)luidValue);
+	}
+	return found;
 }
 
 bool FrameProcessor::EnsureDevice(){
@@ -98,8 +154,13 @@ bool FrameProcessor::EnsureDevice(){
 		return false;
 	}
 	D3D_FEATURE_LEVEL levels[] = { D3D_FEATURE_LEVEL_11_0 };
-	HRESULT hr = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, 0,
+	IDXGIAdapter1* adapter = FindAdapterForHmd();
+	// with an explicit adapter the driver type must be unknown
+	HRESULT hr = D3D11CreateDevice(adapter, adapter ? D3D_DRIVER_TYPE_UNKNOWN : D3D_DRIVER_TYPE_HARDWARE, nullptr, 0,
 		levels, 1, D3D11_SDK_VERSION, &device, nullptr, &context);
+	if(adapter){
+		adapter->Release();
+	}
 	if(FAILED(hr)){
 		deviceFailed = true;
 		PROCESSOR_ERROR("FrameProcessor: failed to create D3D11 device: 0x%08X", (unsigned)hr);
@@ -308,25 +369,81 @@ static double EvaluateCurve(const std::vector<StreamFrameDistortionPoint> &point
 		+ (-2 * t3 + 3 * t2) * v1 + (t3 - t2) * h * m1;
 }
 
-bool FrameProcessor::BakeLutIfNeeded(const StreamFrameConfig &config){
-	// change detection
-	bool pointsChanged = config.distortion.points.size() != lastLutPoints.size();
-	if(!pointsChanged){
-		for(size_t i = 0; i < lastLutPoints.size(); i++){
-			if(config.distortion.points[i].r != lastLutPoints[i].r || config.distortion.points[i].scale != lastLutPoints[i].scale){
-				pointsChanged = true;
-				break;
-			}
+// resolve the curve to use for a given eye (0/1, or -1 when not per eye) and
+// axis (0 horizontal / 1 vertical, or -1 when not per axis). a missing named
+// curve falls back to the base curve.
+struct EffectiveCurve{
+	double k1 = 0;
+	double k2 = 0;
+	const std::vector<StreamFrameDistortionPoint>* points = nullptr;
+};
+static EffectiveCurve ResolveCurve(const StreamFrameConfig &config, int eye, int axis){
+	EffectiveCurve result;
+	result.k1 = config.k1;
+	result.k2 = config.k2;
+	result.points = &config.distortion.points;
+	std::string key = "";
+	if(eye >= 0 && axis >= 0){
+		key = std::string(eye == 0 ? "left" : "right") + (axis == 0 ? "Horizontal" : "Vertical");
+	}else if(eye >= 0){
+		key = eye == 0 ? "left" : "right";
+	}else if(axis >= 0){
+		key = axis == 0 ? "horizontal" : "vertical";
+	}
+	if(!key.empty()){
+		auto found = config.distortion.curves.find(key);
+		if(found != config.distortion.curves.end()){
+			result.k1 = found->second.k1;
+			result.k2 = found->second.k2;
+			result.points = &found->second.points;
 		}
 	}
-	if(lutBaked && config.distortion.mode == lastLutMode && config.k1 == lastLutK1 && config.k2 == lastLutK2 && !pointsChanged){
+	return result;
+}
+
+// serialize everything the lut depends on, for change detection
+static std::string BuildLutKey(const StreamFrameConfig &config){
+	std::string key = config.distortion.mode;
+	key += config.distortion.perEye ? "|E" : "|e";
+	key += config.distortion.perAxis ? "A" : "a";
+	char buffer[64];
+	auto appendCurve = [&](const EffectiveCurve &curve){
+		snprintf(buffer, sizeof(buffer), "|%.9g,%.9g", curve.k1, curve.k2);
+		key += buffer;
+		for(const auto &point : *curve.points){
+			snprintf(buffer, sizeof(buffer), ";%.9g:%.9g", point.r, point.scale);
+			key += buffer;
+		}
+	};
+	int eyeCount = config.distortion.perEye ? 2 : 1;
+	int axisCount = config.distortion.perAxis ? 2 : 1;
+	for(int eye = 0; eye < eyeCount; eye++){
+		for(int axis = 0; axis < axisCount; axis++){
+			appendCurve(ResolveCurve(config, config.distortion.perEye ? eye : -1, config.distortion.perAxis ? axis : -1));
+		}
+	}
+	return key;
+}
+
+bool FrameProcessor::BakeLutIfNeeded(const StreamFrameConfig &config){
+	std::string key = BuildLutKey(config);
+	if(lutBaked && key == lastLutKey){
 		return true;
 	}
 
+	int eyeCount = config.distortion.perEye ? 2 : 1;
+	int axisCount = config.distortion.perAxis ? 2 : 1;
+	int rowCount = eyeCount * axisCount;
+	// recreate the texture when the row count changes
+	if(lutTexture && rowCount != lutRowCount){
+		if(lutSRV){ lutSRV->Release(); lutSRV = nullptr; }
+		lutTexture->Release();
+		lutTexture = nullptr;
+	}
 	if(!lutTexture){
 		D3D11_TEXTURE2D_DESC desc = {};
 		desc.Width = lutSize;
-		desc.Height = 1;
+		desc.Height = rowCount;
 		desc.MipLevels = 1;
 		desc.ArraySize = 1;
 		desc.Format = DXGI_FORMAT_R32_FLOAT;
@@ -338,40 +455,42 @@ bool FrameProcessor::BakeLutIfNeeded(const StreamFrameConfig &config){
 			return false;
 		}
 		if(FAILED(device->CreateShaderResourceView(lutTexture, nullptr, &lutSRV))){
-			PROCESSOR_ERROR("FrameProcessor: failed to create lut srv");
 			return false;
 		}
+		lutRowCount = rowCount;
 	}
 
-	std::vector<StreamFrameDistortionPoint> sortedPoints = config.distortion.points;
-	std::sort(sortedPoints.begin(), sortedPoints.end(), [](const StreamFrameDistortionPoint &a, const StreamFrameDistortionPoint &b){
-		return a.r < b.r;
-	});
-
-	float data[lutSize];
+	std::vector<float> data(lutSize * rowCount);
 	bool spline = config.distortion.mode == "spline";
-	for(int i = 0; i < lutSize; i++){
-		double r = (double)i / (lutSize - 1) * lutMaxRadius;
-		double scale;
-		if(spline){
-			scale = EvaluateCurve(sortedPoints, r);
-		}else{
-			double r2 = r * r;
-			scale = 1.0 + config.k1 * r2 + config.k2 * r2 * r2;
+	// row order: eye major, axis minor: [L], [L,R], [H,V] or [LH,LV,RH,RV]
+	for(int eye = 0; eye < eyeCount; eye++){
+		for(int axis = 0; axis < axisCount; axis++){
+			int row = eye * axisCount + axis;
+			EffectiveCurve curve = ResolveCurve(config, config.distortion.perEye ? eye : -1, config.distortion.perAxis ? axis : -1);
+			std::vector<StreamFrameDistortionPoint> sortedPoints = *curve.points;
+			std::sort(sortedPoints.begin(), sortedPoints.end(), [](const StreamFrameDistortionPoint &a, const StreamFrameDistortionPoint &b){
+				return a.r < b.r;
+			});
+			for(int i = 0; i < lutSize; i++){
+				double r = (double)i / (lutSize - 1) * lutMaxRadius;
+				double scale;
+				if(spline){
+					scale = EvaluateCurve(sortedPoints, r);
+				}else{
+					double r2 = r * r;
+					scale = 1.0 + curve.k1 * r2 + curve.k2 * r2 * r2;
+				}
+				data[row * lutSize + i] = (float)scale;
+			}
 		}
-		data[i] = (float)scale;
 	}
-	context->UpdateSubresource(lutTexture, 0, nullptr, data, lutSize * sizeof(float), 0);
+	context->UpdateSubresource(lutTexture, 0, nullptr, data.data(), lutSize * sizeof(float), 0);
 
-	lastLutMode = config.distortion.mode;
-	lastLutK1 = config.k1;
-	lastLutK2 = config.k2;
-	lastLutPoints = sortedPoints;
+	lastLutKey = key;
 	lutBaked = true;
-	DriverLog("FrameProcessor: baked distortion lut (%s, %zu points)", spline ? "spline" : "k1k2", sortedPoints.size());
+	DriverLog("FrameProcessor: baked distortion lut (%s, %d rows)", spline ? "spline" : "k1k2", rowCount);
 	return true;
 }
-
 ID3D11Texture2D* FrameProcessor::OpenShared(vr::SharedTextureHandle_t handle){
 	auto it = openedTextures.find((uint64_t)handle);
 	if(it != openedTextures.end()){
@@ -443,6 +562,11 @@ bool FrameProcessor::ProcessEye(ID3D11Texture2D* texture, const vr::VRTextureBou
 	constants.annulusFeather = (float)config.distortion.annulus.feather;
 	constants.ditherEnable = config.dither ? 1.0f : 0.0f;
 	constants.lutMaxR = lutMaxRadius;
+	// row order is eye major, axis minor
+	int axisCount = config.distortion.perAxis ? 2 : 1;
+	constants.lutRowBase = config.distortion.perEye ? (float)(eye * axisCount) : 0.0f;
+	constants.lutRowCountF = (float)lutRowCount;
+	constants.perAxisEnable = config.distortion.perAxis ? 1.0f : 0.0f;
 	double centerOffsetX = eye == 0 ? config.centerOffsetXLeft : config.centerOffsetXRight;
 	constants.center[0] = (float)(0.5 + centerOffsetX);
 	constants.center[1] = (float)(0.5 + config.centerOffsetY);
@@ -534,7 +658,7 @@ bool FrameProcessor::ProcessSceneLayer(vr::SharedTextureHandle_t leftEye, vr::Sh
 		PROCESSOR_ERROR("FrameProcessor: sync texture has no keyed mutex, skipping processing");
 		return false;
 	}
-	HRESULT hr = mutex->AcquireSync(0, 10);
+	HRESULT hr = mutex->AcquireSync(0, 5);
 	if(hr != S_OK){
 		// timeout or abandoned: skip this frame rather than stall the pipeline
 		mutex->Release();
