@@ -51,7 +51,7 @@ export class AppUpdateService {
       url: ""
     }
     try {
-      const request = firstValueFrom(this.http.get<GitHubRelease>('https://api.github.com/repos/sboys3/CustomHeadsetOpenVR/releases/latest'));
+      const request = firstValueFrom(this.http.get<GitHubRelease>('https://api.github.com/repos/timkhronos/CustomHeadsetOpenVrGxR/releases/latest'));
       const response = await request;
       result.latestVersion = response.tag_name
       result.updateAvailable = isNewVersion(current, result.latestVersion)

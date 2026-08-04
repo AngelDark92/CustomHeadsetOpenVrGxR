@@ -1,0 +1,43 @@
+<div class="curve-editor">
+    <div class="toolbar">
+        <span class="hint">
+            @if(settings().distortion.mode === 'spline'){
+            Drag points to shape the curve. Double click adds a point, right click removes one.
+            }@else{
+            k1/k2 mode: adjust the values below the plot. Convert to spline for per radius control.
+            }
+        </span>
+        <mat-select class="range-select" [ngModel]="scaleRange()" (ngModelChange)="scaleRange.set($event)">
+            @for(option of scaleRangeOptions; track option){
+            <mat-option [value]="option">&plusmn;{{option * 100}}%</mat-option>
+            }
+        </mat-select>
+    </div>
+    <canvas #curveCanvas width="640" height="260"
+        (pointerdown)="onPointerDown($event)"
+        (pointermove)="onPointerMove($event)"
+        (pointerup)="onPointerUp($event)"
+        (dblclick)="onDoubleClick($event)"
+        (contextmenu)="onContextMenu($event)"></canvas>
+    <div class="toolbar">
+        <button mat-stroked-button (click)="convertK1K2ToSpline()">Convert k1/k2 to spline</button>
+        <button mat-stroked-button (click)="resetCurve()">Reset curve</button>
+    </div>
+    @if(settings().distortion.mode === 'spline'){
+    <div class="points-table">
+        @for(point of settings().distortion.points; track $index){
+        <div class="point-row">
+            <span>r</span>
+            <input type="number" step="0.01" min="0" max="1" [(ngModel)]="point.r" (ngModelChange)="onUiChanged()">
+            <span>scale</span>
+            <input type="number" step="0.0005" [(ngModel)]="point.scale" (ngModelChange)="onUiChanged()">
+        </div>
+        }
+    </div>
+    }
+    <div class="toolbar">
+        <span class="hint">Appearance preview (what you will see), exaggerated {{exaggeration()}}x</span>
+        <input type="range" min="1" max="30" [ngModel]="exaggeration()" (ngModelChange)="exaggeration.set($event)">
+    </div>
+    <canvas #previewCanvas width="360" height="360" class="preview"></canvas>
+</div>

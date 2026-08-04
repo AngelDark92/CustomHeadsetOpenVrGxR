@@ -16,6 +16,7 @@ export type Settings = {
   dreamAir: DreamAirConfig,
   generalHeadset: GeneralHeadsetConfig,
   customShader: CustomShaderConfig,
+  streamFrame?: StreamFrameConfig,
   forceTracking: boolean,
   takeCompositorScreenshots: boolean,
   watchDistortionProfiles: boolean,
@@ -41,6 +42,45 @@ export type LinearColor = {
   r: number;
   g: number;
   b: number;
+};
+export type StreamFrameDistortionPoint = {
+  r: number;
+  scale: number;
+};
+export type StreamFrameAnnulusConfig = {
+  enable: boolean;
+  rMin: number;
+  rMax: number;
+  feather: number;
+};
+export type StreamFrameDistortionConfig = {
+  mode: string;
+  points: StreamFrameDistortionPoint[];
+  annulus: StreamFrameAnnulusConfig;
+};
+export type StreamFrameCASConfig = {
+  enable: boolean;
+  strength: number;
+};
+export type StreamFrameConfig = {
+  enable: boolean;
+  saturation: number;
+  contrast: number;
+  contrastMidpoint: number;
+  contrastLinear: boolean;
+  gamma: number;
+  colorMultiplier: LinearColor;
+  srgbMatrix: number[];
+  cas: StreamFrameCASConfig;
+  dither: boolean;
+  k1: number;
+  k2: number;
+  distortion: StreamFrameDistortionConfig;
+  centerOffsetXLeft: number;
+  centerOffsetXRight: number;
+  centerOffsetY: number;
+  skipColorWhileDashboardOpen: boolean;
+  processAtSubmitLayer: boolean;
 };
 export type CustomShaderConfig = {
   enable: boolean;

@@ -24,6 +24,10 @@ export class AppComponent {
       route: '/distortion-profile',
     },
     {
+      name: $localize`Streamed Headset`,
+      route: '/stream-frame',
+    },
+    {
       name: $localize`App Settings`,
       route: '/app-settings'
     }

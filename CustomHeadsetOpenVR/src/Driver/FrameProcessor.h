@@ -1,5 +1,6 @@
 #pragma once
 #include "openvr_driver.h"
+#include "../Config/Config.h"
 #include <cstdint>
 
 // Phase 2: GPU processing of direct mode layer textures before the headset
@@ -16,6 +17,14 @@
 // Everything is fail safe: any error results in the frame being forwarded
 // unprocessed and a (rate limited) log line.
 
+// settings snapshot copied from driverConfig once per frame
+struct FrameProcessSettings{
+	StreamFrameConfig config = {};
+	// false while dashboard is open (compositor shader already applies the color
+	// adjustments to the flattened scene in that state). does not gate cas/dither.
+	bool applyColor = true;
+};
+
 #ifdef _WIN32
 
 #include <d3d11.h>
@@ -23,18 +32,6 @@
 #include <mutex>
 #include <string>
 #include <vector>
-
-// settings snapshot copied from driverConfig once per frame
-struct FrameProcessSettings{
-	bool enable = false;
-	bool applyColor = true;      // false while dashboard is open (compositor shader already applied it)
-	double saturation = 50;      // 50 = neutral, same semantics as customShader.saturation
-	double k1 = 0;               // radial distortion pre perturbation
-	double k2 = 0;
-	double centerOffsetXLeft = 0;   // optical center offset from texture center, uv units
-	double centerOffsetXRight = 0;
-	double centerOffsetY = 0;
-};
 
 class FrameProcessor{
 public:
@@ -74,6 +71,17 @@ private:
 	uint64_t lastShaderCheckMs = 0;
 	bool shaderFailed = false;
 
+	// distortion curve lookup table, rebaked when the distortion settings change
+	bool BakeLutIfNeeded(const StreamFrameConfig &config);
+	ID3D11Texture2D* lutTexture = nullptr;
+	ID3D11ShaderResourceView* lutSRV = nullptr;
+	// copy of the settings the current lut was baked from, for change detection
+	std::string lastLutMode = "";
+	double lastLutK1 = 0;
+	double lastLutK2 = 0;
+	std::vector<StreamFrameDistortionPoint> lastLutPoints = {};
+	bool lutBaked = false;
+
 	// scratch textures, recreated when the layer size changes
 	uint32_t scratchWidth = 0;
 	uint32_t scratchHeight = 0;
@@ -93,17 +101,6 @@ private:
 #else
 
 // non windows stub
-struct FrameProcessSettings{
-	bool enable = false;
-	bool applyColor = true;
-	double saturation = 50;
-	double k1 = 0;
-	double k2 = 0;
-	double centerOffsetXLeft = 0;
-	double centerOffsetXRight = 0;
-	double centerOffsetY = 0;
-};
-
 class FrameProcessor{
 public:
 	bool ProcessSceneLayer(vr::SharedTextureHandle_t, vr::SharedTextureHandle_t,

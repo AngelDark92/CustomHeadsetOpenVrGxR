@@ -44,23 +44,72 @@ struct StationaryDimmingConfig{
 };
 
 
+// one control point of the spline distortion curve
+struct StreamFrameDistortionPoint{
+	// radius, 0 at the optical center, roughly 0.5 at the edge midpoints
+	double r = 0;
+	// radial scale multiplier at that radius, 1.0 = no change
+	double scale = 1;
+};
+
+// diagnostic band that limits the distortion correction to a radius range so
+// one region of the curve can be tuned against untouched surroundings
+struct StreamFrameAnnulusConfig{
+	bool enable = false;
+	double rMin = 0.0;
+	double rMax = 0.75;
+	// width of the smooth ramp at both edges of the band
+	double feather = 0.05;
+};
+
+struct StreamFrameDistortionConfig{
+	// "k1k2" evaluates 1 + k1 r^2 + k2 r^4 from the top level k1/k2 values,
+	// "spline" interpolates the points list
+	std::string mode = "k1k2";
+	// spline control points, sorted by r internally. flat outside the range.
+	std::vector<StreamFrameDistortionPoint> points = {};
+	StreamFrameAnnulusConfig annulus = {};
+};
+
+struct StreamFrameCASConfig{
+	// contrast adaptive sharpening applied before encoding
+	bool enable = false;
+	// 0 to 1
+	double strength = 0.5;
+};
+
 struct StreamFrameConfig{
 	// process direct mode layer textures before the streaming driver consumes them
 	bool enable = false;
 	// saturation with 50 being normal, same semantics as customShader.saturation
 	double saturation = 50;
+	// contrast with 50 being normal, same semantics as customShader.contrast
+	double contrast = 50;
+	// the point from 0-100% of white that the contrast is centered around
+	double contrastMidpoint = 50;
+	// if the contrast should be done in linear space instead of gamma
+	bool contrastLinear = false;
+	// gamma of the output, 2.2 is neutral
+	double gamma = 2.2;
+	// per channel tint multiplier
+	ConfigColor colorMultiplier = {};
+	// 3x3 linear rgb color matrix, row major. active when exactly 9 values.
+	std::vector<double> srgbMatrix = {};
+	StreamFrameCASConfig cas = {};
+	// add low amplitude noise before encoding to reduce banding in dark scenes
+	bool dither = false;
 	// radial distortion pre perturbation, applied to the streamed eye images to
 	// compensate an imperfect distortion profile on the standalone headset.
-	// positive values push content outward from the center at the output.
 	double k1 = 0;
 	double k2 = 0;
+	StreamFrameDistortionConfig distortion = {};
 	// optical center offset from the texture center, in uv units, per eye
 	double centerOffsetXLeft = 0;
 	double centerOffsetXRight = 0;
 	double centerOffsetY = 0;
 	// skip the color adjustment while the dashboard is open, because the
 	// compositor shader replacement already applies it to the flattened scene
-	// in that state and it would be applied twice
+	// in that state and it would be applied twice. does not affect cas/dither.
 	bool skipColorWhileDashboardOpen = true;
 	// process during SubmitLayer (using the previous frame's sync texture)
 	// instead of during Present. try this if Present time processing has no

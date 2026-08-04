@@ -331,6 +331,82 @@ void ConfigLoader::ParseConfig(){
 			if(streamFrameData["saturation"].is_number()){
 				newConfig.streamFrame.saturation = streamFrameData["saturation"].get<double>();
 			}
+			if(streamFrameData["contrast"].is_number()){
+				newConfig.streamFrame.contrast = streamFrameData["contrast"].get<double>();
+			}
+			if(streamFrameData["contrastMidpoint"].is_number()){
+				newConfig.streamFrame.contrastMidpoint = streamFrameData["contrastMidpoint"].get<double>();
+			}
+			if(streamFrameData["contrastLinear"].is_boolean()){
+				newConfig.streamFrame.contrastLinear = streamFrameData["contrastLinear"].get<bool>();
+			}
+			if(streamFrameData["gamma"].is_number()){
+				newConfig.streamFrame.gamma = streamFrameData["gamma"].get<double>();
+			}
+			if(streamFrameData["colorMultiplier"].is_object()){
+				json colorData = streamFrameData["colorMultiplier"];
+				if(colorData["r"].is_number()){
+					newConfig.streamFrame.colorMultiplier.r = colorData["r"].get<double>();
+				}
+				if(colorData["g"].is_number()){
+					newConfig.streamFrame.colorMultiplier.g = colorData["g"].get<double>();
+				}
+				if(colorData["b"].is_number()){
+					newConfig.streamFrame.colorMultiplier.b = colorData["b"].get<double>();
+				}
+			}
+			if(streamFrameData["srgbMatrix"].is_array()){
+				newConfig.streamFrame.srgbMatrix.clear();
+				for(auto &value : streamFrameData["srgbMatrix"]){
+					if(value.is_number()){
+						newConfig.streamFrame.srgbMatrix.push_back(value.get<double>());
+					}
+				}
+			}
+			if(streamFrameData["cas"].is_object()){
+				json casData = streamFrameData["cas"];
+				if(casData["enable"].is_boolean()){
+					newConfig.streamFrame.cas.enable = casData["enable"].get<bool>();
+				}
+				if(casData["strength"].is_number()){
+					newConfig.streamFrame.cas.strength = casData["strength"].get<double>();
+				}
+			}
+			if(streamFrameData["dither"].is_boolean()){
+				newConfig.streamFrame.dither = streamFrameData["dither"].get<bool>();
+			}
+			if(streamFrameData["distortion"].is_object()){
+				json distortionData = streamFrameData["distortion"];
+				if(distortionData["mode"].is_string()){
+					newConfig.streamFrame.distortion.mode = distortionData["mode"].get<std::string>();
+				}
+				if(distortionData["points"].is_array()){
+					newConfig.streamFrame.distortion.points.clear();
+					for(auto &pointData : distortionData["points"]){
+						if(pointData.is_object() && pointData["r"].is_number() && pointData["scale"].is_number()){
+							StreamFrameDistortionPoint point;
+							point.r = pointData["r"].get<double>();
+							point.scale = pointData["scale"].get<double>();
+							newConfig.streamFrame.distortion.points.push_back(point);
+						}
+					}
+				}
+				if(distortionData["annulus"].is_object()){
+					json annulusData = distortionData["annulus"];
+					if(annulusData["enable"].is_boolean()){
+						newConfig.streamFrame.distortion.annulus.enable = annulusData["enable"].get<bool>();
+					}
+					if(annulusData["rMin"].is_number()){
+						newConfig.streamFrame.distortion.annulus.rMin = annulusData["rMin"].get<double>();
+					}
+					if(annulusData["rMax"].is_number()){
+						newConfig.streamFrame.distortion.annulus.rMax = annulusData["rMax"].get<double>();
+					}
+					if(annulusData["feather"].is_number()){
+						newConfig.streamFrame.distortion.annulus.feather = annulusData["feather"].get<double>();
+					}
+				}
+			}
 			if(streamFrameData["k1"].is_number()){
 				newConfig.streamFrame.k1 = streamFrameData["k1"].get<double>();
 			}
@@ -557,6 +633,42 @@ void ConfigLoader::WriteInfo(){
 				}},
 			}},
 			{"forceTracking", defaultSettings.forceTracking},
+			{"streamFrame", {
+				{"enable", defaultSettings.streamFrame.enable},
+				{"saturation", defaultSettings.streamFrame.saturation},
+				{"contrast", defaultSettings.streamFrame.contrast},
+				{"contrastMidpoint", defaultSettings.streamFrame.contrastMidpoint},
+				{"contrastLinear", defaultSettings.streamFrame.contrastLinear},
+				{"gamma", defaultSettings.streamFrame.gamma},
+				{"colorMultiplier", {
+					{"r", defaultSettings.streamFrame.colorMultiplier.r},
+					{"g", defaultSettings.streamFrame.colorMultiplier.g},
+					{"b", defaultSettings.streamFrame.colorMultiplier.b},
+				}},
+				{"srgbMatrix", defaultSettings.streamFrame.srgbMatrix},
+				{"cas", {
+					{"enable", defaultSettings.streamFrame.cas.enable},
+					{"strength", defaultSettings.streamFrame.cas.strength},
+				}},
+				{"dither", defaultSettings.streamFrame.dither},
+				{"k1", defaultSettings.streamFrame.k1},
+				{"k2", defaultSettings.streamFrame.k2},
+				{"distortion", {
+					{"mode", defaultSettings.streamFrame.distortion.mode},
+					{"points", json::array()},
+					{"annulus", {
+						{"enable", defaultSettings.streamFrame.distortion.annulus.enable},
+						{"rMin", defaultSettings.streamFrame.distortion.annulus.rMin},
+						{"rMax", defaultSettings.streamFrame.distortion.annulus.rMax},
+						{"feather", defaultSettings.streamFrame.distortion.annulus.feather},
+					}},
+				}},
+				{"centerOffsetXLeft", defaultSettings.streamFrame.centerOffsetXLeft},
+				{"centerOffsetXRight", defaultSettings.streamFrame.centerOffsetXRight},
+				{"centerOffsetY", defaultSettings.streamFrame.centerOffsetY},
+				{"skipColorWhileDashboardOpen", defaultSettings.streamFrame.skipColorWhileDashboardOpen},
+				{"processAtSubmitLayer", defaultSettings.streamFrame.processAtSubmitLayer},
+			}},
 			{"takeCompositorScreenshots", defaultSettings.takeCompositorScreenshots},
 			{"onlyHandlePrivateFunctionality", defaultSettings.onlyHandlePrivateFunctionality},
 			// {"watchDistortionProfiles", defaultSettings.watchDistortionProfiles}

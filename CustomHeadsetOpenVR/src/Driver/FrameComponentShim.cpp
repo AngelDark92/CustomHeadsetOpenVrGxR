@@ -77,26 +77,36 @@ void DirectModeComponentShim::SubmitLayer(const SubmitLayerPerEye_t (&perEye)[2]
 }
 
 bool DirectModeComponentShim::GetActiveSettings(FrameProcessSettings &settings, bool &processAtSubmit){
-	bool dashboardOpen = false;
 	{
 		std::lock_guard<std::mutex> configGuard(driverConfigLock);
-		settings.enable = driverConfig.streamFrame.enable;
-		settings.saturation = driverConfig.streamFrame.saturation;
-		settings.k1 = driverConfig.streamFrame.k1;
-		settings.k2 = driverConfig.streamFrame.k2;
-		settings.centerOffsetXLeft = driverConfig.streamFrame.centerOffsetXLeft;
-		settings.centerOffsetXRight = driverConfig.streamFrame.centerOffsetXRight;
-		settings.centerOffsetY = driverConfig.streamFrame.centerOffsetY;
+		settings.config = driverConfig.streamFrame;
 		processAtSubmit = driverConfig.streamFrame.processAtSubmitLayer;
-		dashboardOpen = driverConfigLoader.info.isDashboardOpen;
-		if(dashboardOpen && driverConfig.streamFrame.skipColorWhileDashboardOpen){
+		if(driverConfigLoader.info.isDashboardOpen && driverConfig.streamFrame.skipColorWhileDashboardOpen){
 			settings.applyColor = false;
 		}
 	}
+	const StreamFrameConfig &config = settings.config;
 	// skip the whole pass when it would be an identity transform
-	bool colorActive = settings.applyColor && settings.saturation != 50;
-	bool remapActive = settings.k1 != 0 || settings.k2 != 0;
-	return settings.enable && (colorActive || remapActive);
+	bool colorActive = settings.applyColor && (
+		config.saturation != 50 ||
+		config.contrast != 50 ||
+		config.gamma != 2.2 ||
+		config.colorMultiplier.r != 1.0 || config.colorMultiplier.g != 1.0 || config.colorMultiplier.b != 1.0 ||
+		config.srgbMatrix.size() == 9);
+	// cas and dither are not affected by the dashboard gating
+	colorActive |= config.cas.enable || config.dither;
+	bool remapActive = false;
+	if(config.distortion.mode == "spline"){
+		for(const auto &point : config.distortion.points){
+			if(point.scale != 1.0){
+				remapActive = true;
+				break;
+			}
+		}
+	}else{
+		remapActive = config.k1 != 0 || config.k2 != 0;
+	}
+	return config.enable && (colorActive || remapActive);
 }
 
 void DirectModeComponentShim::Present(vr::SharedTextureHandle_t syncTexture){

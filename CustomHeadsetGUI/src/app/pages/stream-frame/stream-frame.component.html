@@ -1,0 +1,263 @@
+@if(settings){
+<div class="field">
+    <div class="note">Processing applied to the streamed frames of a direct mode headset (Steam Link / vrlink, e.g. Galaxy XR) right before the driver encodes them. Unlike the custom shader these settings apply at all times, not only while the dashboard is open. Changes apply live within about a second.</div>
+</div>
+
+<div class="field">
+    <div class="title">
+        <span>Enable Stream Frame Processing</span>
+        <app-field-tip info="Processes the scene layer textures before the streaming driver consumes them. Requires the headset to use a direct mode driver like vrlink." />
+        <app-reset-button [canReset]="settings.enable != defaults.enable" (resetClick)="reset('enable')"></app-reset-button>
+    </div>
+    <div class="control">
+        <mat-slide-toggle [(ngModel)]="settings.enable" (ngModelChange)="save()"></mat-slide-toggle>
+    </div>
+</div>
+
+@if(settings.enable){
+
+<div class="field">
+    <div class="section-title"><span>Color</span></div>
+</div>
+
+<div class="field">
+    <div class="title">
+        <span>Saturation</span>
+        <app-field-tip info="Increase or decrease the variation of the colors. 50 is neutral, 0 is grayscale." />
+        <app-reset-button [canReset]="settings.saturation != defaults.saturation" (resetClick)="reset('saturation')"></app-reset-button>
+    </div>
+    <div class="control">
+        <input matInput [(ngModel)]="settings.saturation" step="1" (ngModelChange)="save()" type="number">
+        <mat-slider max="100" min="0" step="1">
+            <input matSliderThumb [(ngModel)]="settings.saturation" (ngModelChange)="save()">
+        </mat-slider>
+    </div>
+</div>
+
+<div class="field">
+    <div class="title">
+        <span>Contrast</span>
+        <app-field-tip info="Contrast around the midpoint. 50 is neutral." />
+        <app-reset-button [canReset]="settings.contrast != defaults.contrast" (resetClick)="reset('contrast')"></app-reset-button>
+    </div>
+    <div class="control">
+        <input matInput [(ngModel)]="settings.contrast" step="1" (ngModelChange)="save()" type="number">
+        <mat-slider max="100" min="0" step="1">
+            <input matSliderThumb [(ngModel)]="settings.contrast" (ngModelChange)="save()">
+        </mat-slider>
+    </div>
+</div>
+
+<div class="field">
+    <div class="title">
+        <span>Contrast Midpoint</span>
+        <app-field-tip info="The brightness level from 0 to 100 percent of white that the contrast pivots around." />
+        <app-reset-button [canReset]="settings.contrastMidpoint != defaults.contrastMidpoint" (resetClick)="reset('contrastMidpoint')"></app-reset-button>
+    </div>
+    <div class="control">
+        <input matInput [(ngModel)]="settings.contrastMidpoint" step="1" (ngModelChange)="save()" type="number">
+        <mat-slider max="100" min="0" step="1">
+            <input matSliderThumb [(ngModel)]="settings.contrastMidpoint" (ngModelChange)="save()">
+        </mat-slider>
+    </div>
+</div>
+
+<div class="field">
+    <div class="title">
+        <span>Linear Contrast</span>
+        <app-field-tip info="Apply the contrast in linear space instead of gamma space." />
+        <app-reset-button [canReset]="settings.contrastLinear != defaults.contrastLinear" (resetClick)="reset('contrastLinear')"></app-reset-button>
+    </div>
+    <div class="control">
+        <mat-slide-toggle [(ngModel)]="settings.contrastLinear" (ngModelChange)="save()"></mat-slide-toggle>
+    </div>
+</div>
+
+<div class="field">
+    <div class="title">
+        <span>Gamma</span>
+        <app-field-tip info="Gamma of the output. 2.2 is neutral, lower brightens midtones." />
+        <app-reset-button [canReset]="settings.gamma != defaults.gamma" (resetClick)="reset('gamma')"></app-reset-button>
+    </div>
+    <div class="control">
+        <input matInput [(ngModel)]="settings.gamma" step="0.01" (ngModelChange)="save()" type="number">
+        <mat-slider max="3.2" min="1.2" step="0.01">
+            <input matSliderThumb [(ngModel)]="settings.gamma" (ngModelChange)="save()">
+        </mat-slider>
+    </div>
+</div>
+
+<div class="field">
+    <div class="title">
+        <span>Color Multiplier</span>
+        <app-field-tip info="Per channel tint multiplier applied to the image. 1 for each channel is neutral." />
+        <app-reset-button [canReset]="settings.colorMultiplier.r != defaults.colorMultiplier.r || settings.colorMultiplier.g != defaults.colorMultiplier.g || settings.colorMultiplier.b != defaults.colorMultiplier.b" (resetClick)="reset('colorMultiplier')"></app-reset-button>
+    </div>
+    <div class="control rgb-control">
+        <span>R</span><input matInput [(ngModel)]="settings.colorMultiplier.r" step="0.01" min="0" max="2" (ngModelChange)="save()" type="number">
+        <span>G</span><input matInput [(ngModel)]="settings.colorMultiplier.g" step="0.01" min="0" max="2" (ngModelChange)="save()" type="number">
+        <span>B</span><input matInput [(ngModel)]="settings.colorMultiplier.b" step="0.01" min="0" max="2" (ngModelChange)="save()" type="number">
+    </div>
+</div>
+
+<div class="field">
+    <div class="title">
+        <span>Color Matrix</span>
+        <app-field-tip info="Optional 3x3 linear rgb matrix, row major, 9 comma separated numbers. Used for gamut or white point correction. Leave empty to disable." />
+        <app-reset-button [canReset]="settings.srgbMatrix.length != 0" (resetClick)="reset('srgbMatrix')"></app-reset-button>
+    </div>
+    <div class="control matrix-control">
+        <input matInput [ngModel]="matrixText()" (ngModelChange)="onMatrixTextChanged($event)" type="text" placeholder="empty = disabled">
+        @if(matrixError()){<span class="matrix-error">{{matrixError()}}</span>}
+    </div>
+</div>
+
+<div class="field">
+    <div class="title">
+        <span>CAS Sharpening</span>
+        <app-field-tip info="Contrast adaptive sharpening applied before the video encode. One of the most effective quality improvements for streamed headsets." />
+    </div>
+    <div class="control">
+        <mat-slide-toggle [(ngModel)]="settings.cas.enable" (ngModelChange)="save()"></mat-slide-toggle>
+    </div>
+</div>
+
+@if(settings.cas.enable){
+<div class="field">
+    <div class="title">
+        <span>CAS Strength</span>
+        <app-field-tip info="Strength of the sharpening from 0 to 1." />
+    </div>
+    <div class="control">
+        <input matInput [(ngModel)]="settings.cas.strength" step="0.05" (ngModelChange)="save()" type="number">
+        <mat-slider max="1" min="0" step="0.05">
+            <input matSliderThumb [(ngModel)]="settings.cas.strength" (ngModelChange)="save()">
+        </mat-slider>
+    </div>
+</div>
+}
+
+<div class="field">
+    <div class="title">
+        <span>Dither</span>
+        <app-field-tip info="Adds a small amount of noise before the encode to reduce banding in dark gradients." />
+        <app-reset-button [canReset]="settings.dither != defaults.dither" (resetClick)="reset('dither')"></app-reset-button>
+    </div>
+    <div class="control">
+        <mat-slide-toggle [(ngModel)]="settings.dither" (ngModelChange)="save()"></mat-slide-toggle>
+    </div>
+</div>
+
+<div class="field">
+    <div class="section-title"><span>Distortion Correction</span></div>
+</div>
+<div class="field">
+    <div class="note">Compensates an imperfect distortion profile on the headset that shows up as rippling or swimming of the world during head rotation. The curve sets a radial scale per distance from the optical center: 1.0 leaves that ring untouched, above 1.0 pulls its content toward the center, below pushes it outward. Real corrections are usually within a percent of 1.0.</div>
+</div>
+
+<div class="field">
+    <div class="title">
+        <span>Mode</span>
+        <app-field-tip info="k1/k2 is a simple two value polynomial curve. Spline gives per radius control points. Convert from k1/k2 keeps the current shape as a starting point." />
+    </div>
+    <div class="control">
+        <mat-select [(ngModel)]="settings.distortion.mode" (ngModelChange)="save()">
+            <mat-option value="k1k2">k1 / k2 polynomial</mat-option>
+            <mat-option value="spline">Spline control points</mat-option>
+        </mat-select>
+    </div>
+</div>
+
+@if(settings.distortion.mode == 'k1k2'){
+<div class="field">
+    <div class="title">
+        <span>k1</span>
+        <app-field-tip info="Quadratic radial term. Affects the whole field, growing with distance from the center." />
+        <app-reset-button [canReset]="settings.k1 != defaults.k1" (resetClick)="reset('k1')"></app-reset-button>
+    </div>
+    <div class="control">
+        <input matInput [(ngModel)]="settings.k1" step="0.001" (ngModelChange)="save()" type="number">
+        <mat-slider max="0.1" min="-0.1" step="0.001">
+            <input matSliderThumb [(ngModel)]="settings.k1" (ngModelChange)="save()">
+        </mat-slider>
+    </div>
+</div>
+<div class="field">
+    <div class="title">
+        <span>k2</span>
+        <app-field-tip info="Quartic radial term. Mostly affects the periphery." />
+        <app-reset-button [canReset]="settings.k2 != defaults.k2" (resetClick)="reset('k2')"></app-reset-button>
+    </div>
+    <div class="control">
+        <input matInput [(ngModel)]="settings.k2" step="0.001" (ngModelChange)="save()" type="number">
+        <mat-slider max="0.1" min="-0.1" step="0.001">
+            <input matSliderThumb [(ngModel)]="settings.k2" (ngModelChange)="save()">
+        </mat-slider>
+    </div>
+</div>
+}
+
+<div class="field curve-field">
+    <app-stream-frame-curve [settings]="settings" [revision]="revision()" (changed)="save()"></app-stream-frame-curve>
+</div>
+
+<div class="field">
+    <div class="title">
+        <span>Annulus Tuning Band</span>
+        <app-field-tip info="Diagnostic: limit the correction to a radius band so one region of the curve can be tuned against untouched surroundings. Disable for normal use, the band edges are intentionally not geometric." />
+    </div>
+    <div class="control">
+        <mat-slide-toggle [(ngModel)]="settings.distortion.annulus.enable" (ngModelChange)="save()"></mat-slide-toggle>
+    </div>
+</div>
+@if(settings.distortion.annulus.enable){
+<div class="field">
+    <div class="title"><span>Band Range and Feather</span></div>
+    <div class="control rgb-control">
+        <span>min</span><input matInput [(ngModel)]="settings.distortion.annulus.rMin" step="0.05" min="0" max="1" (ngModelChange)="save()" type="number">
+        <span>max</span><input matInput [(ngModel)]="settings.distortion.annulus.rMax" step="0.05" min="0" max="1" (ngModelChange)="save()" type="number">
+        <span>feather</span><input matInput [(ngModel)]="settings.distortion.annulus.feather" step="0.01" min="0" max="0.5" (ngModelChange)="save()" type="number">
+    </div>
+</div>
+}
+
+<div class="field">
+    <div class="title">
+        <span>Optical Center Offset</span>
+        <app-field-tip info="Moves the center the correction rings are anchored to, in uv units per eye. Use if the residual wobble is asymmetric." />
+    </div>
+    <div class="control rgb-control">
+        <span>x left</span><input matInput [(ngModel)]="settings.centerOffsetXLeft" step="0.001" (ngModelChange)="save()" type="number">
+        <span>x right</span><input matInput [(ngModel)]="settings.centerOffsetXRight" step="0.001" (ngModelChange)="save()" type="number">
+        <span>y</span><input matInput [(ngModel)]="settings.centerOffsetY" step="0.001" (ngModelChange)="save()" type="number">
+    </div>
+</div>
+
+<div class="field">
+    <div class="section-title"><span>Advanced</span></div>
+</div>
+
+<div class="field">
+    <div class="title">
+        <span>Skip Color While Dashboard Open</span>
+        <app-field-tip info="Avoids the color adjustments being applied twice while the custom shader also processes the flattened scene with the dashboard open. Turn this off if the custom shader is disabled or neutral." />
+        <app-reset-button [canReset]="settings.skipColorWhileDashboardOpen != defaults.skipColorWhileDashboardOpen" (resetClick)="reset('skipColorWhileDashboardOpen')"></app-reset-button>
+    </div>
+    <div class="control">
+        <mat-slide-toggle [(ngModel)]="settings.skipColorWhileDashboardOpen" (ngModelChange)="save()"></mat-slide-toggle>
+    </div>
+</div>
+
+<div class="field">
+    <div class="title">
+        <span>Process At Submit Layer</span>
+        <app-field-tip info="Processes frames during SubmitLayer instead of Present. Only needed if processing at Present has no visible effect on your driver." />
+        <app-reset-button [canReset]="settings.processAtSubmitLayer != defaults.processAtSubmitLayer" (resetClick)="reset('processAtSubmitLayer')"></app-reset-button>
+    </div>
+    <div class="control">
+        <mat-slide-toggle [(ngModel)]="settings.processAtSubmitLayer" (ngModelChange)="save()"></mat-slide-toggle>
+    </div>
+</div>
+
+}
+}

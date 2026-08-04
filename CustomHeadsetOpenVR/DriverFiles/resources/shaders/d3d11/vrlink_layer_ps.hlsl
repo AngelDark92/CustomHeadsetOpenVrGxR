@@ -1,54 +1,141 @@
 // Processing applied to direct mode scene layer textures before the streaming
 // driver (e.g. vrlink / Steam Link) composites and encodes them.
 //
-// This file is hot reloaded: save it while SteamVR is running and the change
-// applies within about a second. If it fails to compile, the previous working
-// shader stays active and the error is written to the vrserver log.
+// Hot reloaded: save while SteamVR is running and it applies within about a
+// second. A compile error keeps the previous working shader active and writes
+// the error to the vrserver log. All values below arrive from the streamFrame
+// section of settings.json (also live reloaded) via the constant buffer.
 //
-// Tuning the distortion pre perturbation ("wobble" fix):
-// - The saturation/k1/k2/center values come from the streamFrame section of
-//   settings.json via the constant buffer below, so normally you tune by
-//   editing settings.json (also live reloaded). Edit this file when you want
-//   to change the *model*, e.g. add a k3 term or asymmetric correction.
-// - k1 affects the whole field roughly quadratically with radius, k2 mostly
-//   the periphery. Start with k1 steps of +-0.005 while fixating a straight
-//   line and rotating your head; pick the sign that reduces the swimming.
+// Pipeline: distortion resample (lut curve, optional annulus mask) -> CAS
+// sharpening -> color chain (matrix, saturation, tint, contrast, gamma) ->
+// dither -> output. The texture views are srgb, so values here are linear.
 
 cbuffer Params : register(b0){
-	float saturation;     // saturation / 50, so 1 = neutral
-	float k1;
-	float k2;
-	float applyColor;     // 1 or 0 (0 while the dashboard is open by default)
-	float2 center;        // distortion center in bounds normalized uv
-	float2 boundsMin;     // valid region of the texture (usually 0,0)
-	float2 boundsSize;    // usually 1,1
-	float aspect;         // region height / width, makes the radius isotropic
-	float pad;
+	float saturation;      // saturation / 50, 1 = neutral
+	float applyColor;      // 0 while the dashboard is open by default
+	float contrastMult;    // contrast / 50
+	float contrastOffset;  // precomputed midpoint offset
+	float contrastLinear;  // 1 = apply contrast in linear space
+	float outGamma;        // 2.2 = neutral
+	float casStrength;     // 0..1
+	float casEnable;
+	float annulusEnable;
+	float annulusMin;
+	float annulusMax;
+	float annulusFeather;
+	float ditherEnable;
+	float lutMaxR;         // radius covered by the lut, currently 1.0
+	float aspect;          // region height / width, makes the radius isotropic
+	float matrixEnable;
+	float2 center;         // distortion center in bounds normalized uv
+	float2 boundsMin;      // valid region of the texture (usually 0,0)
+	float2 boundsSize;     // usually 1,1
+	float2 texelSize;      // 1 / texture size, for CAS neighbor sampling
+	float4 colorMultiplier;
+	float4 matR;           // rows of the 3x3 linear rgb color matrix
+	float4 matG;
+	float4 matB;
 };
 Texture2D<float4> tex : register(t0);
+Texture2D<float4> lut : register(t1);
 SamplerState samp : register(s0);
+
+// exact piecewise srgb conversions, used for gamma space operations and dither
+float3 LinearToSrgb(float3 c){
+	c = max(c, 0.0);
+	float3 lo = c * 12.92;
+	float3 hi = 1.055 * pow(c, 1.0 / 2.4) - 0.055;
+	return lerp(lo, hi, step(0.0031308, c));
+}
+float3 SrgbToLinear(float3 c){
+	c = max(c, 0.0);
+	float3 lo = c / 12.92;
+	float3 hi = pow((c + 0.055) / 1.055, 2.4);
+	return lerp(lo, hi, step(0.04045, c));
+}
+
+// interleaved gradient noise, stable per output pixel
+float InterleavedGradientNoise(float2 pixel){
+	return frac(52.9829189 * frac(0.06711056 * pixel.x + 0.00583715 * pixel.y));
+}
+
+float4 SampleWarped(float2 uvSrcNorm){
+	return tex.SampleLevel(samp, uvSrcNorm * boundsSize + boundsMin, 0);
+}
 
 float4 main(float4 pos : SV_Position, float2 uv : TEXCOORD0) : SV_Target0{
 	// the viewport covers exactly the bounds region, so uv is already bounds normalized
-	float2 n = uv;
-	// radial pre perturbation: output pixel n samples input at center + p * s
-	float2 p = n - center;
+	// ---- distortion resample ----
+	float2 p = uv - center;
 	p.y *= aspect;
-	float r2 = dot(p, p);
-	float s = 1.0 + k1 * r2 + k2 * r2 * r2;
+	float r = length(p);
+	// radial scale from the baked curve (k1k2 polynomial or spline)
+	float s = lut.SampleLevel(samp, float2(r / lutMaxR, 0.5), 0).x;
+	if(annulusEnable > 0.5){
+		// diagnostic band: only apply the displacement within [annulusMin, annulusMax],
+		// feathered so the mask boundary squashes smoothly instead of shearing
+		float w = smoothstep(annulusMin - annulusFeather, annulusMin + annulusFeather, r)
+			* (1.0 - smoothstep(annulusMax - annulusFeather, annulusMax + annulusFeather, r));
+		s = 1.0 + (s - 1.0) * w;
+	}
 	p *= s;
 	p.y /= aspect;
 	float2 nSrc = p + center;
-	float2 uvSrc = nSrc * boundsSize + boundsMin;
-	float4 color = tex.SampleLevel(samp, uvSrc, 0);
-	// black outside the valid region instead of clamped streaks
-	if(any(nSrc < 0.0) || any(nSrc > 1.0)){
+	float4 color = SampleWarped(nSrc);
+	bool outside = any(nSrc < 0.0) || any(nSrc > 1.0);
+
+	// ---- CAS sharpening (per channel, compact FidelityFX style) ----
+	if(casEnable > 0.5 && !outside){
+		// neighbors around the warped sample position. the warp is near identity
+		// so a plain one texel cross in source space is accurate enough.
+		float2 t = texelSize / boundsSize;
+		float3 up = SampleWarped(nSrc + float2(0, -t.y)).rgb;
+		float3 dn = SampleWarped(nSrc + float2(0, t.y)).rgb;
+		float3 lf = SampleWarped(nSrc + float2(-t.x, 0)).rgb;
+		float3 rt = SampleWarped(nSrc + float2(t.x, 0)).rgb;
+		float3 mn = min(min(up, dn), min(lf, min(rt, color.rgb)));
+		float3 mx = max(max(up, dn), max(lf, max(rt, color.rgb)));
+		float3 amp = sqrt(saturate(min(mn, 1.0 - mx) / max(mx, 0.0001)));
+		float peak = -1.0 / lerp(8.0, 5.0, saturate(casStrength));
+		float3 w = amp * peak;
+		color.rgb = saturate((color.rgb + w * (up + dn + lf + rt)) / (1.0 + 4.0 * w));
+	}
+
+	if(outside){
 		color = float4(0, 0, 0, color.a);
 	}
+
+	// ---- color chain ----
 	if(applyColor > 0.5){
-		// linear space saturation (srgb views decode/encode around this shader)
+		if(matrixEnable > 0.5){
+			color.rgb = mul(float3x3(matR.xyz, matG.xyz, matB.xyz), color.rgb);
+		}
 		float gray = dot(color.rgb, float3(0.299, 0.587, 0.114));
 		color.rgb = lerp(gray.xxx, color.rgb, saturation);
+		color.rgb *= colorMultiplier.rgb;
+		if(contrastLinear > 0.5){
+			color.rgb = color.rgb * contrastMult + contrastOffset;
+		}else{
+			float3 g = LinearToSrgb(color.rgb);
+			g = g * contrastMult + contrastOffset;
+			color.rgb = SrgbToLinear(g);
+		}
+		if(abs(outGamma - 2.2) > 0.001){
+			float3 g = LinearToSrgb(color.rgb);
+			g = pow(max(g, 0.0), 2.2 / outGamma);
+			color.rgb = SrgbToLinear(g);
+		}
 	}
+
+	// ---- dither ----
+	if(ditherEnable > 0.5){
+		// one quantization step of noise in the srgb domain, where the 8 bit
+		// encode happens, to break up banding in dark gradients
+		float noise = InterleavedGradientNoise(pos.xy) - 0.5;
+		float3 g = LinearToSrgb(color.rgb);
+		g = saturate(g + noise / 255.0);
+		color.rgb = SrgbToLinear(g);
+	}
+
 	return color;
 }
