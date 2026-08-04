@@ -65,6 +65,14 @@ private:
 		double lastBurstLog = 0;
 		// peak linear speed observed since the last steady log line
 		double peakSpeed = 0;
+		// serial announced once on first sight (maps openVRID -> device)
+		bool announced = false;
+		// finite difference velocity from positions, to compare against the
+		// velocity the driver reports (suspected ~2 m/s clamp in vrlink)
+		bool havePos = false;
+		double lastPos[3] = {0, 0, 0};
+		double lastSampleTime = 0;
+		double fdSpeedEma = 0;
 	};
 	std::map<uint32_t, PoseLogState> poseLogStates = {};
 	std::mutex poseLogLock = {};

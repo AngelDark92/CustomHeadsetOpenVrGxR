@@ -226,10 +226,34 @@ void CustomHeadsetDeviceProvider::LogDevicePose(uint32_t openVRID, const vr::Dri
 	// and the velocity reported at the moment of release.
 	bool steady = false;
 	bool burst = false;
+	bool announce = false;
 	double peakForLog = 0;
+	double fdSpeed = 0;
 	{
 		std::lock_guard<std::mutex> guard(poseLogLock);
 		PoseLogState &state = poseLogStates[openVRID];
+		if(!state.announced){
+			state.announced = true;
+			announce = true;
+		}
+		// velocity derived from position deltas, lightly smoothed. if the
+		// reported |v| saturates near 2 m/s while this keeps climbing during
+		// a throw, the clamp lives in the driver's reported velocity and can
+		// be replaced from poses.
+		if(state.havePos && now > state.lastSampleTime && now - state.lastSampleTime < 0.1){
+			double dt = now - state.lastSampleTime;
+			double dx = pose.vecPosition[0] - state.lastPos[0];
+			double dy = pose.vecPosition[1] - state.lastPos[1];
+			double dz = pose.vecPosition[2] - state.lastPos[2];
+			double instant = sqrt(dx * dx + dy * dy + dz * dz) / dt;
+			state.fdSpeedEma = state.fdSpeedEma * 0.7 + instant * 0.3;
+		}
+		state.lastPos[0] = pose.vecPosition[0];
+		state.lastPos[1] = pose.vecPosition[1];
+		state.lastPos[2] = pose.vecPosition[2];
+		state.lastSampleTime = now;
+		state.havePos = true;
+		fdSpeed = state.fdSpeedEma;
 		if(speed > state.peakSpeed){
 			state.peakSpeed = speed;
 		}
@@ -238,21 +262,31 @@ void CustomHeadsetDeviceProvider::LogDevicePose(uint32_t openVRID, const vr::Dri
 			steady = true;
 			peakForLog = state.peakSpeed;
 			state.peakSpeed = 0;
-		}else if(speed > 2.0 && now - state.lastBurstLog >= 0.01){
+		}else if((speed > 2.0 || fdSpeed > 2.0) && now - state.lastBurstLog >= 0.01){
 			state.lastBurstLog = now;
 			burst = true;
 		}
 	}
+	if(announce){
+		// resolve which physical device this id is, once, so pose lines are
+		// attributable without guessing at activation order
+		char serial[128] = {};
+		vr::PropertyContainerHandle_t container = vr::VRProperties()->TrackedDeviceToPropertyContainer(openVRID);
+		vr::ETrackedPropertyError propError = vr::TrackedProp_Success;
+		vr::VRProperties()->GetStringProperty(container, vr::Prop_SerialNumber_String, serial, sizeof(serial), &propError);
+		DriverLog("PoseLog: id=%u serial=%s", openVRID,
+			propError == vr::TrackedProp_Success ? serial : "(unknown)");
+	}
 	if(steady){
-		DriverLog("PoseLog: id=%u pos=(%.3f, %.3f, %.3f) |v|=%.3f |w|=%.2f peak|v|=%.3f valid=%d connected=%d result=%d timeOffset=%.4f",
+		DriverLog("PoseLog: id=%u pos=(%.3f, %.3f, %.3f) |v|=%.3f fd|v|=%.3f |w|=%.2f peak|v|=%.3f valid=%d connected=%d result=%d timeOffset=%.4f",
 			openVRID, pose.vecPosition[0], pose.vecPosition[1], pose.vecPosition[2],
-			speed, angularSpeed, peakForLog,
+			speed, fdSpeed, angularSpeed, peakForLog,
 			(int)pose.poseIsValid, (int)pose.deviceIsConnected, (int)pose.result,
 			pose.poseTimeOffset);
 	}else if(burst){
-		DriverLog("PoseLog: BURST id=%u v=(%.3f, %.3f, %.3f) |v|=%.3f |w|=%.2f valid=%d result=%d timeOffset=%.4f",
+		DriverLog("PoseLog: BURST id=%u v=(%.3f, %.3f, %.3f) |v|=%.3f fd|v|=%.3f |w|=%.2f valid=%d result=%d timeOffset=%.4f",
 			openVRID, pose.vecVelocity[0], pose.vecVelocity[1], pose.vecVelocity[2],
-			speed, angularSpeed, (int)pose.poseIsValid, (int)pose.result,
+			speed, fdSpeed, angularSpeed, (int)pose.poseIsValid, (int)pose.result,
 			pose.poseTimeOffset);
 	}
 }
