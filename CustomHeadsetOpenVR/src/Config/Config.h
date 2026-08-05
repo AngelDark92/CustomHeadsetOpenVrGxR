@@ -63,6 +63,32 @@ struct StreamFrameAnnulusConfig{
 	double feather = 0.05;
 };
 
+// interactive in-headset distortion tuner: the human eye as the null
+// detector. while enabled the driver takes over the distortion curves with a
+// per-band working copy edited live from the controllers (joystick y adjusts
+// the highlighted band's scale, a/b step bands outward/inward, x cycles
+// linked/left/right eye editing, y resets the band, holding either grip
+// saves an importable profile). the tuner forces the angular grid and warped
+// overlays on so the nulling task is ready the moment the toggle flips.
+struct StreamFrameDistortionTuneConfig{
+	bool enable = false;
+	// scale units per second at full stick deflection (response is squared,
+	// so half deflection moves at a quarter rate for fine work)
+	double rate = 0.08;
+	// band radii, in the same aspect-corrected radius space as the spline r
+	std::vector<double> bands = {0.15, 0.22, 0.30, 0.38, 0.46, 0.55, 0.65};
+	// stepped adjustment: when > 0, the stick applies exactly this scale
+	// step every 100ms while deflected past halfway, instead of the analog
+	// rate. deterministic fine nulling ("one click at a time").
+	double stepSize = 0.0;
+	// opacity of the band highlight ring (0 hides it entirely)
+	double ringOpacity = 0.55;
+	// force the angular grid + warped overlays on while tuning. off = the
+	// tuner leaves the overlays to the user's own toggles (e.g. tuning
+	// against real game content, or the world-locked grid variant).
+	bool forceGrid = true;
+};
+
 // one distortion curve: k1/k2 polynomial coefficients and/or spline points,
 // which of the two is evaluated follows the global distortion mode
 struct StreamFrameCurve{
@@ -77,6 +103,13 @@ struct StreamFrameDistortionConfig{
 	// spline control points of the base curve, sorted by r internally. flat
 	// outside the range. the base k1/k2 live at the streamFrame top level.
 	std::vector<StreamFrameDistortionPoint> points = {};
+	// global multiplier on the correction: baked scale becomes
+	// 1 + gain * (scale - 1). gain 1 = the curve as authored, 0 = off,
+	// -1 = the exact inverse. one knob for the perceptual 1d search:
+	// sweep gain while watching the warped angular grid during a slow
+	// head rotation and keep whatever swims least (settles curve sign
+	// AND amplitude in one pass, scaling out any measurement bias).
+	double gain = 1.0;
 	// separate curves per eye and/or per axis. per axis blends a horizontal and
 	// a vertical curve around the ring, capturing elliptic/astigmatic error.
 	bool perEye = false;
@@ -87,6 +120,7 @@ struct StreamFrameDistortionConfig{
 	// a missing key falls back to the base curve.
 	std::map<std::string, StreamFrameCurve> curves = {};
 	StreamFrameAnnulusConfig annulus = {};
+	StreamFrameDistortionTuneConfig tune = {};
 };
 
 struct StreamFrameCASConfig{
@@ -175,6 +209,30 @@ struct StreamFrameConfig{
 		bool debugGrid = false;
 		std::string gridMode = "uv";
 		double gridAngularDeg = 2.5;
+		// world-locked fixation dot for VOR-based swim probing: latched to
+		// the current view direction when enabled (toggle off/on to
+		// re-center). the user fixates the dot and slowly rotates their
+		// head in place; VOR keeps the eye on target, so any systematic
+		// gaze-vs-dot residual measures the optics/tracking chain.
+		bool calibDot = false;
+		// one-switch probe capture for scoring runs: acts as calibDot +
+		// swimProbe + overlayWarped together, so an A/B scoring session is
+		// a single toggle in the GUI with no ordering to get wrong
+		bool probeCapture = false;
+		// draw the angular grid at fixed WORLD azimuth/elevation instead of
+		// head-locked lens angles: the grid then stays put while the head
+		// rotates, which is exactly the stimulus the swim nulling task
+		// wants (angular mode only; needs the head pose, on automatically)
+		bool gridWorldLocked = false;
+		// while the dot is on, log throttled SwimProbe lines: angular
+		// residual (raw + smoothed gaze), head angular velocity, and
+		// per-eye lens UVs of dot and gaze — the raw data for empirical
+		// static-profile and pupil-swim fitting
+		bool swimProbe = false;
+		// draw the calibration grid and fixation dot in content space so
+		// the distortion profile warps them like scene content. use for
+		// profile validation: grid straightness + probe scoring runs.
+		bool overlayWarped = false;
 	} eyeGaze = {};
 	// dynamic pupil swim correction (requires gaze). phase A: the
 	// distortion center follows the gaze point by these fractions per

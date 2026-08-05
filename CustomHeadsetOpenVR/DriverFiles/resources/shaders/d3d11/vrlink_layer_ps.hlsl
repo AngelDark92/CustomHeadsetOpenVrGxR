@@ -53,9 +53,31 @@ cbuffer Params : register(b0){
 	float projT;
 	float projB;
 	float gridSpacingRad;  // angular grid line spacing
-	float pad3;
-	float pad4;
-	float pad5;
+	// world-locked fixation dot (VOR swim probe target), bounds
+	// normalized uv per eye; dotMode 0 off, 1 on
+	float dotU;
+	float dotV;
+	float dotMode;
+	// 1 = draw grid + fixation dot in CONTENT space (the source uv the
+	// distortion samples), so the profile warps them like scene content:
+	// the grid then validates profiles by straightness, and the warped dot
+	// closes the swim probe loop (probe residual scores the profile)
+	float overlayWarped;
+	// interactive tuner band highlight: ring radius in the same
+	// aspect-corrected radius space the distortion curve is indexed by;
+	// mode 0 off, 1 on (per-eye gating happens cpu-side, so linked/left/
+	// right edit modes read directly as which eyes show the ring), alpha
+	// is the configured ring opacity
+	float tuneRingR;
+	float tuneRingMode;
+	float tuneRingAlpha;
+	// head basis columns (head axes in world) and the world-locked grid
+	// flag: the angular grid is then drawn at fixed world azimuth and
+	// elevation, so it stays put while the head rotates — the exact
+	// stimulus the swim nulling task wants
+	float3 hbx; float gridWorldLock;
+	float3 hby; float padD;
+	float3 hbz; float padE;
 };
 Texture2D<float4> tex : register(t0);
 Texture2D<float4> lut : register(t1);
@@ -122,6 +144,9 @@ float4 main(float4 pos : SV_Position, float2 uv : TEXCOORD0) : SV_Target0{
 	p *= s;
 	p.y /= aspect;
 	float2 nSrc = p + center;
+	// overlay coordinate: output space normally; content space when warped
+	// overlays are on (overlays then displace exactly like sampled content)
+	float2 ovUv = (overlayWarped > 0.5) ? nSrc : uv;
 	float4 color = SampleWarped(nSrc);
 	bool outside = any(nSrc < 0.0) || any(nSrc > 1.0);
 
@@ -185,10 +210,22 @@ float4 main(float4 pos : SV_Position, float2 uv : TEXCOORD0) : SV_Target0{
 	// known angular position, so a photo through the lens reads
 	// distortion error directly). axes emphasized for pose recovery. ----
 	if(debugGrid > 1.5){
-		float tx = projL + uv.x * (projR - projL);
-		float ty = projT + uv.y * (projB - projT);
-		float ax = atan(tx);
-		float ay = atan(ty);
+		float tx = projL + ovUv.x * (projR - projL);
+		float ty = projT + ovUv.y * (projB - projT);
+		float ax, ay;
+		if(gridWorldLock > 0.5){
+			// world-locked: transform the pixel's view direction into world
+			// space (raw tangents are y-down, head y is up, forward is -z)
+			// and grid on world azimuth/elevation. lines counter-rotate
+			// against head motion, i.e. they stay fixed in the world.
+			float3 d = normalize(float3(tx, -ty, -1.0));
+			float3 wd = hbx * d.x + hby * d.y + hbz * d.z;
+			ax = atan2(wd.x, -wd.z);
+			ay = asin(clamp(wd.y, -1.0, 1.0));
+		}else{
+			ax = atan(tx);
+			ay = atan(ty);
+		}
 		float2 f = float2(abs(frac(ax / gridSpacingRad + 0.5) - 0.5),
 			abs(frac(ay / gridSpacingRad + 0.5) - 0.5)) * gridSpacingRad;
 		float2 fw = float2(max(fwidth(ax), 1e-5), max(fwidth(ay), 1e-5));
@@ -201,7 +238,7 @@ float4 main(float4 pos : SV_Position, float2 uv : TEXCOORD0) : SV_Target0{
 		color.rgb = lerp(color.rgb, float3(0.15, 1.0, 0.45), lineMask * 0.45);
 		color.rgb = lerp(color.rgb, float3(1.0, 1.0, 1.0), axisMask * 0.7);
 	}else if(debugGrid > 0.5){
-		float2 cell = frac(uv * 10.0);
+		float2 cell = frac(ovUv * 10.0);
 		float2 distToLine = min(cell, 1.0 - cell);
 		float nearLine = min(distToLine.x, distToLine.y / max(aspect, 0.001));
 		float lineMask = 1.0 - smoothstep(0.012, 0.03, nearLine);
@@ -216,6 +253,29 @@ float4 main(float4 pos : SV_Position, float2 uv : TEXCOORD0) : SV_Target0{
 		float gr = length(gd);
 		float ring = smoothstep(0.005, 0.002, abs(gr - 0.025));
 		color.rgb = lerp(color.rgb, float3(1.0, 0.15, 0.1), ring * 0.85);
+	}
+
+	// ---- world-locked fixation dot: the VOR swim probe target. cyan
+	// filled dot with a thin halo ring, sized to sit inside the red gaze
+	// ring so gaze-vs-target alignment is readable at a glance ----
+	if(dotMode > 0.5){
+		float2 dd = ovUv - float2(dotU, dotV);
+		dd.y *= aspect;
+		float dr = length(dd);
+		float dotMask = 1.0 - smoothstep(0.004, 0.007, dr);
+		float haloMask = smoothstep(0.004, 0.0015, abs(dr - 0.016));
+		color.rgb = lerp(color.rgb, float3(0.1, 0.9, 1.0), max(dotMask, haloMask * 0.7));
+	}
+
+	// ---- interactive tuner band ring: marks the radius the active spline
+	// knot acts at, using the r computed for the lut lookup above so ring
+	// and knot can never disagree. drawn in output space intentionally:
+	// the band is defined over output radii, and the surrounding content
+	// (and warped grid) moving against a fixed ring is the nulling cue ----
+	if(tuneRingMode > 0.5){
+		float ringDist = abs(r - tuneRingR);
+		float ringMask = 1.0 - smoothstep(0.003, 0.007, ringDist);
+		color.rgb = lerp(color.rgb, float3(1.0, 0.65, 0.1), ringMask * tuneRingAlpha);
 	}
 
 	// ---- stationary dimming (uniform fade to black, no uneven oled wear) ----

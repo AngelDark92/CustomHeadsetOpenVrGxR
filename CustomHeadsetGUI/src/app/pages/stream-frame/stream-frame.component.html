@@ -214,6 +214,75 @@
     </div>
 </div>
 
+<div class="field">
+    <div class="title">
+        <span>Interactive Tuner (in-headset)</span>
+        <app-field-tip info="Hand-tune the distortion with the controllers while wearing the headset — the eye is the measurement instrument, so no eye tracking or camera is involved. While on: the angular grid + warped overlays are forced on, an orange ring marks the radius band being edited, and the current curve is taken over by a live working copy. Controls: joystick up/down adjusts the highlighted band, A/B moves the band outward/inward, X cycles both/left/right eye editing (the ring shows in the eyes being edited), Y resets the band, and holding a grip for 1.5s saves an importable profile into the Distortion folder (also logged as a paste block). Procedure: slowly rotate your head while looking at grid features near the ring; adjust until the lines near the ring stop swimming, then step outward. Turning the tuner off returns to the saved/configured profile." />
+    </div>
+    <div class="control">
+        <mat-slide-toggle [(ngModel)]="settings.distortion.tune.enable" (ngModelChange)="save()"></mat-slide-toggle>
+    </div>
+</div>
+@if(settings.distortion.tune.enable){
+<div class="field">
+    <div class="title">
+        <span>Tuner Adjust Rate</span>
+        <app-field-tip info="Scale change per second at full stick deflection (analog mode, used when Step Size is 0). The response is squared, so partial deflection is much slower for fine nulling. Lower it if the last bit of swim is hard to dial in." />
+    </div>
+    <div class="control">
+        <input matInput [(ngModel)]="settings.distortion.tune.rate" step="0.01" min="0.01" max="0.5" (ngModelChange)="save()" type="number">
+    </div>
+</div>
+<div class="field">
+    <div class="title">
+        <span>Tuner Step Size</span>
+        <app-field-tip info="0 = analog stick response (see Adjust Rate). Above 0, the stick instead applies exactly this scale step every 0.1s while deflected past halfway — deterministic one-click-at-a-time nulling. Try 0.001 for fine work, 0.005 for coarse." />
+    </div>
+    <div class="control">
+        <input matInput [(ngModel)]="settings.distortion.tune.stepSize" step="0.001" min="0" max="0.05" (ngModelChange)="save()" type="number">
+    </div>
+</div>
+<div class="field">
+    <div class="title">
+        <span>Band Ring Opacity</span>
+        <app-field-tip info="Opacity of the orange ring marking the band being edited. 0 hides it entirely (the band position is still logged); lower it if the ring itself distracts from judging the swim." />
+    </div>
+    <div class="control">
+        <input matInput [(ngModel)]="settings.distortion.tune.ringOpacity" step="0.05" min="0" max="1" (ngModelChange)="save()" type="number">
+    </div>
+</div>
+<div class="field">
+    <div class="title">
+        <span>Force Calibration Grid</span>
+        <app-field-tip info="On (default): the tuner forces the angular grid + warped overlays on while active. Off: overlays follow your own toggles below — tune against real game content, or enable the world-locked grid variant instead." />
+    </div>
+    <div class="control">
+        <mat-slide-toggle [(ngModel)]="settings.distortion.tune.forceGrid" (ngModelChange)="save()"></mat-slide-toggle>
+    </div>
+</div>
+<div class="field">
+    <div class="title">
+        <span>Band Layout (count / first r / last r)</span>
+        <app-field-tip info="How many radius bands the tuner edits and where they start and end, spaced evenly (defaults: 7 bands, 0.15 to 0.65). More bands = finer control but a longer session. Edits regenerate the band list; the active session picks it up next time the tuner is toggled on." />
+    </div>
+    <div class="control">
+        <input matInput [(ngModel)]="tuneBandCount" step="1" min="2" max="12" (ngModelChange)="updateBands()" type="number">
+        <input matInput [(ngModel)]="tuneBandFirst" step="0.01" min="0.05" max="1" (ngModelChange)="updateBands()" type="number">
+        <input matInput [(ngModel)]="tuneBandLast" step="0.01" min="0.1" max="1.2" (ngModelChange)="updateBands()" type="number">
+    </div>
+</div>
+}
+
+<div class="field">
+    <div class="title">
+        <span>Correction Gain</span>
+        <app-field-tip info="Multiplies the whole correction: 1 = curve as authored, 0 = off, -1 = exact inverse, values between scale it. THE perceptual search knob: turn on Warped Overlays + the angular grid, fixate a grid intersection, slowly rotate your head, and sweep the gain until the lines swim least. Settles the correction's sign and strength in one pass, without trusting eye tracking." />
+    </div>
+    <div class="control">
+        <input matInput [(ngModel)]="settings.distortion.gain" step="0.1" min="-1.5" max="1.5" (ngModelChange)="save()" type="number">
+    </div>
+</div>
+
 @if(settings.distortion.mode == 'k1k2' && !settings.distortion.perEye && !settings.distortion.perAxis){
 <div class="field">
     <div class="title">
@@ -401,6 +470,16 @@
 
 <div class="field">
     <div class="title">
+        <span>World-Locked Grid</span>
+        <app-field-tip info="Draws the angular grid at fixed WORLD azimuth/elevation instead of head-locked lens angles: the lines stay put while you rotate your head, which is exactly the stimulus swim nulling wants — any residual line motion IS the distortion error. Angular grid mode only. Pairs well with the tuner's Force Calibration Grid off + Warped Overlays on."/>
+    </div>
+    <div class="control">
+        <mat-slide-toggle [(ngModel)]="settings.eyeGaze.gridWorldLocked" (ngModelChange)="save()"></mat-slide-toggle>
+    </div>
+</div>
+
+<div class="field">
+    <div class="title">
         <span>Center Follow Strength</span>
         <app-field-tip info="How strongly the distortion center follows your gaze (X horizontal, Y vertical). 0 = static calibration exactly. With the grid on, raise slowly (try 0.05 steps) until lines near your gaze stay straight and still as you look around; too high and the periphery starts swimming instead. Expected useful range roughly 0.05-0.3." />
         <app-reset-button [canReset]="settings.pupilSwim.centerStrengthX != defaults.pupilSwim.centerStrengthX || settings.pupilSwim.centerStrengthY != defaults.pupilSwim.centerStrengthY" (resetClick)="reset('pupilSwim')"></app-reset-button>
@@ -408,6 +487,46 @@
     <div class="control">
         <span>X</span><input matInput [(ngModel)]="settings.pupilSwim.centerStrengthX" step="0.01" min="0" max="0.8" (ngModelChange)="save()" type="number">
         <span>Y</span><input matInput [(ngModel)]="settings.pupilSwim.centerStrengthY" step="0.01" min="0" max="0.8" (ngModelChange)="save()" type="number">
+    </div>
+</div>
+
+<div class="field">
+    <div class="title">
+        <span>Probe Capture (scoring run)</span>
+        <app-field-tip info="One switch for an A/B scoring run: acts as Fixation Dot + Swim Probe logging + Warped Overlays together, in the right combination, so nothing can be toggled in the wrong order. Procedure: face forward, flip this on (the dot latches ahead), fixate the dot, rotate your head slowly for 60-90s sweeping it around, flip off, save vrserver.txt. Do one run with the profile off (gain 0) and one with it on, then compare with swimprobe_score.py."/>
+    </div>
+    <div class="control">
+        <mat-slide-toggle [(ngModel)]="settings.eyeGaze.probeCapture" (ngModelChange)="save()"></mat-slide-toggle>
+    </div>
+</div>
+
+<div class="field">
+    <div class="title">
+        <span>Fixation Dot (VOR probe)</span>
+        <app-field-tip info="Draws a world-locked cyan dot, latched to your view direction the moment it's enabled (toggle off and on to re-center it). Stare at the dot and slowly ROTATE your head in place - don't translate, the dot is at infinity. With the gaze ring on, the red ring should stay centered on the dot. This is the fixation target for swim probe data collection." />
+    </div>
+    <div class="control">
+        <mat-slide-toggle [(ngModel)]="settings.eyeGaze.calibDot" (ngModelChange)="save()"></mat-slide-toggle>
+    </div>
+</div>
+
+<div class="field">
+    <div class="title">
+        <span>Warped Overlays (profile validation)</span>
+        <app-field-tip info="Draws the calibration grid and the fixation dot in content space, so the active distortion profile warps them exactly like scene content. With the ANGULAR grid: a correct profile makes the lines look straight through the lens. With the fixation dot + swim probe: run probe sessions with profile off / A / B and let the fitter score which one flattens the residual. Leave off for plain measurement runs." />
+    </div>
+    <div class="control">
+        <mat-slide-toggle [(ngModel)]="settings.eyeGaze.overlayWarped" (ngModelChange)="save()"></mat-slide-toggle>
+    </div>
+</div>
+
+<div class="field">
+    <div class="title">
+        <span>Swim Probe Logging</span>
+        <app-field-tip info="While the fixation dot is on, writes throttled SwimProbe lines to vrserver.txt: gaze-vs-dot angular residual (raw and smoothed), head angular velocity, gaze sample age, and per-eye lens UVs of both. This is the raw data for empirical distortion / pupil swim calibration. Leave off when not collecting." />
+    </div>
+    <div class="control">
+        <mat-slide-toggle [(ngModel)]="settings.eyeGaze.swimProbe" (ngModelChange)="save()"></mat-slide-toggle>
     </div>
 </div>
 

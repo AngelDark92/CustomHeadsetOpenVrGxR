@@ -16,6 +16,7 @@
 
 #include <chrono>
 #include <cmath>
+#include <cstring>
 
 
 // general driver functions
@@ -312,6 +313,26 @@ static bool InputPathInteresting(const std::string &lower){
 		|| lower.find("pinch") != std::string::npos;
 }
 
+// classify a component path into a distortion tuner control role. exact
+// suffix matches against the confirmed vrlink surface (session log): joystick
+// x/y scalars + joystick/a/b/x/y click booleans + grip value scalars.
+static int TunerRoleForPath(const std::string &lower, bool isScalar){
+	auto endsWith = [&](const char* suffix){
+		size_t len = strlen(suffix);
+		return lower.size() >= len && lower.compare(lower.size() - len, len, suffix) == 0;
+	};
+	if(isScalar){
+		if(endsWith("/input/joystick/y")){ return 1; }
+		if(endsWith("/input/grip/value")){ return 6; }
+		return 0;
+	}
+	if(endsWith("/input/a/click")){ return 2; }
+	if(endsWith("/input/b/click")){ return 3; }
+	if(endsWith("/input/x/click")){ return 4; }
+	if(endsWith("/input/y/click")){ return 5; }
+	return 0;
+}
+
 void CustomHeadsetDeviceProvider::OnInputComponentCreated(vr::PropertyContainerHandle_t container, const char* name, vr::VRInputComponentHandle_t handle){
 	if(!name || handle == vr::k_ulInvalidInputComponentHandle){
 		return;
@@ -322,6 +343,7 @@ void CustomHeadsetDeviceProvider::OnInputComponentCreated(vr::PropertyContainerH
 	std::string lower = info.name;
 	for(auto &c : lower){ c = (char)tolower(c); }
 	info.interesting = InputPathInteresting(lower);
+	info.tunerRole = TunerRoleForPath(lower, false);
 	// always log creates: component names are the map of vrlink's input
 	// surface, and not having them cost a session
 	DriverLog("InputTap: boolean component container=%llu path=%s handle=%llu%s",
@@ -342,6 +364,7 @@ void CustomHeadsetDeviceProvider::OnScalarComponentCreated(vr::PropertyContainer
 	std::string lower = info.name;
 	for(auto &c : lower){ c = (char)tolower(c); }
 	info.interesting = InputPathInteresting(lower);
+	info.tunerRole = TunerRoleForPath(lower, true);
 	DriverLog("InputTap: scalar component container=%llu path=%s handle=%llu%s",
 		(unsigned long long)container, name, (unsigned long long)handle,
 		info.interesting ? " [watched]" : "");
@@ -350,6 +373,16 @@ void CustomHeadsetDeviceProvider::OnScalarComponentCreated(vr::PropertyContainer
 }
 
 void CustomHeadsetDeviceProvider::OnScalarComponentUpdated(vr::VRInputComponentHandle_t handle, float value){
+	// distortion tuner capture: isolated fields so the tuner never disturbs
+	// the release-forensics / velocity-fix state below, and gated by an
+	// atomic so the hot path costs one relaxed load when the tuner is off
+	if(tunerInputActive.load(std::memory_order_relaxed)){
+		std::lock_guard<std::mutex> tunerGuard(poseLogLock);
+		auto found = inputComponents.find(handle);
+		if(found != inputComponents.end() && found->second.tunerRole != 0){
+			found->second.tunerScalar = value;
+		}
+	}
 	bool fixOn = driverConfig.streamFrame.velocityFixMode == 2;
 	bool logOn = driverConfig.streamFrame.poseLogging;
 	if(!fixOn && !logOn){
@@ -399,6 +432,13 @@ void CustomHeadsetDeviceProvider::OnScalarComponentUpdated(vr::VRInputComponentH
 }
 
 void CustomHeadsetDeviceProvider::OnBooleanComponentUpdated(vr::VRInputComponentHandle_t handle, bool value){
+	if(tunerInputActive.load(std::memory_order_relaxed)){
+		std::lock_guard<std::mutex> tunerGuard(poseLogLock);
+		auto found = inputComponents.find(handle);
+		if(found != inputComponents.end() && found->second.tunerRole != 0){
+			found->second.tunerBool = value;
+		}
+	}
 	if(!driverConfig.streamFrame.poseLogging){
 		return;
 	}
@@ -1189,4 +1229,24 @@ bool CustomHeadsetDeviceProvider::HandleDeviceAdded(const char *&pchDeviceSerial
 	
 	// if false is returned the device will not be added
 	return true;
+}
+
+void CustomHeadsetDeviceProvider::GetTunerInput(TunerInputState &out){
+	out = TunerInputState();
+	std::lock_guard<std::mutex> guard(poseLogLock);
+	for(const auto &pair : inputComponents){
+		const InputComponentInfo &info = pair.second;
+		switch(info.tunerRole){
+			case 1:
+				// largest-magnitude joystick y across hands, so either stick
+				// nudges and an idle stick cannot cancel a deflected one
+				if(fabsf(info.tunerScalar) > fabsf(out.stickY)){ out.stickY = info.tunerScalar; }
+				break;
+			case 2: out.bandOut = out.bandOut || info.tunerBool; break;
+			case 3: out.bandIn = out.bandIn || info.tunerBool; break;
+			case 4: out.eyeToggle = out.eyeToggle || info.tunerBool; break;
+			case 5: out.resetBand = out.resetBand || info.tunerBool; break;
+			case 6: if(info.tunerScalar > out.grip){ out.grip = info.tunerScalar; } break;
+		}
+	}
 }

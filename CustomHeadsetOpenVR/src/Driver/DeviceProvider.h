@@ -5,6 +5,7 @@
 #include <vector>
 #include <mutex>
 #include <string>
+#include <atomic>
 
 #include "openvr_driver.h"
 
@@ -170,8 +171,19 @@ private:
 		bool isScalar = false;
 		float lastScalar = 0;
 		bool scalarPressed = false;
+		// distortion tuner control role, classified from the path at create:
+		// 0 none, 1 joystick y (nudge), 2 a (band out), 3 b (band in),
+		// 4 x (eye cycle), 5 y (reset band), 6 grip value (hold to save).
+		// tuner values live in their own fields so the tuner never disturbs
+		// lastValue/lastScalar, which the release forensics and velocity fix
+		// use for edge and gesture detection.
+		int tunerRole = 0;
+		float tunerScalar = 0;
+		bool tunerBool = false;
 	};
 	std::map<vr::VRInputComponentHandle_t, InputComponentInfo> inputComponents = {};
+	// gate for tuner input capture on the hot component-update path
+	std::atomic<bool> tunerInputActive {false};
 	std::map<vr::PropertyContainerHandle_t, uint32_t> containerToId = {};
 	struct MotionSnapshot {
 		double time = 0;
@@ -199,6 +211,21 @@ public:
 	bool GetHmdProjectionRaw(int eye, float &left, float &right, float &top, float &bottom);
 private:
 public:
+	// ---- distortion tuner input surface ----
+	// aggregated latest controller state for the interactive distortion
+	// tuner: largest-magnitude joystick y across hands, band/eye/reset
+	// click states, and the max grip value. capture only happens while the
+	// tuner is armed (cheap atomic gate on the hot update path).
+	struct TunerInputState {
+		float stickY = 0;
+		bool bandOut = false;   // a click
+		bool bandIn = false;    // b click
+		bool eyeToggle = false; // x click
+		bool resetBand = false; // y click
+		float grip = 0;
+	};
+	void SetTunerInputActive(bool active){ tunerInputActive.store(active, std::memory_order_relaxed); }
+	void GetTunerInput(TunerInputState &out);
 	void OnInputComponentCreated(vr::PropertyContainerHandle_t container, const char* name, vr::VRInputComponentHandle_t handle);
 	void OnBooleanComponentUpdated(vr::VRInputComponentHandle_t handle, bool value);
 	void OnScalarComponentCreated(vr::PropertyContainerHandle_t container, const char* name, vr::VRInputComponentHandle_t handle);

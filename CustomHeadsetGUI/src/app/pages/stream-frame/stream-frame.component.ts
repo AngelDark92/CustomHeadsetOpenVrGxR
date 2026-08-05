@@ -30,12 +30,13 @@ function defaultStreamFrame(): StreamFrameConfig {
     k1: 0,
     k2: 0,
     distortion: {
-      mode: 'k1k2',
+      gain: 1, mode: 'k1k2',
       points: [],
       perEye: false,
       perAxis: false,
       curves: {},
-      annulus: { enable: false, rMin: 0, rMax: 0.75, feather: 0.05 }
+      annulus: { enable: false, rMin: 0, rMax: 0.75, feather: 0.05 },
+      tune: { enable: false, rate: 0.08, bands: [0.15, 0.22, 0.3, 0.38, 0.46, 0.55, 0.65], stepSize: 0, ringOpacity: 0.55, forceGrid: true }
     },
     centerOffsetXLeft: 0,
     centerOffsetXRight: 0,
@@ -45,7 +46,7 @@ function defaultStreamFrame(): StreamFrameConfig {
     syncTimeoutMs: 5,
     velocityFix: false,
     velocityFixMode: 'off',
-    eyeGaze: { debugRing: false, tanHalfFovX: 1.19, tanHalfFovY: 1.19, predictionMs: 30, debugGrid: false, gridMode: 'uv', gridAngularDeg: 2.5 },
+    eyeGaze: { debugRing: false, tanHalfFovX: 1.19, tanHalfFovY: 1.19, predictionMs: 30, debugGrid: false, gridMode: 'uv', gridAngularDeg: 2.5, calibDot: false, swimProbe: false, overlayWarped: false, probeCapture: false, gridWorldLocked: false },
     pupilSwim: { centerStrengthX: 0, centerStrengthY: 0 },
     poseLogging: false
   };
@@ -101,6 +102,11 @@ export class StreamFrameComponent {
   defaults: StreamFrameConfig = defaultStreamFrame();
   // bumped on every edit so the curve component redraws immediately
   revision = signal(0);
+  // friendly band layout inputs; the driver consumes the raw bands array,
+  // these three regenerate it evenly spaced on change
+  tuneBandCount = 7;
+  tuneBandFirst = 0.15;
+  tuneBandLast = 0.65;
   matrixText = signal('');
   matrixError = signal('');
 
@@ -113,6 +119,12 @@ export class StreamFrameComponent {
         this.controllerSettings = this.rootSetting.controllers;
         this.settings = this.rootSetting.streamFrame;
         this.matrixText.set((this.settings?.srgbMatrix ?? []).join(', '));
+        const bands = this.settings?.distortion?.tune?.bands;
+        if (bands && bands.length > 0) {
+          this.tuneBandCount = bands.length;
+          this.tuneBandFirst = bands[0];
+          this.tuneBandLast = bands[bands.length - 1];
+        }
       }
       const infoDefaults = (this.dis.values()?.defaultSettings as any)?.streamFrame;
       this.defaults = fillDefaults(infoDefaults ? JSON.parse(JSON.stringify(infoDefaults)) : undefined, defaultStreamFrame());
@@ -136,6 +148,28 @@ export class StreamFrameComponent {
       this.controllerSettings[group] = JSON.parse(JSON.stringify(this.controllerDefaults[group]));
       this.save();
     }
+  }
+
+  // regenerate the tuner band array evenly spaced from the three layout inputs
+  updateBands() {
+    if (!this.settings) return;
+    let count = Math.round(this.tuneBandCount);
+    if (!(count >= 2)) count = 2;
+    if (count > 12) count = 12;
+    let first = this.tuneBandFirst;
+    let last = this.tuneBandLast;
+    if (!(first > 0.02)) first = 0.02;
+    if (!(last > first)) last = first + 0.05;
+    if (last > 1.2) last = 1.2;
+    const bands: number[] = [];
+    for (let i = 0; i < count; i++) {
+      bands.push(Math.round((first + (last - first) * i / (count - 1)) * 1000) / 1000);
+    }
+    this.tuneBandCount = count;
+    this.tuneBandFirst = first;
+    this.tuneBandLast = last;
+    this.settings.distortion.tune.bands = bands;
+    this.save();
   }
 
   save() {
@@ -172,8 +206,9 @@ export class StreamFrameComponent {
       centerOffsetXRight: s.centerOffsetXRight,
       centerOffsetY: s.centerOffsetY
     };
-    // the annulus is a tuning diagnostic, not part of a shareable profile
+    // the annulus and tuner are tuning diagnostics, not part of a shareable profile
     delete profile.distortion.annulus;
+    delete profile.distortion.tune;
     const text = JSON.stringify(profile, null, 2);
     this.shareText.set(text);
     this.shareStatus.set('Profile exported below. Copy it anywhere.');

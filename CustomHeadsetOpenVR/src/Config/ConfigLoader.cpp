@@ -409,6 +409,38 @@ void ConfigLoader::ParseConfig(){
 						}
 					}
 				}
+				if(distortionData["gain"].is_number()){
+					newConfig.streamFrame.distortion.gain = distortionData["gain"].get<double>();
+				}
+				if(distortionData["tune"].is_object()){
+					json tuneData = distortionData["tune"];
+					if(tuneData["enable"].is_boolean()){
+						newConfig.streamFrame.distortion.tune.enable = tuneData["enable"].get<bool>();
+					}
+					if(tuneData["rate"].is_number()){
+						newConfig.streamFrame.distortion.tune.rate = tuneData["rate"].get<double>();
+					}
+					if(tuneData["stepSize"].is_number()){
+						newConfig.streamFrame.distortion.tune.stepSize = tuneData["stepSize"].get<double>();
+					}
+					if(tuneData["ringOpacity"].is_number()){
+						newConfig.streamFrame.distortion.tune.ringOpacity = tuneData["ringOpacity"].get<double>();
+					}
+					if(tuneData["forceGrid"].is_boolean()){
+						newConfig.streamFrame.distortion.tune.forceGrid = tuneData["forceGrid"].get<bool>();
+					}
+					if(tuneData["bands"].is_array()){
+						std::vector<double> bands;
+						for(auto &band : tuneData["bands"]){
+							if(band.is_number()){
+								bands.push_back(band.get<double>());
+							}
+						}
+						if(!bands.empty()){
+							newConfig.streamFrame.distortion.tune.bands = bands;
+						}
+					}
+				}
 				if(distortionData["perEye"].is_boolean()){
 					newConfig.streamFrame.distortion.perEye = distortionData["perEye"].get<bool>();
 				}
@@ -512,6 +544,21 @@ void ConfigLoader::ParseConfig(){
 				}
 				if(eyeGazeData["gridAngularDeg"].is_number()){
 					newConfig.streamFrame.eyeGaze.gridAngularDeg = eyeGazeData["gridAngularDeg"].get<double>();
+				}
+				if(eyeGazeData["calibDot"].is_boolean()){
+					newConfig.streamFrame.eyeGaze.calibDot = eyeGazeData["calibDot"].get<bool>();
+				}
+				if(eyeGazeData["probeCapture"].is_boolean()){
+					newConfig.streamFrame.eyeGaze.probeCapture = eyeGazeData["probeCapture"].get<bool>();
+				}
+				if(eyeGazeData["gridWorldLocked"].is_boolean()){
+					newConfig.streamFrame.eyeGaze.gridWorldLocked = eyeGazeData["gridWorldLocked"].get<bool>();
+				}
+				if(eyeGazeData["swimProbe"].is_boolean()){
+					newConfig.streamFrame.eyeGaze.swimProbe = eyeGazeData["swimProbe"].get<bool>();
+				}
+				if(eyeGazeData["overlayWarped"].is_boolean()){
+					newConfig.streamFrame.eyeGaze.overlayWarped = eyeGazeData["overlayWarped"].get<bool>();
 				}
 			}
 			if(streamFrameData["pupilSwim"].is_object()){
@@ -791,6 +838,15 @@ void ConfigLoader::WriteInfo(){
 				{"distortion", {
 					{"mode", defaultSettings.streamFrame.distortion.mode},
 					{"points", json::array()},
+					{"gain", defaultSettings.streamFrame.distortion.gain},
+					{"tune", {
+						{"enable", defaultSettings.streamFrame.distortion.tune.enable},
+						{"rate", defaultSettings.streamFrame.distortion.tune.rate},
+						{"stepSize", defaultSettings.streamFrame.distortion.tune.stepSize},
+						{"ringOpacity", defaultSettings.streamFrame.distortion.tune.ringOpacity},
+						{"forceGrid", defaultSettings.streamFrame.distortion.tune.forceGrid},
+						{"bands", defaultSettings.streamFrame.distortion.tune.bands},
+					}},
 					{"perEye", defaultSettings.streamFrame.distortion.perEye},
 					{"perAxis", defaultSettings.streamFrame.distortion.perAxis},
 					{"curves", json::object()},
@@ -816,6 +872,11 @@ void ConfigLoader::WriteInfo(){
 					{"debugGrid", defaultSettings.streamFrame.eyeGaze.debugGrid},
 					{"gridMode", defaultSettings.streamFrame.eyeGaze.gridMode},
 					{"gridAngularDeg", defaultSettings.streamFrame.eyeGaze.gridAngularDeg},
+					{"calibDot", defaultSettings.streamFrame.eyeGaze.calibDot},
+					{"probeCapture", defaultSettings.streamFrame.eyeGaze.probeCapture},
+					{"gridWorldLocked", defaultSettings.streamFrame.eyeGaze.gridWorldLocked},
+					{"swimProbe", defaultSettings.streamFrame.eyeGaze.swimProbe},
+					{"overlayWarped", defaultSettings.streamFrame.eyeGaze.overlayWarped},
 				}},
 				{"pupilSwim", {
 					{"centerStrengthX", defaultSettings.streamFrame.pupilSwim.centerStrengthX},

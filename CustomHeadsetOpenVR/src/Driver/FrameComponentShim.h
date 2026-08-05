@@ -1,6 +1,7 @@
 #pragma once
 #include "openvr_driver.h"
 #include "FrameProcessor.h"
+#include <vector>
 
 // Phase 1: pass-through wrappers around a foreign HMD driver's frame-delivery
 // components (used for the vrlink / Steam Link HMD, e.g. Galaxy XR).
@@ -68,6 +69,60 @@ private:
 	double dimFactor = 0;
 	// track stillness from a submitted pose and advance the dim factor
 	void UpdateStationaryDimming(const vr::HmdMatrix34_t &pose);
+
+	// swim probe state: the fixation dot's latched world direction, its
+	// per-frame head-space direction (from the submitted render pose, so
+	// the dot is consistent with the world the app rendered), and the head
+	// angular velocity between successive submitted poses
+	bool dotLatched = false;
+	double dotWorldDir[3] = {0, 0, -1};
+	bool dotHeadValid = false;
+	double dotHeadDir[3] = {0, 0, -1};
+	bool probePoseValid = false;
+	// full head basis (columns = head axes in world) from the submitted
+	// render pose, for the world-locked calibration grid
+	bool headBasisValid = false;
+	float headBasisW[3][3] = {{1,0,0},{0,1,0},{0,0,1}};
+	float probePrevX[3] = {1, 0, 0};
+	float probePrevZ[3] = {0, 0, 1};
+	double probePrevTime = 0;
+	double headVelDegS = 0;
+	double lastSwimProbeLogTime = 0;
+	// ---- interactive distortion tuner ----
+	// working per-band curve state, owned by the frame processing thread.
+	// activated by streamFrame.distortion.tune.enable; while active the
+	// frame's distortion config is replaced by these bands (spline, per
+	// eye, gain 1) so the human nulls the swim band by band with the
+	// controllers, then saves an importable profile.
+	struct TunerState {
+		bool active = false;
+		std::vector<double> bandR;
+		std::vector<double> scaleL, scaleR;
+		std::vector<double> initL, initR;   // activation snapshot (Y resets to these)
+		int band = 0;
+		int eyeMode = 0;                    // 0 linked, 1 left, 2 right
+		bool prevBandOut = false, prevBandIn = false;
+		bool prevEyeToggle = false, prevReset = false;
+		double lastTime = 0;
+		bool gripWasHigh = false;
+		double gripHoldStart = 0;
+		bool savedThisHold = false;
+		double lastNudgeLogTime = 0;
+		double lastStepTime = 0;
+	};
+	TunerState tuner;
+	// advance the tuner from controller input and, while active, override
+	// the frame's distortion config with the working bands + force the
+	// calibration view (angular grid + warped overlays) on
+	void UpdateTuner(FrameProcessSettings &settings);
+	// write the working curves as an importable profile json into the
+	// Distortion folder and log a paste-ready settings block
+	void SaveTunedProfile(const FrameProcessSettings &settings);
+	// latch/track the fixation dot and head velocity from a submitted pose
+	void UpdateSwimProbePose(const vr::HmdMatrix34_t &pose);
+	// throttled SwimProbe log line (gaze-vs-dot residuals, head velocity,
+	// per-eye lens uvs) while the dot and probe logging are enabled
+	void MaybeLogSwimProbe(const FrameProcessSettings &settings);
 
 	FrameProcessor processor;
 };

@@ -40,7 +40,50 @@ struct FrameProcessSettings{
 	// symmetric tangent knobs.
 	bool gazeProjValid = false;
 	float gazeProj[2][4] = {};
+	// raw gaze direction as published (before prediction and smoothing) and
+	// its age at snapshot time. the swim probe fits against raw gaze: the
+	// speed-adaptive smoothing lags during VOR, which would bias residuals
+	// proportionally to head velocity.
+	double gazeRawDirX = 0;
+	double gazeRawDirY = 0;
+	double gazeRawDirZ = -1;
+	double gazeAgeMs = 0;
+	// world-locked fixation dot direction in head space for the current
+	// frame's render pose (computed in SubmitLayer from mHmdPose), and the
+	// head angular velocity between successive submitted poses (deg/s)
+	bool dotValid = false;
+	double dotDirX = 0;
+	double dotDirY = 0;
+	double dotDirZ = -1;
+	double headVelDegS = 0;
+	// interactive distortion tuner: when active, ProcessEye highlights the
+	// band being edited with a ring at tuneRingR (aspect-corrected radius
+	// space, i.e. exactly where the spline knot acts), drawn only in the
+	// eye(s) being edited (0 linked, 1 left, 2 right) so the eye mode is
+	// readable in-headset without any text.
+	bool tuneActive = false;
+	double tuneRingR = 0;
+	int tuneEyeMode = 0;
+	// head orientation basis (columns = head x/y/z axes in world) from the
+	// frame's submitted render pose, for the world-locked calibration grid
+	bool headBasisValid = false;
+	float headBasis[3][3] = {{1,0,0},{0,1,0},{0,0,1}};
 };
+
+// interpolate a spline distortion curve (monotone-ordered points assumed) at
+// radius r; flat outside the covered range, identity when empty. shared by
+// the lut bake and the interactive tuner's band initialization so the tuner
+// starts from exactly the curve the shader was applying.
+double EvaluateDistortionCurve(const std::vector<StreamFrameDistortionPoint> &points, double r);
+
+// map a unit direction in head space to bounds-normalized viewport uv for one
+// eye, using the real projection frusta when available (identical math to the
+// gaze debug ring mapping) or the symmetric tangent knobs otherwise. returns
+// false when the direction is behind the viewer or maps far outside the view.
+// shared by the constant fill (gaze ring, pupil swim, fixation dot) and the
+// swim probe logging so every consumer uses one mapping.
+bool MapHeadDirToEyeUv(const FrameProcessSettings &settings, int eye,
+	double dirX, double dirY, double dirZ, double &u, double &v);
 
 #ifdef _WIN32
 
@@ -70,7 +113,12 @@ private:
 	bool EnsureShaders();
 	bool EnsureScratch(uint32_t width, uint32_t height, DXGI_FORMAT format);
 	ID3D11Texture2D* OpenShared(vr::SharedTextureHandle_t handle);
-	bool ProcessEye(ID3D11Texture2D* texture, const vr::VRTextureBounds_t &bounds, int eye, const FrameProcessSettings &settings);
+	// process one eye region. slice selects the array slice for apps that
+	// submit a single Texture2DArray shared by both eyes (unity single-pass
+	// instanced: slice 0 = left, slice 1 = right); 0 for plain textures.
+	bool ProcessEye(ID3D11Texture2D* texture, const vr::VRTextureBounds_t &bounds, int eye, int slice, const FrameProcessSettings &settings);
+	// shared array-layer handles already announced in the log (once each)
+	std::set<uint64_t> loggedArrayTextures;
 
 	std::mutex lock;
 	bool deviceFailed = false;

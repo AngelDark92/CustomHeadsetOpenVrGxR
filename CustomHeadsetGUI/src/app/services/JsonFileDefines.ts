@@ -63,13 +63,23 @@ export type StreamFrameCurveData = {
   k2: number;
   points: StreamFrameDistortionPoint[];
 };
+export type StreamFrameDistortionTuneConfig = {
+  enable: boolean;
+  rate: number;
+  bands: number[];
+  stepSize: number;
+  ringOpacity: number;
+  forceGrid: boolean;
+};
 export type StreamFrameDistortionConfig = {
+  gain: number;
   mode: string;
   points: StreamFrameDistortionPoint[];
   perEye: boolean;
   perAxis: boolean;
   curves: { [key: string]: StreamFrameCurveData };
   annulus: StreamFrameAnnulusConfig;
+  tune: StreamFrameDistortionTuneConfig;
 };
 export type StreamFrameCASConfig = {
   enable: boolean;
@@ -105,7 +115,7 @@ export type StreamFrameConfig = {
   syncTimeoutMs: number;
   velocityFix: boolean;
   velocityFixMode: string;
-  eyeGaze: { debugRing: boolean, tanHalfFovX: number, tanHalfFovY: number, predictionMs: number, debugGrid: boolean, gridMode: string, gridAngularDeg: number };
+  eyeGaze: { debugRing: boolean, tanHalfFovX: number, tanHalfFovY: number, predictionMs: number, debugGrid: boolean, gridMode: string, gridAngularDeg: number, calibDot: boolean, swimProbe: boolean, overlayWarped: boolean, probeCapture: boolean, gridWorldLocked: boolean };
   pupilSwim: { centerStrengthX: number, centerStrengthY: number };
   poseLogging: boolean;
 };

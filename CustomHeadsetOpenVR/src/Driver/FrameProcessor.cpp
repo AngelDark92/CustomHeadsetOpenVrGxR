@@ -1,6 +1,76 @@
 #include "FrameProcessor.h"
 #include "DriverLog.h"
 
+// shared head-direction -> per-eye viewport uv mapping. this is the exact
+// math the gaze debug ring uses (verified against the runtime's foveation
+// center); keeping it in one place guarantees the ring, the pupil swim
+// center, the fixation dot, and the swim probe log all agree.
+bool MapHeadDirToEyeUv(const FrameProcessSettings &settings, int eye,
+	double dirX, double dirY, double dirZ, double &u, double &v){
+	if(dirZ >= -0.1){
+		return false;
+	}
+	double tanX = dirX / -dirZ;
+	double tanY = dirY / -dirZ;
+	if(settings.gazeProjValid){
+		// the real asymmetric frustum from the display component. raw
+		// projection tangents are y-down (top negative for the up edge),
+		// head-space dirY is +up, hence the sign flip.
+		const float* proj = settings.gazeProj[eye];
+		double l = proj[0], r = proj[1], t = proj[2], b = proj[3];
+		u = r != l ? (tanX - l) / (r - l) : 0.5;
+		v = b != t ? (-tanY - t) / (b - t) : 0.5;
+	}else{
+		// fallback: symmetric knobs around the distortion center
+		double centerX = eye == 0 ? settings.config.centerOffsetXLeft : settings.config.centerOffsetXRight;
+		u = 0.5 + centerX + 0.5 * tanX / settings.config.eyeGaze.tanHalfFovX;
+		v = 0.5 + settings.config.centerOffsetY - 0.5 * tanY / settings.config.eyeGaze.tanHalfFovY;
+	}
+	return u > -0.2 && u < 1.2 && v > -0.2 && v < 1.2;
+}
+
+// non uniform catmull rom style hermite interpolation through sorted knots,
+// flat outside the knot range
+double EvaluateDistortionCurve(const std::vector<StreamFrameDistortionPoint> &points, double r){
+	if(points.empty()){
+		return 1.0;
+	}
+	if(points.size() == 1 || r <= points.front().r){
+		return r <= points.front().r ? points.front().scale : points.back().scale;
+	}
+	if(r >= points.back().r){
+		return points.back().scale;
+	}
+	size_t i = 0;
+	while(i + 2 < points.size() && r > points[i + 1].r){
+		i++;
+	}
+	double r0 = points[i].r, r1 = points[i + 1].r;
+	double v0 = points[i].scale, v1 = points[i + 1].scale;
+	double h = r1 - r0;
+	if(h <= 0){
+		return v0;
+	}
+	// one sided or centered finite difference tangents
+	double m0, m1;
+	if(i == 0){
+		m0 = (v1 - v0) / h;
+	}else{
+		double hr = points[i + 1].r - points[i - 1].r;
+		m0 = hr > 0 ? (points[i + 1].scale - points[i - 1].scale) / hr : 0;
+	}
+	if(i + 2 >= points.size()){
+		m1 = (v1 - v0) / h;
+	}else{
+		double hr = points[i + 2].r - points[i].r;
+		m1 = hr > 0 ? (points[i + 2].scale - points[i].scale) / hr : 0;
+	}
+	double t = (r - r0) / h;
+	double t2 = t * t, t3 = t2 * t;
+	return (2 * t3 - 3 * t2 + 1) * v0 + (t3 - 2 * t2 + t) * h * m0
+		+ (-2 * t3 + 3 * t2) * v1 + (t3 - t2) * h * m1;
+}
+
 #ifdef _WIN32
 
 #include <d3dcompiler.h>
@@ -50,7 +120,11 @@ cbuffer Params : register(b0){
 	float manualSrgb; float ditherLsb; float pad0; float pad1;
 	float gazeU; float gazeV; float gazeRing; float debugGrid;
 	float projL; float projR; float projT; float projB;
-	float gridSpacingRad; float pad3; float pad4; float pad5;
+	float gridSpacingRad; float dotU; float dotV; float dotMode;
+	float overlayWarped; float tuneRingR; float tuneRingMode; float tuneRingAlpha;
+	float3 hbx; float gridWorldLock;
+	float3 hby; float padD;
+	float3 hbz; float padE;
 };
 Texture2D<float4> tex : register(t0);
 Texture2D<float4> lut : register(t1);
@@ -123,7 +197,12 @@ struct FrameProcessorConstants{
 	float manualSrgb; float ditherLsb; float pad0; float pad1;
 	float gazeU; float gazeV; float gazeRing; float pad2;
 	float projL; float projR; float projT; float projB;
-	float gridSpacingRad; float pad3; float pad4; float pad5;
+	float gridSpacingRad; float dotU; float dotV; float dotMode;
+	float overlayWarped; float tuneRingR; float tuneRingMode; float tuneRingAlpha;
+	// head basis columns (head axes in world) + world-locked grid flag
+	float headXx, headXy, headXz, gridWorldLock;
+	float headYx, headYy, headYz, padD;
+	float headZx, headZy, headZz, padE;
 };
 
 // map a layer texture format to the scratch format and shader mode used to
@@ -341,8 +420,14 @@ bool FrameProcessor::EnsureShaders(){
 		// SILENTLY for appended features (cbuffer appends are layout
 		// compatible), so name what this shader source actually contains
 		bool hasGazeRing = source.find("gazeRing > 0.5") != std::string::npos;
-		DriverLog("FrameProcessor: pixel shader ready (%s, gaze ring support: %s)",
-			fileTime ? "from file" : "embedded", hasGazeRing ? "yes" : "NO - stale hlsl?");
+		bool hasCalibDot = source.find("dotMode > 0.5") != std::string::npos;
+		bool hasWarpedOverlay = source.find("overlayWarped > 0.5") != std::string::npos;
+		bool hasTuneRing = source.find("tuneRingMode > 0.5") != std::string::npos;
+		bool hasWorldGrid = source.find("gridWorldLock > 0.5") != std::string::npos;
+		DriverLog("FrameProcessor: pixel shader ready (%s, gaze ring support: %s, calib dot support: %s, warped overlays: %s, tuner ring: %s, world grid: %s)",
+			fileTime ? "from file" : "embedded", hasGazeRing ? "yes" : "NO - stale hlsl?",
+			hasCalibDot ? "yes" : "NO - stale hlsl?", hasWarpedOverlay ? "yes" : "NO - stale hlsl?",
+			hasTuneRing ? "yes" : "NO - stale hlsl?", hasWorldGrid ? "yes" : "NO - stale hlsl?");
 	}
 	return pixelShader != nullptr;
 }
@@ -422,47 +507,6 @@ bool FrameProcessor::EnsureScratch(uint32_t width, uint32_t height, DXGI_FORMAT 
 static const int lutSize = 512;
 static const float lutMaxRadius = 1.0f;
 
-// non uniform catmull rom style hermite interpolation through sorted knots,
-// flat outside the knot range
-static double EvaluateCurve(const std::vector<StreamFrameDistortionPoint> &points, double r){
-	if(points.empty()){
-		return 1.0;
-	}
-	if(points.size() == 1 || r <= points.front().r){
-		return r <= points.front().r ? points.front().scale : points.back().scale;
-	}
-	if(r >= points.back().r){
-		return points.back().scale;
-	}
-	size_t i = 0;
-	while(i + 2 < points.size() && r > points[i + 1].r){
-		i++;
-	}
-	double r0 = points[i].r, r1 = points[i + 1].r;
-	double v0 = points[i].scale, v1 = points[i + 1].scale;
-	double h = r1 - r0;
-	if(h <= 0){
-		return v0;
-	}
-	// one sided or centered finite difference tangents
-	double m0, m1;
-	if(i == 0){
-		m0 = (v1 - v0) / h;
-	}else{
-		double hr = points[i + 1].r - points[i - 1].r;
-		m0 = hr > 0 ? (points[i + 1].scale - points[i - 1].scale) / hr : 0;
-	}
-	if(i + 2 >= points.size()){
-		m1 = (v1 - v0) / h;
-	}else{
-		double hr = points[i + 2].r - points[i].r;
-		m1 = hr > 0 ? (points[i + 2].scale - points[i].scale) / hr : 0;
-	}
-	double t = (r - r0) / h;
-	double t2 = t * t, t3 = t2 * t;
-	return (2 * t3 - 3 * t2 + 1) * v0 + (t3 - 2 * t2 + t) * h * m0
-		+ (-2 * t3 + 3 * t2) * v1 + (t3 - t2) * h * m1;
-}
 
 // resolve the curve to use for a given eye (0/1, or -1 when not per eye) and
 // axis (0 horizontal / 1 vertical, or -1 when not per axis). a missing named
@@ -502,6 +546,8 @@ static std::string BuildLutKey(const StreamFrameConfig &config){
 	key += config.distortion.perEye ? "|E" : "|e";
 	key += config.distortion.perAxis ? "A" : "a";
 	char buffer[64];
+	snprintf(buffer, sizeof(buffer), "|g%.9g", config.distortion.gain);
+	key += buffer;
 	auto appendCurve = [&](const EffectiveCurve &curve){
 		snprintf(buffer, sizeof(buffer), "|%.9g,%.9g", curve.k1, curve.k2);
 		key += buffer;
@@ -570,11 +616,13 @@ bool FrameProcessor::BakeLutIfNeeded(const StreamFrameConfig &config){
 				double r = (double)i / (lutSize - 1) * lutMaxRadius;
 				double scale;
 				if(spline){
-					scale = EvaluateCurve(sortedPoints, r);
+					scale = EvaluateDistortionCurve(sortedPoints, r);
 				}else{
 					double r2 = r * r;
 					scale = 1.0 + curve.k1 * r2 + curve.k2 * r2 * r2;
 				}
+				// perceptual-search gain: scale toward/away from identity
+				scale = 1.0 + config.distortion.gain * (scale - 1.0);
 				data[row * lutSize + i] = (float)scale;
 			}
 		}
@@ -629,7 +677,7 @@ void FrameProcessor::EvictAll(){
 	scratchOutRTV = nullptr;
 }
 
-bool FrameProcessor::ProcessEye(ID3D11Texture2D* texture, const vr::VRTextureBounds_t &bounds, int eye, const FrameProcessSettings &settings){
+bool FrameProcessor::ProcessEye(ID3D11Texture2D* texture, const vr::VRTextureBounds_t &bounds, int eye, int slice, const FrameProcessSettings &settings){
 	D3D11_TEXTURE2D_DESC desc = {};
 	texture->GetDesc(&desc);
 	DXGI_FORMAT mappedScratchFormat = DXGI_FORMAT_UNKNOWN;
@@ -647,8 +695,15 @@ bool FrameProcessor::ProcessEye(ID3D11Texture2D* texture, const vr::VRTextureBou
 		return false;
 	}
 
-	// copy the layer into the scratch input (same size and format)
-	context->CopyResource(scratchIn, texture);
+	// copy the layer into the scratch input (same size and format). a
+	// subresource copy instead of CopyResource: for single-pass-instanced
+	// apps the layer is a Texture2DArray and CopyResource against the
+	// non-array scratch is an invalid call D3D DROPS SILENTLY — the shader
+	// then samples a blank scratch and the copy-back blacks out slice 0
+	// (the left eye) while slice 1 renders untouched (the Demeo one-eye
+	// bug). the subresource form is legal for both plain and array layers.
+	UINT layerSub = D3D11CalcSubresource(0, (UINT)slice, desc.MipLevels);
+	context->CopySubresourceRegion(scratchIn, 0, 0, 0, 0, texture, layerSub, nullptr);
 
 	// constants
 	const StreamFrameConfig &config = settings.config;
@@ -691,26 +746,11 @@ bool FrameProcessor::ProcessEye(ID3D11Texture2D* texture, const vr::VRTextureBou
 	// shared gaze -> viewport uv for this eye (ring and pupil swim)
 	bool haveGazeUv = false;
 	double gazeUvU = 0.5, gazeUvV = 0.5;
-	if(settings.gazeValid && settings.gazeDirZ < -0.1){
-		double tanX = settings.gazeDirX / -settings.gazeDirZ;
-		double tanY = settings.gazeDirY / -settings.gazeDirZ;
+	if(settings.gazeValid){
+		// mapping shared with the fixation dot and the swim probe (the
+		// same math the runtime uses for GetEyeTrackedFoveationCenter)
 		double u, v;
-		if(settings.gazeProjValid){
-			// the real asymmetric frustum from the display component — the
-			// same mapping the runtime uses for GetEyeTrackedFoveationCenter.
-			// raw projection tangents are y-down (top negative for the up
-			// edge), gaze dirY is +up, hence the sign flip.
-			const float* proj = settings.gazeProj[eye];
-			double l = proj[0], r = proj[1], t = proj[2], b = proj[3];
-			u = r != l ? (tanX - l) / (r - l) : 0.5;
-			v = b != t ? (-tanY - t) / (b - t) : 0.5;
-		}else{
-			// fallback: symmetric knobs around the distortion center
-			double centerX = eye == 0 ? settings.config.centerOffsetXLeft : settings.config.centerOffsetXRight;
-			u = 0.5 + centerX + 0.5 * tanX / settings.config.eyeGaze.tanHalfFovX;
-			v = 0.5 + settings.config.centerOffsetY - 0.5 * tanY / settings.config.eyeGaze.tanHalfFovY;
-		}
-		if(u > -0.2 && u < 1.2 && v > -0.2 && v < 1.2){
+		if(MapHeadDirToEyeUv(settings, eye, settings.gazeDirX, settings.gazeDirY, settings.gazeDirZ, u, v)){
 			haveGazeUv = true;
 			gazeUvU = u;
 			gazeUvV = v;
@@ -721,6 +761,38 @@ bool FrameProcessor::ProcessEye(ID3D11Texture2D* texture, const vr::VRTextureBou
 			}
 		}
 	}
+	// world-locked fixation dot (VOR swim probe target), mapped per eye
+	// through the same frusta as the gaze. probeCapture implies warped
+	// overlays (a scoring run against an unwarped dot would be meaningless)
+	// and the dot itself.
+	constants.overlayWarped = (settings.config.eyeGaze.overlayWarped
+		|| settings.config.eyeGaze.probeCapture) ? 1.0f : 0.0f;
+	constants.dotMode = 0.0f;
+	if(settings.dotValid && (settings.config.eyeGaze.calibDot || settings.config.eyeGaze.probeCapture)){
+		double du, dv;
+		if(MapHeadDirToEyeUv(settings, eye, settings.dotDirX, settings.dotDirY, settings.dotDirZ, du, dv)){
+			constants.dotU = (float)du;
+			constants.dotV = (float)dv;
+			constants.dotMode = 1.0f;
+		}
+	}
+	// interactive tuner band ring, gated per eye by the edit mode so the
+	// active eye selection is visible at a glance (linked = both rings)
+	constants.tuneRingR = (float)settings.tuneRingR;
+	bool ringThisEye = settings.tuneActive && (settings.tuneEyeMode == 0
+		|| (settings.tuneEyeMode == 1 && eye == 0)
+		|| (settings.tuneEyeMode == 2 && eye == 1));
+	constants.tuneRingMode = ringThisEye ? 1.0f : 0.0f;
+	double ringOpacity = settings.config.distortion.tune.ringOpacity;
+	if(ringOpacity < 0.0){ ringOpacity = 0.0; }
+	if(ringOpacity > 1.0){ ringOpacity = 1.0; }
+	constants.tuneRingAlpha = (float)ringOpacity;
+	// world-locked calibration grid: head basis + flag (angular mode only,
+	// needs a valid submitted render pose)
+	constants.gridWorldLock = (settings.config.eyeGaze.gridWorldLocked && settings.headBasisValid) ? 1.0f : 0.0f;
+	constants.headXx = settings.headBasis[0][0]; constants.headXy = settings.headBasis[0][1]; constants.headXz = settings.headBasis[0][2];
+	constants.headYx = settings.headBasis[1][0]; constants.headYy = settings.headBasis[1][1]; constants.headYz = settings.headBasis[1][2];
+	constants.headZx = settings.headBasis[2][0]; constants.headZy = settings.headBasis[2][1]; constants.headZz = settings.headBasis[2][2];
 	// grid: 0 off, 1 uv mode, 2 angular mode (needs real frusta; falls
 	// back to uv mode without them)
 	float gridMode = 0.0f;
@@ -829,7 +901,7 @@ bool FrameProcessor::ProcessEye(ID3D11Texture2D* texture, const vr::VRTextureBou
 	box.right = (UINT)((uMin + uSize) * desc.Width);
 	box.bottom = (UINT)((vMin + vSize) * desc.Height);
 	box.back = 1;
-	context->CopySubresourceRegion(texture, 0, box.left, box.top, 0, scratchOut, 0, &box);
+	context->CopySubresourceRegion(texture, layerSub, box.left, box.top, 0, scratchOut, 0, &box);
 	return true;
 }
 
@@ -892,12 +964,29 @@ bool FrameProcessor::ProcessSceneLayer(vr::SharedTextureHandle_t leftEye, vr::Sh
 	bool ok = true;
 	ID3D11Texture2D* left = OpenShared(leftEye);
 	ID3D11Texture2D* right = OpenShared(rightEye);
+	// single-pass-instanced apps (Demeo, Beat Saber, ...) submit ONE
+	// Texture2DArray shared by both eyes: slice 0 = left, slice 1 = right.
+	// detect it from the opened texture and route each eye to its slice.
+	UINT leftSlices = 1;
 	if(left){
-		ok &= ProcessEye(left, leftBounds, 0, settings);
+		D3D11_TEXTURE2D_DESC leftDesc = {};
+		left->GetDesc(&leftDesc);
+		leftSlices = leftDesc.ArraySize;
 	}
-	bool boundsDiffer = memcmp(&leftBounds, &rightBounds, sizeof(vr::VRTextureBounds_t)) != 0;
-	if(right && (right != left || boundsDiffer)){
-		ok &= ProcessEye(right, rightBounds, 1, settings);
+	if(left && leftSlices >= 2 && (right == left || !right)){
+		if(loggedArrayTextures.insert((uint64_t)leftEye).second){
+			DriverLog("FrameProcessor: layer is a texture array (%u slices), processing per-slice (single-pass instanced app)", leftSlices);
+		}
+		ok &= ProcessEye(left, leftBounds, 0, 0, settings);
+		ok &= ProcessEye(left, rightBounds, 1, 1, settings);
+	}else{
+		if(left){
+			ok &= ProcessEye(left, leftBounds, 0, 0, settings);
+		}
+		bool boundsDiffer = memcmp(&leftBounds, &rightBounds, sizeof(vr::VRTextureBounds_t)) != 0;
+		if(right && (right != left || boundsDiffer)){
+			ok &= ProcessEye(right, rightBounds, 1, 0, settings);
+		}
 	}
 
 	// submit our commands to the GPU before releasing the mutex. without this the
