@@ -4,6 +4,7 @@
 #include <map>
 #include <vector>
 #include <mutex>
+#include <string>
 
 #include "openvr_driver.h"
 
@@ -67,6 +68,11 @@ private:
 		double peakSpeed = 0;
 		// serial announced once on first sight (maps openVRID -> device)
 		bool announced = false;
+		// tracking state transition + post throw window logging
+		bool haveTrackState = false;
+		bool lastLoggedValid = false;
+		int lastLoggedResult = 0;
+		double recentFastTime = 0;
 		// finite difference velocity from positions, to compare against the
 		// velocity the driver reports (suspected ~2 m/s clamp in vrlink)
 		bool havePos = false;
@@ -94,16 +100,113 @@ private:
 		double time[ringSize] = {};
 		int count = 0;   // valid entries
 		int head = 0;    // next write slot
+		// orientation alongside position, for angular velocity derivation
+		vr::HmdQuaternion_t quat[ringSize] = {};
 		// EMA over the least squares slope, so the substituted velocity is
 		// smooth in time (discontinuities here become rendered pose jumps
 		// through the runtime's forward prediction)
 		bool haveEma = false;
 		double emaVel[3] = {};
+		bool haveEmaAng = false;
+		double emaAng[3] = {};
+		// joint peak hold: v and w captured at the most recent linear speed
+		// peak, replayed with decay for ~90ms so a game sampling just after
+		// release reads the intended throw instead of the hand's snap back
+		double peakVel[3] = {};
+		double peakAng[3] = {};
+		double peakSpeed = 0;
+		double peakTime = 0;
+		// previous output speed, for peak plausibility (a single spiked
+		// sample must not become a held peak)
+		double lastOutSpeed = 0;
+		double lastOutTime = 0;
+		// hold is latched by violent deceleration and stays engaged until
+		// the decay window ends or a new peak latches
+		bool holdActive = false;
+		// release gesture anchor (v5): set when the grip/trigger scalar
+		// starts FALLING from its held plateau — the biomechanical moment
+		// the hand begins letting go, which precedes every game's release
+		// threshold. during the anchor window the output ratchets up with
+		// rising motion and freezes against falling motion, so whatever
+		// instant the game samples, it reads the throw's peak.
+		double anchorTime = 0;
+		bool anchorHasValue = false;
+		double anchorVel[3] = {};
+		double anchorAng[3] = {};
+		double anchorSpeed = 0;
 	};
+	// pose component tracking (ET hunt: gaze may be published as a pose
+	// component; log creates and throttle updates from the HMD container)
+	struct PoseComponentInfo {
+		vr::PropertyContainerHandle_t container = 0;
+		std::string name;
+		uint64_t updates = 0;
+		double lastLogTime = 0;
+	};
+	std::map<vr::VRInputComponentHandle_t, PoseComponentInfo> poseComponents = {};
+public:
+	void AnchorReleaseGesture(uint32_t openVRID);
+private:
 	std::map<uint32_t, VelFixState> velFixStates = {};
 	// returns true and writes the derived velocity when the window is usable
-	bool DeriveVelocity(uint32_t openVRID, const vr::DriverPose_t &pose, double derived[3]);
+	bool DeriveMotion(uint32_t openVRID, const vr::DriverPose_t &pose, double derivedVel[3], double derivedAng[3]);
 	// cached device classes (Prop_DeviceClass_Int32), resolved on first pose
 	std::map<uint32_t, int> deviceClasses = {};
 	int GetDeviceClass(uint32_t openVRID);
+	
+	// ---- release ground truth tap ----
+	// vrlink publishes grip/trigger through IVRDriverInput booleans; the
+	// injector forwards creates and updates here. on grip/trigger
+	// transitions we log a snapshot of the motion state so every release in
+	// a session shows exactly what velocity a game could have read and what
+	// the tracking state was. this replaces theorizing about WHY a given
+	// throw died (snap back? dropout? zero?) with direct evidence.
+	struct InputComponentInfo {
+		vr::PropertyContainerHandle_t container = 0;
+		std::string name;
+		bool lastValue = false;
+		bool haveValue = false;
+		bool interesting = false; // grip / trigger / squeeze / grab / pinch
+		bool isScalar = false;
+		float lastScalar = 0;
+		bool scalarPressed = false;
+	};
+	std::map<vr::VRInputComponentHandle_t, InputComponentInfo> inputComponents = {};
+	std::map<vr::PropertyContainerHandle_t, uint32_t> containerToId = {};
+	struct MotionSnapshot {
+		double time = 0;
+		double outVel[3] = {};
+		double outAng[3] = {};
+		double outSpeed = 0;
+		bool trackingOk = false;
+		int result = 0;
+	};
+	std::map<uint32_t, MotionSnapshot> motionSnapshots = {};
+	double lastReleaseLogTime = 0;
+	double lastEdgeLogTime = 0;
+	void LogReleaseSnapshot(vr::PropertyContainerHandle_t container, const std::string &name);
+	uint32_t ResolveContainerId(vr::PropertyContainerHandle_t container);
+	// the vrlink HMD device, stored at TrackedDeviceAdded so the real
+	// per-eye projection frusta can be queried from its display component
+	// (used for the gaze -> viewport mapping, same math the runtime uses
+	// for GetEyeTrackedFoveationCenter)
+	vr::ITrackedDeviceServerDriver* hmdDevice = nullptr;
+	bool hmdProjectionQueried = false;
+	bool hmdProjectionValid = false;
+	float hmdProjection[2][4] = {}; // [eye][left,right,top,bottom]
+public:
+	// returns false until the display component has been queried successfully
+	bool GetHmdProjectionRaw(int eye, float &left, float &right, float &top, float &bottom);
+private:
+public:
+	void OnInputComponentCreated(vr::PropertyContainerHandle_t container, const char* name, vr::VRInputComponentHandle_t handle);
+	void OnBooleanComponentUpdated(vr::VRInputComponentHandle_t handle, bool value);
+	void OnScalarComponentCreated(vr::PropertyContainerHandle_t container, const char* name, vr::VRInputComponentHandle_t handle);
+	void OnScalarComponentUpdated(vr::VRInputComponentHandle_t handle, float value);
+	void OnPoseComponentCreated(vr::PropertyContainerHandle_t container, const char* name, vr::VRInputComponentHandle_t handle);
+	void OnPoseComponentUpdated(vr::VRInputComponentHandle_t handle, const vr::HmdMatrix34_t* offset, double timeOffset);
+private:
 };
+
+// defined in HmdDriverFactory.cpp
+extern CustomHeadsetDeviceProvider deviceProvider;

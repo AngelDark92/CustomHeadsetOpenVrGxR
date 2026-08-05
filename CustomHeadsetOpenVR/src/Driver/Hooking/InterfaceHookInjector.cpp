@@ -21,6 +21,24 @@ static Hook<void(*)(vr::IVRServerDriverHost *_this, const char *pchDeviceSerialN
 // eye tracking tap: intercept driver-side gaze publication (vrlink publishes
 // gaze into vrserver through these two IVRDriverInput_004 entries)
 static Hook<vr::EVRInputError(*)(vr::IVRDriverInput *, vr::PropertyContainerHandle_t, const char *, vr::VRInputComponentHandle_t *)>
+	CreateBooleanComponentHook004("IVRDriverInput004::CreateBooleanComponent");
+
+static Hook<vr::EVRInputError(*)(vr::IVRDriverInput *, vr::VRInputComponentHandle_t, bool, double)>
+	UpdateBooleanComponentHook004("IVRDriverInput004::UpdateBooleanComponent");
+
+static Hook<vr::EVRInputError(*)(vr::IVRDriverInput *, vr::PropertyContainerHandle_t, const char *, vr::VRInputComponentHandle_t *, vr::EVRScalarType, vr::EVRScalarUnits)>
+	CreateScalarComponentHook004("IVRDriverInput004::CreateScalarComponent");
+
+static Hook<vr::EVRInputError(*)(vr::IVRDriverInput *, vr::VRInputComponentHandle_t, float, double)>
+	UpdateScalarComponentHook004("IVRDriverInput004::UpdateScalarComponent");
+
+static Hook<vr::EVRInputError(*)(vr::IVRDriverInput *, vr::PropertyContainerHandle_t, const char *, vr::VRInputComponentHandle_t *)>
+	CreatePoseComponentHook004("IVRDriverInput004::CreatePoseComponent");
+
+static Hook<vr::EVRInputError(*)(vr::IVRDriverInput *, vr::VRInputComponentHandle_t, const vr::HmdMatrix34_t *, double)>
+	UpdatePoseComponentHook004("IVRDriverInput004::UpdatePoseComponent");
+
+static Hook<vr::EVRInputError(*)(vr::IVRDriverInput *, vr::PropertyContainerHandle_t, const char *, vr::VRInputComponentHandle_t *)>
 	CreateEyeTrackingComponentHook004("IVRDriverInput004::CreateEyeTrackingComponent");
 
 static Hook<vr::EVRInputError(*)(vr::IVRDriverInput *, vr::VRInputComponentHandle_t, const vr::VREyeTrackingData_t *, double)>
@@ -59,6 +77,54 @@ static void DetourTrackedDeviceAdded006(vr::IVRServerDriverHost *_this, const ch
 		// 	TrackedDeviceAddedHook006.originalFunc(_this, serial, eDeviceClass, pDriver);
 		// }
 	}
+}
+
+static vr::EVRInputError DetourCreateBooleanComponent004(vr::IVRDriverInput *_this, vr::PropertyContainerHandle_t ulContainer, const char *pchName, vr::VRInputComponentHandle_t *pHandle)
+{
+	auto error = CreateBooleanComponentHook004.originalFunc(_this, ulContainer, pchName, pHandle);
+	if(pHandle){
+		Driver->OnInputComponentCreated(ulContainer, pchName, *pHandle);
+	}
+	return error;
+}
+
+static vr::EVRInputError DetourUpdateBooleanComponent004(vr::IVRDriverInput *_this, vr::VRInputComponentHandle_t ulComponent, bool bNewValue, double fTimeOffset)
+{
+	auto error = UpdateBooleanComponentHook004.originalFunc(_this, ulComponent, bNewValue, fTimeOffset);
+	Driver->OnBooleanComponentUpdated(ulComponent, bNewValue);
+	return error;
+}
+
+static vr::EVRInputError DetourCreateScalarComponent004(vr::IVRDriverInput *_this, vr::PropertyContainerHandle_t ulContainer, const char *pchName, vr::VRInputComponentHandle_t *pHandle, vr::EVRScalarType eType, vr::EVRScalarUnits eUnits)
+{
+	auto error = CreateScalarComponentHook004.originalFunc(_this, ulContainer, pchName, pHandle, eType, eUnits);
+	if(pHandle){
+		Driver->OnScalarComponentCreated(ulContainer, pchName, *pHandle);
+	}
+	return error;
+}
+
+static vr::EVRInputError DetourUpdateScalarComponent004(vr::IVRDriverInput *_this, vr::VRInputComponentHandle_t ulComponent, float fNewValue, double fTimeOffset)
+{
+	auto error = UpdateScalarComponentHook004.originalFunc(_this, ulComponent, fNewValue, fTimeOffset);
+	Driver->OnScalarComponentUpdated(ulComponent, fNewValue);
+	return error;
+}
+
+static vr::EVRInputError DetourCreatePoseComponent004(vr::IVRDriverInput *_this, vr::PropertyContainerHandle_t ulContainer, const char *pchName, vr::VRInputComponentHandle_t *pHandle)
+{
+	auto error = CreatePoseComponentHook004.originalFunc(_this, ulContainer, pchName, pHandle);
+	if(pHandle){
+		Driver->OnPoseComponentCreated(ulContainer, pchName, *pHandle);
+	}
+	return error;
+}
+
+static vr::EVRInputError DetourUpdatePoseComponent004(vr::IVRDriverInput *_this, vr::VRInputComponentHandle_t ulComponent, const vr::HmdMatrix34_t *pMatPoseOffset, double fTimeOffset)
+{
+	auto error = UpdatePoseComponentHook004.originalFunc(_this, ulComponent, pMatPoseOffset, fTimeOffset);
+	Driver->OnPoseComponentUpdated(ulComponent, pMatPoseOffset, fTimeOffset);
+	return error;
 }
 
 static vr::EVRInputError DetourCreateEyeTrackingComponent004(vr::IVRDriverInput *_this, vr::PropertyContainerHandle_t ulContainer, const char *pchName, vr::VRInputComponentHandle_t *pHandle)
@@ -114,6 +180,36 @@ static void *DetourGetGenericInterface(vr::IVRDriverContext *_this, const char *
 		// 6 UpdateSkeletonComponent, 7 CreatePoseComponent,
 		// 8 UpdatePoseComponent, 9 CreateEyeTrackingComponent,
 		// 10 UpdateEyeTrackingComponent
+		if (!IHook::Exists(CreateBooleanComponentHook004.name))
+		{
+			CreateBooleanComponentHook004.CreateHookInObjectVTable(originalInterface, 0, &DetourCreateBooleanComponent004);
+			IHook::Register(&CreateBooleanComponentHook004);
+		}
+		if (!IHook::Exists(UpdateBooleanComponentHook004.name))
+		{
+			UpdateBooleanComponentHook004.CreateHookInObjectVTable(originalInterface, 1, &DetourUpdateBooleanComponent004);
+			IHook::Register(&UpdateBooleanComponentHook004);
+		}
+		if (!IHook::Exists(CreateScalarComponentHook004.name))
+		{
+			CreateScalarComponentHook004.CreateHookInObjectVTable(originalInterface, 2, &DetourCreateScalarComponent004);
+			IHook::Register(&CreateScalarComponentHook004);
+		}
+		if (!IHook::Exists(UpdateScalarComponentHook004.name))
+		{
+			UpdateScalarComponentHook004.CreateHookInObjectVTable(originalInterface, 3, &DetourUpdateScalarComponent004);
+			IHook::Register(&UpdateScalarComponentHook004);
+		}
+		if (!IHook::Exists(CreatePoseComponentHook004.name))
+		{
+			CreatePoseComponentHook004.CreateHookInObjectVTable(originalInterface, 7, &DetourCreatePoseComponent004);
+			IHook::Register(&CreatePoseComponentHook004);
+		}
+		if (!IHook::Exists(UpdatePoseComponentHook004.name))
+		{
+			UpdatePoseComponentHook004.CreateHookInObjectVTable(originalInterface, 8, &DetourUpdatePoseComponent004);
+			IHook::Register(&UpdatePoseComponentHook004);
+		}
 		if (!IHook::Exists(CreateEyeTrackingComponentHook004.name))
 		{
 			CreateEyeTrackingComponentHook004.CreateHookInObjectVTable(originalInterface, 9, &DetourCreateEyeTrackingComponent004);

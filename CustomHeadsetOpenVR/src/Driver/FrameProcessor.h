@@ -25,6 +25,21 @@ struct FrameProcessSettings{
 	bool applyColor = true;
 	// stationary dimming factor, 0 bright to 1 black, applied after everything
 	double dimAmount = 0;
+	// live gaze from the eye tracking tap, sampled on the Present thread.
+	// unit direction in HMD space (origin is the head origin; vrlink
+	// publishes a combined ray with zero origin), valid=false when the tap
+	// has no fresh sample.
+	bool gazeValid = false;
+	double gazeDirX = 0;
+	double gazeDirY = 0;
+	double gazeDirZ = -1;
+	// real per-eye projection frusta from the HMD display component
+	// ([eye][left,right,top,bottom], OpenVR raw convention: y-down
+	// tangents). when valid the gaze mapping uses these — the same math
+	// the runtime uses for GetEyeTrackedFoveationCenter — instead of the
+	// symmetric tangent knobs.
+	bool gazeProjValid = false;
+	float gazeProj[2][4] = {};
 };
 
 #ifdef _WIN32
@@ -121,6 +136,9 @@ private:
 
 	// rate limited error logging
 	uint64_t errorCount = 0;
+	// gaze ring state logging
+	bool gazeRingWasActive = false;
+	uint64_t lastGazeRingLogMs = 0;
 };
 
 #else

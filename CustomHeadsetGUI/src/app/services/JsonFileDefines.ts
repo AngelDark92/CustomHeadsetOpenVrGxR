@@ -17,9 +17,14 @@ export type Settings = {
   generalHeadset: GeneralHeadsetConfig,
   customShader: CustomShaderConfig,
   streamFrame?: StreamFrameConfig,
+  controllers?: ControllersConfig,
   forceTracking: boolean,
   takeCompositorScreenshots: boolean,
   watchDistortionProfiles: boolean,
+}
+export type ControllersConfig = {
+  rotationOffsetDeg: { x: number, y: number, z: number },
+  positionOffsetCm: { x: number, y: number, z: number },
 }
 export type StationaryDimmingConfig = {
   enable: boolean,
@@ -99,6 +104,9 @@ export type StreamFrameConfig = {
   processAtSubmitLayer: boolean;
   syncTimeoutMs: number;
   velocityFix: boolean;
+  velocityFixMode: string;
+  eyeGaze: { debugRing: boolean, tanHalfFovX: number, tanHalfFovY: number, predictionMs: number, debugGrid: boolean, gridMode: string, gridAngularDeg: number };
+  pupilSwim: { centerStrengthX: number, centerStrengthY: number };
   poseLogging: boolean;
 };
 export type CustomShaderConfig = {

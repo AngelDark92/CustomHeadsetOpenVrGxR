@@ -1,6 +1,7 @@
 #include "FrameComponentShim.h"
 #include "DriverLog.h"
 #include "EyeTrackingTap.h"
+#include "DeviceProvider.h"
 #include "../Config/ConfigLoader.h"
 #include <chrono>
 #include <cmath>
@@ -133,6 +134,76 @@ void DirectModeComponentShim::UpdateStationaryDimming(const vr::HmdMatrix34_t &p
 }
 
 bool DirectModeComponentShim::GetActiveSettings(FrameProcessSettings &settings, bool &processAtSubmit){
+	// live gaze for the frame about to be processed (dynamic pupil swim /
+	// gaze debug). 100ms staleness guard: a brief hiccup degrades to the
+	// static behavior instead of consuming stale gaze.
+	EyeTrackingTap::Sample gaze;
+	if(eyeTrackingTap.GetLatestSample(gaze, 0.1) && gaze.valid){
+		settings.gazeValid = true;
+		double dir[3] = { gaze.targetX, gaze.targetY, gaze.targetZ };
+		// latency compensation: extrapolate along the recent gaze motion.
+		// smoothed delta keeps saccade overshoot bounded; lead is clamped.
+		double leadMs = settings.config.eyeGaze.predictionMs;
+		if(leadMs < 0){ leadMs = 0; }
+		if(leadMs > 100){ leadMs = 100; }
+		if(leadMs > 0 && gazePrevValid && gaze.receivedTime > gazePrevTime){
+			double dt = gaze.receivedTime - gazePrevTime;
+			if(dt > 0.0005 && dt < 0.1){
+				for(int i = 0; i < 3; i++){
+					double instant = (dir[i] - gazePrevDir[i]) / dt;
+					gazeVelEma[i] = gazeVelEma[i] * 0.6 + instant * 0.4;
+					dir[i] += gazeVelEma[i] * leadMs / 1000.0;
+				}
+				double n = sqrt(dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]);
+				if(n > 0.001){
+					dir[0] /= n; dir[1] /= n; dir[2] /= n;
+				}
+			}
+		}
+		if(!gazePrevValid || gaze.receivedTime != gazePrevTime){
+			gazePrevDir[0] = gaze.targetX;
+			gazePrevDir[1] = gaze.targetY;
+			gazePrevDir[2] = gaze.targetZ;
+			gazePrevTime = gaze.receivedTime;
+			gazePrevValid = true;
+		}
+		// speed-adaptive smoothing: the correction must follow FIXATIONS,
+		// not sensor noise. large deltas pass almost unfiltered (the snap
+		// lands inside the saccade, where vision is suppressed anyway);
+		// sub-degree jitter is heavily damped so the corrected world is
+		// rock solid while fixating.
+		if(!gazeSmoothValid){
+			gazeSmoothValid = true;
+			gazeSmoothEma[0] = dir[0]; gazeSmoothEma[1] = dir[1]; gazeSmoothEma[2] = dir[2];
+		}else{
+			double d = gazeSmoothEma[0] * dir[0] + gazeSmoothEma[1] * dir[1] + gazeSmoothEma[2] * dir[2];
+			if(d > 1.0){ d = 1.0; } if(d < -1.0){ d = -1.0; }
+			double angle = acos(d);
+			// full snap beyond ~3 degrees, 6% floor at fixation
+			double alpha = 0.06 + angle / 0.05;
+			if(alpha > 1.0){ alpha = 1.0; }
+			for(int i = 0; i < 3; i++){
+				gazeSmoothEma[i] = gazeSmoothEma[i] * (1.0 - alpha) + dir[i] * alpha;
+			}
+			double n = sqrt(gazeSmoothEma[0] * gazeSmoothEma[0] + gazeSmoothEma[1] * gazeSmoothEma[1] + gazeSmoothEma[2] * gazeSmoothEma[2]);
+			if(n > 0.001){
+				gazeSmoothEma[0] /= n; gazeSmoothEma[1] /= n; gazeSmoothEma[2] /= n;
+			}
+			dir[0] = gazeSmoothEma[0]; dir[1] = gazeSmoothEma[1]; dir[2] = gazeSmoothEma[2];
+		}
+		settings.gazeDirX = dir[0];
+		settings.gazeDirY = dir[1];
+		settings.gazeDirZ = dir[2];
+	}
+	// real per-eye frusta for the mapping (cached after the first query)
+	for(int e = 0; e < 2; e++){
+		float l, r, t, b;
+		if(deviceProvider.GetHmdProjectionRaw(e, l, r, t, b)){
+			settings.gazeProjValid = true;
+			settings.gazeProj[e][0] = l; settings.gazeProj[e][1] = r;
+			settings.gazeProj[e][2] = t; settings.gazeProj[e][3] = b;
+		}
+	}
 	{
 		std::lock_guard<std::mutex> configGuard(driverConfigLock);
 		settings.config = driverConfig.streamFrame;

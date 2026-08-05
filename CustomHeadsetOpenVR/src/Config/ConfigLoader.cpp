@@ -482,7 +482,46 @@ void ConfigLoader::ParseConfig(){
 				newConfig.streamFrame.poseLogging = streamFrameData["poseLogging"].get<bool>();
 			}
 			if(streamFrameData["velocityFix"].is_boolean()){
+				// legacy bool maps to full mode
 				newConfig.streamFrame.velocityFix = streamFrameData["velocityFix"].get<bool>();
+				newConfig.streamFrame.velocityFixMode = newConfig.streamFrame.velocityFix ? 2 : 0;
+			}
+			if(streamFrameData["velocityFixMode"].is_string()){
+				std::string mode = streamFrameData["velocityFixMode"].get<std::string>();
+				newConfig.streamFrame.velocityFixMode = mode == "full" ? 2 : (mode == "classic" ? 1 : 0);
+			}
+			if(streamFrameData["eyeGaze"].is_object()){
+				json eyeGazeData = streamFrameData["eyeGaze"];
+				if(eyeGazeData["debugRing"].is_boolean()){
+					newConfig.streamFrame.eyeGaze.debugRing = eyeGazeData["debugRing"].get<bool>();
+				}
+				if(eyeGazeData["tanHalfFovX"].is_number()){
+					newConfig.streamFrame.eyeGaze.tanHalfFovX = eyeGazeData["tanHalfFovX"].get<double>();
+				}
+				if(eyeGazeData["tanHalfFovY"].is_number()){
+					newConfig.streamFrame.eyeGaze.tanHalfFovY = eyeGazeData["tanHalfFovY"].get<double>();
+				}
+				if(eyeGazeData["predictionMs"].is_number()){
+					newConfig.streamFrame.eyeGaze.predictionMs = eyeGazeData["predictionMs"].get<double>();
+				}
+				if(eyeGazeData["debugGrid"].is_boolean()){
+					newConfig.streamFrame.eyeGaze.debugGrid = eyeGazeData["debugGrid"].get<bool>();
+				}
+				if(eyeGazeData["gridMode"].is_string()){
+					newConfig.streamFrame.eyeGaze.gridMode = eyeGazeData["gridMode"].get<std::string>();
+				}
+				if(eyeGazeData["gridAngularDeg"].is_number()){
+					newConfig.streamFrame.eyeGaze.gridAngularDeg = eyeGazeData["gridAngularDeg"].get<double>();
+				}
+			}
+			if(streamFrameData["pupilSwim"].is_object()){
+				json pupilSwimData = streamFrameData["pupilSwim"];
+				if(pupilSwimData["centerStrengthX"].is_number()){
+					newConfig.streamFrame.pupilSwim.centerStrengthX = pupilSwimData["centerStrengthX"].get<double>();
+				}
+				if(pupilSwimData["centerStrengthY"].is_number()){
+					newConfig.streamFrame.pupilSwim.centerStrengthY = pupilSwimData["centerStrengthY"].get<double>();
+				}
 			}
 			if(streamFrameData["syncTimeoutMs"].is_number()){
 				newConfig.streamFrame.syncTimeoutMs = streamFrameData["syncTimeoutMs"].get<int>();
@@ -769,7 +808,21 @@ void ConfigLoader::WriteInfo(){
 				{"processAtSubmitLayer", defaultSettings.streamFrame.processAtSubmitLayer},
 				{"poseLogging", defaultSettings.streamFrame.poseLogging},
 				{"syncTimeoutMs", defaultSettings.streamFrame.syncTimeoutMs},
+				{"eyeGaze", {
+					{"debugRing", defaultSettings.streamFrame.eyeGaze.debugRing},
+					{"tanHalfFovX", defaultSettings.streamFrame.eyeGaze.tanHalfFovX},
+					{"tanHalfFovY", defaultSettings.streamFrame.eyeGaze.tanHalfFovY},
+					{"predictionMs", defaultSettings.streamFrame.eyeGaze.predictionMs},
+					{"debugGrid", defaultSettings.streamFrame.eyeGaze.debugGrid},
+					{"gridMode", defaultSettings.streamFrame.eyeGaze.gridMode},
+					{"gridAngularDeg", defaultSettings.streamFrame.eyeGaze.gridAngularDeg},
+				}},
+				{"pupilSwim", {
+					{"centerStrengthX", defaultSettings.streamFrame.pupilSwim.centerStrengthX},
+					{"centerStrengthY", defaultSettings.streamFrame.pupilSwim.centerStrengthY},
+				}},
 				{"velocityFix", defaultSettings.streamFrame.velocityFix},
+				{"velocityFixMode", defaultSettings.streamFrame.velocityFixMode == 2 ? "full" : (defaultSettings.streamFrame.velocityFixMode == 1 ? "classic" : "off")},
 			}},
 			{"takeCompositorScreenshots", defaultSettings.takeCompositorScreenshots},
 			{"onlyHandlePrivateFunctionality", defaultSettings.onlyHandlePrivateFunctionality},

@@ -336,11 +336,78 @@
 <div class="field">
     <div class="title">
         <span>Throw Velocity Fix (experimental)</span>
-        <app-field-tip info="The driver's reported controller velocity is heavily smoothed, which makes thrown objects land short. This recomputes velocity from recent positions and substitutes it during fast motion, so releases carry true peak speed. Calm aiming keeps the driver's smoother data." />
-        <app-reset-button [canReset]="settings.velocityFix != defaults.velocityFix" (resetClick)="reset('velocityFix')"></app-reset-button>
+        <app-field-tip info="The driver's reported controller velocity is heavily smoothed, which makes thrown objects land short and mistimed. Classic recomputes linear velocity from recent positions and substitutes it during fast motion — the best-rated iteration in testing. Full additionally corrects angular velocity and adds release-timing protection (peak/direction holds, grip-gesture anchor) — more corrections, more moving parts. Try Classic first." />
+        <app-reset-button [canReset]="settings.velocityFixMode != defaults.velocityFixMode" (resetClick)="reset('velocityFixMode')"></app-reset-button>
     </div>
     <div class="control">
-        <mat-slide-toggle [(ngModel)]="settings.velocityFix" (ngModelChange)="save()"></mat-slide-toggle>
+        <mat-select [(ngModel)]="settings.velocityFixMode" (ngModelChange)="save()">
+            <mat-option value="off">Off</mat-option>
+            <mat-option value="classic">Classic (linear velocity only)</mat-option>
+            <mat-option value="full">Full (angular + release timing)</mat-option>
+        </mat-select>
+    </div>
+</div>
+
+<div class="field">
+    <div class="title">
+        <span>Gaze Debug Ring</span>
+        <app-field-tip info="Draws a small red ring where the eye tracker says you are looking (requires eye tracking data to be flowing — check SteamVR's Steam Link tab for 'Share ET data with other apps'). Used to calibrate the gaze-to-viewport mapping for dynamic pupil swim correction: look at fixed points and adjust the FOV tangents below until the ring tracks your gaze everywhere." />
+        <app-reset-button [canReset]="settings.eyeGaze.debugRing != defaults.eyeGaze.debugRing" (resetClick)="reset('eyeGaze')"></app-reset-button>
+    </div>
+    <div class="control">
+        <mat-slide-toggle [(ngModel)]="settings.eyeGaze.debugRing" (ngModelChange)="save()"></mat-slide-toggle>
+    </div>
+</div>
+
+<div class="field">
+    <div class="title">
+        <span>Gaze FOV Tangents</span>
+        <app-field-tip info="Half-FOV tangents used to map gaze direction to screen position. 1.19 corresponds to ~100 degrees. If the ring moves too far for your gaze, increase; too little, decrease. Tune X with horizontal gaze, Y with vertical." />
+    </div>
+    <div class="control">
+        <span>X</span><input matInput [(ngModel)]="settings.eyeGaze.tanHalfFovX" step="0.02" min="0.3" max="3" (ngModelChange)="save()" type="number">
+        <span>Y</span><input matInput [(ngModel)]="settings.eyeGaze.tanHalfFovY" step="0.02" min="0.3" max="3" (ngModelChange)="save()" type="number">
+    </div>
+</div>
+
+<div class="field">
+    <div class="title">
+        <span>Gaze Prediction (ms)</span>
+        <app-field-tip info="Leads the gaze point by extrapolating recent eye motion, compensating the capture-to-display latency that makes the ring trail your eyes. Raise if the ring lags behind saccades, lower if it overshoots. 0 disables." />
+    </div>
+    <div class="control">
+        <input matInput [(ngModel)]="settings.eyeGaze.predictionMs" step="5" min="0" max="100" (ngModelChange)="save()" type="number">
+    </div>
+</div>
+
+<div class="section">
+    <div class="section-title"><span>Dynamic Pupil Swim (requires eye tracking)</span></div>
+</div>
+
+<div class="field">
+    <div class="title">
+        <span>Calibration Grid</span>
+        <app-field-tip info="Overlays straight reference lines for pupil swim tuning. Fixate a grid intersection, then move only your eyes around it: if the nearby lines bend or shift as your gaze moves, that's pupil swim." />
+    </div>
+    <div class="control">
+        <mat-slide-toggle [(ngModel)]="settings.eyeGaze.debugGrid" (ngModelChange)="save()"></mat-slide-toggle>
+        <mat-select [(ngModel)]="settings.eyeGaze.gridMode" (ngModelChange)="save()">
+            <mat-option value="uv">UV grid (eye tuning)</mat-option>
+            <mat-option value="angular">Angular grid (camera photos)</mat-option>
+        </mat-select>
+        <span>deg</span><input matInput [(ngModel)]="settings.eyeGaze.gridAngularDeg" step="0.5" min="0.5" max="30" (ngModelChange)="save()" type="number">
+    </div>
+</div>
+
+<div class="field">
+    <div class="title">
+        <span>Center Follow Strength</span>
+        <app-field-tip info="How strongly the distortion center follows your gaze (X horizontal, Y vertical). 0 = static calibration exactly. With the grid on, raise slowly (try 0.05 steps) until lines near your gaze stay straight and still as you look around; too high and the periphery starts swimming instead. Expected useful range roughly 0.05-0.3." />
+        <app-reset-button [canReset]="settings.pupilSwim.centerStrengthX != defaults.pupilSwim.centerStrengthX || settings.pupilSwim.centerStrengthY != defaults.pupilSwim.centerStrengthY" (resetClick)="reset('pupilSwim')"></app-reset-button>
+    </div>
+    <div class="control">
+        <span>X</span><input matInput [(ngModel)]="settings.pupilSwim.centerStrengthX" step="0.01" min="0" max="0.8" (ngModelChange)="save()" type="number">
+        <span>Y</span><input matInput [(ngModel)]="settings.pupilSwim.centerStrengthY" step="0.01" min="0" max="0.8" (ngModelChange)="save()" type="number">
     </div>
 </div>
 
@@ -354,6 +421,38 @@
         <mat-slide-toggle [(ngModel)]="settings.poseLogging" (ngModelChange)="save()"></mat-slide-toggle>
     </div>
 </div>
+
+@if (controllerSettings) {
+<div class="section">
+    <div class="section-title"><span>Controllers</span></div>
+</div>
+
+<div class="field">
+    <div class="title">
+        <span>Rotation Offset (deg)</span>
+        <app-field-tip info="Local frame rotation added to both controllers' poses, live reloaded. X (pitch): positive tilts the top back toward you — start here if aiming or thrown objects feel consistently tilted; typical useful range 5-20. Y = yaw, Z = roll." />
+        <app-reset-button [canReset]="controllerSettings.rotationOffsetDeg.x != controllerDefaults.rotationOffsetDeg.x || controllerSettings.rotationOffsetDeg.y != controllerDefaults.rotationOffsetDeg.y || controllerSettings.rotationOffsetDeg.z != controllerDefaults.rotationOffsetDeg.z" (resetClick)="resetControllers('rotationOffsetDeg')"></app-reset-button>
+    </div>
+    <div class="control">
+        <span>X</span><input matInput [(ngModel)]="controllerSettings.rotationOffsetDeg.x" step="1" (ngModelChange)="save()" type="number">
+        <span>Y</span><input matInput [(ngModel)]="controllerSettings.rotationOffsetDeg.y" step="1" (ngModelChange)="save()" type="number">
+        <span>Z</span><input matInput [(ngModel)]="controllerSettings.rotationOffsetDeg.z" step="1" (ngModelChange)="save()" type="number">
+    </div>
+</div>
+
+<div class="field">
+    <div class="title">
+        <span>Position Offset (cm)</span>
+        <app-field-tip info="Local frame position offset added to both controllers' poses, live reloaded. Use when the virtual grip point sits offset from where the controller feels like it is (beam parallel but displaced): Z = forward/back along the controller, Y = up/down, X = sideways." />
+        <app-reset-button [canReset]="controllerSettings.positionOffsetCm.x != controllerDefaults.positionOffsetCm.x || controllerSettings.positionOffsetCm.y != controllerDefaults.positionOffsetCm.y || controllerSettings.positionOffsetCm.z != controllerDefaults.positionOffsetCm.z" (resetClick)="resetControllers('positionOffsetCm')"></app-reset-button>
+    </div>
+    <div class="control">
+        <span>X</span><input matInput [(ngModel)]="controllerSettings.positionOffsetCm.x" step="0.5" (ngModelChange)="save()" type="number">
+        <span>Y</span><input matInput [(ngModel)]="controllerSettings.positionOffsetCm.y" step="0.5" (ngModelChange)="save()" type="number">
+        <span>Z</span><input matInput [(ngModel)]="controllerSettings.positionOffsetCm.z" step="0.5" (ngModelChange)="save()" type="number">
+    </div>
+</div>
+}
 
 }
 }

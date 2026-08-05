@@ -44,6 +44,18 @@ cbuffer Params : register(b0){
 	float ditherLsb;       // quantization steps of the output encode (255 or 1023)
 	float pad0;
 	float pad1;
+	float gazeU;           // mapped gaze point for THIS eye, output uv space
+	float gazeV;
+	float gazeRing;        // 1 = draw the gaze debug ring
+	float debugGrid;       // 0 off, 1 uv grid, 2 angular grid
+	float projL;           // per-eye projection frustum tangents (raw,
+	float projR;           // y-down convention), for the angular grid
+	float projT;
+	float projB;
+	float gridSpacingRad;  // angular grid line spacing
+	float pad3;
+	float pad4;
+	float pad5;
 };
 Texture2D<float4> tex : register(t0);
 Texture2D<float4> lut : register(t1);
@@ -164,6 +176,46 @@ float4 main(float4 pos : SV_Position, float2 uv : TEXCOORD0) : SV_Target0{
 		float3 g = LinearToSrgb(color.rgb);
 		g = saturate(g + noise / max(ditherLsb, 1.0));
 		color.rgb = SrgbToLinear(g);
+	}
+
+	// ---- calibration grid: the straight line reference for pupil swim
+	// tuning. uv mode: lines every 0.1 uv. angular mode: lines at exact
+	// multiples of gridSpacingRad of visual angle through the real
+	// frustum (sboy-style distortion photos: every rendered line has a
+	// known angular position, so a photo through the lens reads
+	// distortion error directly). axes emphasized for pose recovery. ----
+	if(debugGrid > 1.5){
+		float tx = projL + uv.x * (projR - projL);
+		float ty = projT + uv.y * (projB - projT);
+		float ax = atan(tx);
+		float ay = atan(ty);
+		float2 f = float2(abs(frac(ax / gridSpacingRad + 0.5) - 0.5),
+			abs(frac(ay / gridSpacingRad + 0.5) - 0.5)) * gridSpacingRad;
+		float2 fw = float2(max(fwidth(ax), 1e-5), max(fwidth(ay), 1e-5));
+		float lineMask = max(1.0 - smoothstep(fw.x, 2.5 * fw.x, f.x),
+			1.0 - smoothstep(fw.y, 2.5 * fw.y, f.y));
+		// axes (0 degrees) doubled width and brighter, for locating the
+		// optical axis and recovering camera pose from photos
+		float axisMask = max(1.0 - smoothstep(2.0 * fw.x, 5.0 * fw.x, abs(ax)),
+			1.0 - smoothstep(2.0 * fw.y, 5.0 * fw.y, abs(ay)));
+		color.rgb = lerp(color.rgb, float3(0.15, 1.0, 0.45), lineMask * 0.45);
+		color.rgb = lerp(color.rgb, float3(1.0, 1.0, 1.0), axisMask * 0.7);
+	}else if(debugGrid > 0.5){
+		float2 cell = frac(uv * 10.0);
+		float2 distToLine = min(cell, 1.0 - cell);
+		float nearLine = min(distToLine.x, distToLine.y / max(aspect, 0.001));
+		float lineMask = 1.0 - smoothstep(0.012, 0.03, nearLine);
+		color.rgb = lerp(color.rgb, float3(0.15, 1.0, 0.45), lineMask * 0.45);
+	}
+
+	// ---- gaze debug ring: live calibration of the gaze -> viewport
+	// mapping the dynamic pupil swim pass will reuse ----
+	if(gazeRing > 0.5){
+		float2 gd = uv - float2(gazeU, gazeV);
+		gd.y *= aspect;
+		float gr = length(gd);
+		float ring = smoothstep(0.005, 0.002, abs(gr - 0.025));
+		color.rgb = lerp(color.rgb, float3(1.0, 0.15, 0.1), ring * 0.85);
 	}
 
 	// ---- stationary dimming (uniform fade to black, no uneven oled wear) ----

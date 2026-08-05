@@ -50,6 +50,13 @@ private:
 
 	// snapshot current settings; returns false if processing is disabled or identity
 	bool GetActiveSettings(FrameProcessSettings &settings, bool &processAtSubmit);
+	// gaze prediction state (recent gaze angular motion, EMA smoothed)
+	bool gazePrevValid = false;
+	double gazePrevDir[3] = {0, 0, -1};
+	double gazePrevTime = 0;
+	double gazeVelEma[3] = {0, 0, 0};
+	bool gazeSmoothValid = false;
+	double gazeSmoothEma[3] = {0, 0, -1};
 
 	// stationary dimming state: last hmd orientation basis, time of last
 	// detected movement, and the current dim factor (0 bright .. 1 black)

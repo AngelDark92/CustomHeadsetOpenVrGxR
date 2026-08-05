@@ -48,6 +48,9 @@ cbuffer Params : register(b0){
 	float4 matR; float4 matG; float4 matB;
 	float lutRowBase; float lutRowCount; float perAxisEnable; float dimAmount;
 	float manualSrgb; float ditherLsb; float pad0; float pad1;
+	float gazeU; float gazeV; float gazeRing; float debugGrid;
+	float projL; float projR; float projT; float projB;
+	float gridSpacingRad; float pad3; float pad4; float pad5;
 };
 Texture2D<float4> tex : register(t0);
 Texture2D<float4> lut : register(t1);
@@ -118,6 +121,9 @@ struct FrameProcessorConstants{
 	float matR[4]; float matG[4]; float matB[4];
 	float lutRowBase; float lutRowCountF; float perAxisEnable; float dimAmount;
 	float manualSrgb; float ditherLsb; float pad0; float pad1;
+	float gazeU; float gazeV; float gazeRing; float pad2;
+	float projL; float projR; float projT; float projB;
+	float gridSpacingRad; float pad3; float pad4; float pad5;
 };
 
 // map a layer texture format to the scratch format and shader mode used to
@@ -331,7 +337,12 @@ bool FrameProcessor::EnsureShaders(){
 		pixelShader = newShader;
 		pixelShaderFileTime = fileTime;
 		shaderFailed = false;
-		DriverLog("FrameProcessor: pixel shader ready (%s)", fileTime ? "from file" : "embedded");
+		// capability provenance: a stale hlsl next to a new dll fails
+		// SILENTLY for appended features (cbuffer appends are layout
+		// compatible), so name what this shader source actually contains
+		bool hasGazeRing = source.find("gazeRing > 0.5") != std::string::npos;
+		DriverLog("FrameProcessor: pixel shader ready (%s, gaze ring support: %s)",
+			fileTime ? "from file" : "embedded", hasGazeRing ? "yes" : "NO - stale hlsl?");
 	}
 	return pixelShader != nullptr;
 }
@@ -671,9 +682,93 @@ bool FrameProcessor::ProcessEye(ID3D11Texture2D* texture, const vr::VRTextureBou
 	constants.dimAmount = (float)settings.dimAmount;
 	constants.manualSrgb = manualSrgb ? 1.0f : 0.0f;
 	constants.ditherLsb = ditherLsb;
+	// gaze -> viewport mapping for this eye (debug ring now; the dynamic
+	// pupil swim pass will reuse the same mapping). the published gaze is a
+	// unit direction in HMD space; project through an assumed symmetric
+	// frustum (tan half angles from config, tunable live until the ring
+	// tracks the eye) around the configured distortion center.
+	constants.gazeRing = 0.0f;
+	// shared gaze -> viewport uv for this eye (ring and pupil swim)
+	bool haveGazeUv = false;
+	double gazeUvU = 0.5, gazeUvV = 0.5;
+	if(settings.gazeValid && settings.gazeDirZ < -0.1){
+		double tanX = settings.gazeDirX / -settings.gazeDirZ;
+		double tanY = settings.gazeDirY / -settings.gazeDirZ;
+		double u, v;
+		if(settings.gazeProjValid){
+			// the real asymmetric frustum from the display component — the
+			// same mapping the runtime uses for GetEyeTrackedFoveationCenter.
+			// raw projection tangents are y-down (top negative for the up
+			// edge), gaze dirY is +up, hence the sign flip.
+			const float* proj = settings.gazeProj[eye];
+			double l = proj[0], r = proj[1], t = proj[2], b = proj[3];
+			u = r != l ? (tanX - l) / (r - l) : 0.5;
+			v = b != t ? (-tanY - t) / (b - t) : 0.5;
+		}else{
+			// fallback: symmetric knobs around the distortion center
+			double centerX = eye == 0 ? settings.config.centerOffsetXLeft : settings.config.centerOffsetXRight;
+			u = 0.5 + centerX + 0.5 * tanX / settings.config.eyeGaze.tanHalfFovX;
+			v = 0.5 + settings.config.centerOffsetY - 0.5 * tanY / settings.config.eyeGaze.tanHalfFovY;
+		}
+		if(u > -0.2 && u < 1.2 && v > -0.2 && v < 1.2){
+			haveGazeUv = true;
+			gazeUvU = u;
+			gazeUvV = v;
+			if(settings.config.eyeGaze.debugRing){
+				constants.gazeU = (float)u;
+				constants.gazeV = (float)v;
+				constants.gazeRing = 1.0f;
+			}
+		}
+	}
+	// grid: 0 off, 1 uv mode, 2 angular mode (needs real frusta; falls
+	// back to uv mode without them)
+	float gridMode = 0.0f;
+	if(settings.config.eyeGaze.debugGrid){
+		gridMode = (settings.config.eyeGaze.gridMode == "angular" && settings.gazeProjValid) ? 2.0f : 1.0f;
+	}
+	constants.pad2 = gridMode;
+	if(settings.gazeProjValid){
+		constants.projL = settings.gazeProj[eye][0];
+		constants.projR = settings.gazeProj[eye][1];
+		constants.projT = settings.gazeProj[eye][2];
+		constants.projB = settings.gazeProj[eye][3];
+	}
+	double spacingDeg = settings.config.eyeGaze.gridAngularDeg;
+	if(spacingDeg < 0.5){ spacingDeg = 0.5; }
+	if(spacingDeg > 30.0){ spacingDeg = 30.0; }
+	constants.gridSpacingRad = (float)(spacingDeg * 3.14159265358979 / 180.0);
+	// state logging so "ring configured but not visible" is attributable
+	// from the log alone: config parsed? gaze valid? mapping in range?
+	if(eye == 0 && settings.config.eyeGaze.debugRing){
+		uint64_t nowMs = NowMs();
+		bool active = constants.gazeRing > 0.5f;
+		if(active != gazeRingWasActive || (nowMs - lastGazeRingLogMs > 5000)){
+			gazeRingWasActive = active;
+			lastGazeRingLogMs = nowMs;
+			DriverLog("FrameProcessor: gaze ring %s (gazeValid=%d dir=(%.3f, %.3f, %.3f) u=%.3f v=%.3f mapping=%s)",
+				active ? "ACTIVE" : "requested but INACTIVE",
+				(int)settings.gazeValid, settings.gazeDirX, settings.gazeDirY, settings.gazeDirZ,
+				constants.gazeU, constants.gazeV,
+				settings.gazeProjValid ? "projectionRaw" : "tangent knobs");
+		}
+	}
 	double centerOffsetX = eye == 0 ? config.centerOffsetXLeft : config.centerOffsetXRight;
-	constants.center[0] = (float)(0.5 + centerOffsetX);
-	constants.center[1] = (float)(0.5 + config.centerOffsetY);
+	double centerU = 0.5 + centerOffsetX;
+	double centerV = 0.5 + config.centerOffsetY;
+	// pupil swim phase A: the effective optical center follows the gaze.
+	// the shift is a fraction of the gaze offset from the static center,
+	// so at center gaze this reduces exactly to the static calibration.
+	if(haveGazeUv && (config.pupilSwim.centerStrengthX != 0 || config.pupilSwim.centerStrengthY != 0)){
+		double shiftU = config.pupilSwim.centerStrengthX * (gazeUvU - centerU);
+		double shiftV = config.pupilSwim.centerStrengthY * (gazeUvV - centerV);
+		if(shiftU > 0.15){ shiftU = 0.15; } if(shiftU < -0.15){ shiftU = -0.15; }
+		if(shiftV > 0.15){ shiftV = 0.15; } if(shiftV < -0.15){ shiftV = -0.15; }
+		centerU += shiftU;
+		centerV += shiftV;
+	}
+	constants.center[0] = (float)centerU;
+	constants.center[1] = (float)centerV;
 	float uMin = (float)bounds.uMin, vMin = (float)bounds.vMin;
 	float uSize = (float)(bounds.uMax - bounds.uMin), vSize = (float)(bounds.vMax - bounds.vMin);
 	if(uSize == 0){ uSize = 1; }

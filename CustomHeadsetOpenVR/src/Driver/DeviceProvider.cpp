@@ -245,6 +245,297 @@ int CustomHeadsetDeviceProvider::GetDeviceClass(uint32_t openVRID){
 	return deviceClass;
 }
 
+bool CustomHeadsetDeviceProvider::GetHmdProjectionRaw(int eye, float &left, float &right, float &top, float &bottom){
+	if(!hmdProjectionQueried){
+		hmdProjectionQueried = true;
+		if(hmdDevice){
+			void* component = hmdDevice->GetComponent(vr::IVRDisplayComponent_Version);
+			if(component){
+				vr::IVRDisplayComponent* display = (vr::IVRDisplayComponent*)component;
+				for(int e = 0; e < 2; e++){
+					display->GetProjectionRaw((vr::EVREye)e,
+						&hmdProjection[e][0], &hmdProjection[e][1],
+						&hmdProjection[e][2], &hmdProjection[e][3]);
+				}
+				hmdProjectionValid = true;
+				DriverLog("DeviceProvider: hmd projection raw L(l=%.4f r=%.4f t=%.4f b=%.4f) R(l=%.4f r=%.4f t=%.4f b=%.4f)",
+					hmdProjection[0][0], hmdProjection[0][1], hmdProjection[0][2], hmdProjection[0][3],
+					hmdProjection[1][0], hmdProjection[1][1], hmdProjection[1][2], hmdProjection[1][3]);
+			}else{
+				DriverLog("DeviceProvider: hmd has no IVRDisplayComponent, gaze mapping falls back to tangent knobs");
+			}
+		}
+	}
+	if(!hmdProjectionValid || eye < 0 || eye > 1){
+		return false;
+	}
+	left = hmdProjection[eye][0];
+	right = hmdProjection[eye][1];
+	top = hmdProjection[eye][2];
+	bottom = hmdProjection[eye][3];
+	return true;
+}
+
+uint32_t CustomHeadsetDeviceProvider::ResolveContainerId(vr::PropertyContainerHandle_t container){
+	{
+		std::lock_guard<std::mutex> guard(poseLogLock);
+		auto found = containerToId.find(container);
+		if(found != containerToId.end()){
+			return found->second;
+		}
+	}
+	// containers are stable per device; probe the first few ids once
+	for(uint32_t id = 0; id < 16; id++){
+		if(vr::VRProperties()->TrackedDeviceToPropertyContainer(id) == container){
+			std::lock_guard<std::mutex> guard(poseLogLock);
+			containerToId[container] = id;
+			return id;
+		}
+	}
+	std::lock_guard<std::mutex> guard(poseLogLock);
+	containerToId[container] = vr::k_unTrackedDeviceIndexInvalid;
+	return vr::k_unTrackedDeviceIndexInvalid;
+}
+
+static bool InputPathInteresting(const std::string &lower){
+	// anything that plausibly marks holding/releasing an object. session 8
+	// taught us not to guess narrowly: 20 throws produced zero release
+	// edges because the filter (and boolean-only hooking) missed vrlink's
+	// actual grab control.
+	if(lower.find("touch") != std::string::npos){
+		return false;
+	}
+	return lower.find("grip") != std::string::npos
+		|| lower.find("trigger") != std::string::npos
+		|| lower.find("squeeze") != std::string::npos
+		|| lower.find("grab") != std::string::npos
+		|| lower.find("pinch") != std::string::npos;
+}
+
+void CustomHeadsetDeviceProvider::OnInputComponentCreated(vr::PropertyContainerHandle_t container, const char* name, vr::VRInputComponentHandle_t handle){
+	if(!name || handle == vr::k_ulInvalidInputComponentHandle){
+		return;
+	}
+	InputComponentInfo info;
+	info.container = container;
+	info.name = name;
+	std::string lower = info.name;
+	for(auto &c : lower){ c = (char)tolower(c); }
+	info.interesting = InputPathInteresting(lower);
+	// always log creates: component names are the map of vrlink's input
+	// surface, and not having them cost a session
+	DriverLog("InputTap: boolean component container=%llu path=%s handle=%llu%s",
+		(unsigned long long)container, name, (unsigned long long)handle,
+		info.interesting ? " [watched]" : "");
+	std::lock_guard<std::mutex> guard(poseLogLock);
+	inputComponents[handle] = info;
+}
+
+void CustomHeadsetDeviceProvider::OnScalarComponentCreated(vr::PropertyContainerHandle_t container, const char* name, vr::VRInputComponentHandle_t handle){
+	if(!name || handle == vr::k_ulInvalidInputComponentHandle){
+		return;
+	}
+	InputComponentInfo info;
+	info.container = container;
+	info.name = name;
+	info.isScalar = true;
+	std::string lower = info.name;
+	for(auto &c : lower){ c = (char)tolower(c); }
+	info.interesting = InputPathInteresting(lower);
+	DriverLog("InputTap: scalar component container=%llu path=%s handle=%llu%s",
+		(unsigned long long)container, name, (unsigned long long)handle,
+		info.interesting ? " [watched]" : "");
+	std::lock_guard<std::mutex> guard(poseLogLock);
+	inputComponents[handle] = info;
+}
+
+void CustomHeadsetDeviceProvider::OnScalarComponentUpdated(vr::VRInputComponentHandle_t handle, float value){
+	bool fixOn = driverConfig.streamFrame.velocityFixMode == 2;
+	bool logOn = driverConfig.streamFrame.poseLogging;
+	if(!fixOn && !logOn){
+		return;
+	}
+	vr::PropertyContainerHandle_t container = 0;
+	std::string name;
+	bool release = false;
+	bool gestureStart = false;
+	{
+		std::lock_guard<std::mutex> guard(poseLogLock);
+		auto found = inputComponents.find(handle);
+		if(found == inputComponents.end() || !found->second.interesting){
+			return;
+		}
+		InputComponentInfo &info = found->second;
+		float previous = info.lastScalar;
+		info.lastScalar = value;
+		// release GESTURE start: the scalar begins falling from its held
+		// plateau — the finger starts opening. this precedes every game's
+		// own release threshold, so anchoring the velocity output here
+		// means whatever instant the game samples, it reads the throw.
+		if(info.scalarPressed && previous > 0.85f && value < previous - 0.03f){
+			gestureStart = true;
+			container = info.container;
+		}
+		// hysteresis so analog grabbing (value based grips) produces clean
+		// held/released edges: pressed above 0.6, released below 0.25
+		if(!info.scalarPressed && value > 0.6f){
+			info.scalarPressed = true;
+		}else if(info.scalarPressed && value < 0.25f){
+			info.scalarPressed = false;
+			release = true;
+			container = info.container;
+			name = info.name;
+		}
+	}
+	if(gestureStart && fixOn){
+		uint32_t id = ResolveContainerId(container);
+		if(id != vr::k_unTrackedDeviceIndexInvalid){
+			AnchorReleaseGesture(id);
+		}
+	}
+	if(release && logOn){
+		LogReleaseSnapshot(container, name);
+	}
+}
+
+void CustomHeadsetDeviceProvider::OnBooleanComponentUpdated(vr::VRInputComponentHandle_t handle, bool value){
+	if(!driverConfig.streamFrame.poseLogging){
+		return;
+	}
+	vr::PropertyContainerHandle_t container = 0;
+	std::string name;
+	bool release = false;
+	bool edge = false;
+	{
+		std::lock_guard<std::mutex> guard(poseLogLock);
+		auto found = inputComponents.find(handle);
+		if(found == inputComponents.end()){
+			return;
+		}
+		InputComponentInfo &info = found->second;
+		bool changed = !info.haveValue || info.lastValue != value;
+		bool wasHeld = info.haveValue && info.lastValue;
+		info.haveValue = true;
+		info.lastValue = value;
+		if(!changed){
+			return;
+		}
+		container = info.container;
+		name = info.name;
+		edge = true;
+		release = info.interesting && wasHeld && !value;
+	}
+	if(release){
+		LogReleaseSnapshot(container, name);
+	}else if(edge){
+		// low rate visibility of ALL boolean edges so the actual grab
+		// control names itself in the log even if the watch filter misses
+		double now = std::chrono::duration_cast<std::chrono::microseconds>(
+			std::chrono::steady_clock::now().time_since_epoch()).count() / 1000000.0;
+		bool doLog = false;
+		{
+			std::lock_guard<std::mutex> guard(poseLogLock);
+			if(now - lastEdgeLogTime >= 0.2){
+				lastEdgeLogTime = now;
+				doLog = true;
+			}
+		}
+		if(doLog){
+			DriverLog("InputTap: edge %s -> %d (id=%u)", name.c_str(), (int)value, ResolveContainerId(container));
+		}
+	}
+}
+
+void CustomHeadsetDeviceProvider::LogReleaseSnapshot(vr::PropertyContainerHandle_t container, const std::string &name){
+	{
+		double now = std::chrono::duration_cast<std::chrono::microseconds>(
+			std::chrono::steady_clock::now().time_since_epoch()).count() / 1000000.0;
+		std::lock_guard<std::mutex> guard(poseLogLock);
+		if(now - lastReleaseLogTime < 0.05){
+			return; // 20Hz cap
+		}
+		lastReleaseLogTime = now;
+	}
+	uint32_t id = ResolveContainerId(container);
+	MotionSnapshot snap;
+	bool haveSnap = false;
+	double snapAge = -1;
+	{
+		std::lock_guard<std::mutex> guard(poseLogLock);
+		auto found = motionSnapshots.find(id);
+		if(found != motionSnapshots.end()){
+			snap = found->second;
+			haveSnap = true;
+			double now = std::chrono::duration_cast<std::chrono::microseconds>(
+				std::chrono::steady_clock::now().time_since_epoch()).count() / 1000000.0;
+			snapAge = (now - snap.time) * 1000.0;
+		}
+	}
+	if(haveSnap){
+		DriverLog("ReleaseSnap: id=%u %s released: out=(%.3f, %.3f, %.3f) |out|=%.3f ang=(%.2f, %.2f, %.2f) trackingOk=%d result=%d snapAge=%.1fms",
+			id, name.c_str(),
+			snap.outVel[0], snap.outVel[1], snap.outVel[2], snap.outSpeed,
+			snap.outAng[0], snap.outAng[1], snap.outAng[2],
+			(int)snap.trackingOk, snap.result, snapAge);
+	}else{
+		DriverLog("ReleaseSnap: id=%u %s released: no motion snapshot yet", id, name.c_str());
+	}
+}
+
+void CustomHeadsetDeviceProvider::OnPoseComponentCreated(vr::PropertyContainerHandle_t container, const char* name, vr::VRInputComponentHandle_t handle){
+	if(!name || handle == vr::k_ulInvalidInputComponentHandle){
+		return;
+	}
+	// always log: gaze published as a pose component would be exactly the
+	// "openvr paths" channel DFR tools bind (AngelDark report)
+	DriverLog("InputTap: pose component container=%llu path=%s handle=%llu",
+		(unsigned long long)container, name, (unsigned long long)handle);
+	PoseComponentInfo info;
+	info.container = container;
+	info.name = name;
+	std::lock_guard<std::mutex> guard(poseLogLock);
+	poseComponents[handle] = info;
+}
+
+void CustomHeadsetDeviceProvider::OnPoseComponentUpdated(vr::VRInputComponentHandle_t handle, const vr::HmdMatrix34_t* offset, double timeOffset){
+	double now = std::chrono::duration_cast<std::chrono::microseconds>(
+		std::chrono::steady_clock::now().time_since_epoch()).count() / 1000000.0;
+	std::string name;
+	uint64_t updates = 0;
+	bool doLog = false;
+	{
+		std::lock_guard<std::mutex> guard(poseLogLock);
+		auto found = poseComponents.find(handle);
+		if(found == poseComponents.end()){
+			return;
+		}
+		found->second.updates++;
+		// first update always, then 1 per 5s per component
+		if(found->second.updates == 1 || now - found->second.lastLogTime >= 5.0){
+			found->second.lastLogTime = now;
+			name = found->second.name;
+			updates = found->second.updates;
+			doLog = true;
+		}
+	}
+	if(doLog && offset){
+		DriverLog("InputTap: pose component %s update %llu offset=(%.4f, %.4f, %.4f) fwd=(%.4f, %.4f, %.4f) timeOffset=%.4f",
+			name.c_str(), (unsigned long long)updates,
+			offset->m[0][3], offset->m[1][3], offset->m[2][3],
+			-offset->m[0][2], -offset->m[1][2], -offset->m[2][2],
+			timeOffset);
+	}
+}
+
+void CustomHeadsetDeviceProvider::AnchorReleaseGesture(uint32_t openVRID){
+	double now = std::chrono::duration_cast<std::chrono::microseconds>(
+		std::chrono::steady_clock::now().time_since_epoch()).count() / 1000000.0;
+	std::lock_guard<std::mutex> guard(poseLogLock);
+	VelFixState &state = velFixStates[openVRID];
+	state.anchorTime = now;
+	state.anchorHasValue = false; // next pose update seeds it
+}
+
 bool CustomHeadsetDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr::DriverPose_t &pose){
 	if(driverConfig.forceTracking){
 		pose.poseIsValid = true;
@@ -283,29 +574,255 @@ bool CustomHeadsetDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 	// meaningfully larger than the driver's smoothed report, so throw
 	// releases carry true peak speed. cheap unsynchronized bool reads keep
 	// the hot path free when both features are disabled.
-	if(driverConfig.streamFrame.velocityFix && openVRID != vr::k_unTrackedDeviceIndex_Hmd
+	int velocityFixMode = driverConfig.streamFrame.velocityFixMode;
+	if(velocityFixMode > 0 && openVRID != vr::k_unTrackedDeviceIndex_Hmd
 			&& pose.poseIsValid && pose.result == vr::TrackingResult_Running_OK){
-		double derived[3];
-		if(DeriveVelocity(openVRID, pose, derived)){
-			double derivedSpeed = sqrt(derived[0] * derived[0] + derived[1] * derived[1] + derived[2] * derived[2]);
+		bool classicMode = velocityFixMode == 1;
+		double derivedVel[3], derivedAng[3];
+		double now = std::chrono::duration_cast<std::chrono::microseconds>(
+			std::chrono::steady_clock::now().time_since_epoch()).count() / 1000000.0;
+		if(DeriveMotion(openVRID, pose, derivedVel, derivedAng)){
+			double derivedSpeed = sqrt(derivedVel[0] * derivedVel[0] + derivedVel[1] * derivedVel[1] + derivedVel[2] * derivedVel[2]);
+			double derivedAngSpeed = sqrt(derivedAng[0] * derivedAng[0] + derivedAng[1] * derivedAng[1] + derivedAng[2] * derivedAng[2]);
 			double reportedSpeed = sqrt(pose.vecVelocity[0] * pose.vecVelocity[0]
 				+ pose.vecVelocity[1] * pose.vecVelocity[1]
 				+ pose.vecVelocity[2] * pose.vecVelocity[2]);
-			// continuous blend, never a switch: the runtime extrapolates the
-			// rendered pose with this velocity, so any discontinuity in the
-			// output becomes a visible hand jump. weight ramps smoothly from
-			// 0 (calm: keep the driver's smooth data) to 1 (fast: use the
-			// derived velocity whose peaks are not smoothed away) between
-			// 1.0 and 2.5 m/s.
-			double s = derivedSpeed > reportedSpeed ? derivedSpeed : reportedSpeed;
-			if(derivedSpeed < 20.0 && s > 1.0){
-				double w = (s - 1.0) / 1.5;
+			double reportedAngSpeed = sqrt(pose.vecAngularVelocity[0] * pose.vecAngularVelocity[0]
+				+ pose.vecAngularVelocity[1] * pose.vecAngularVelocity[1]
+				+ pose.vecAngularVelocity[2] * pose.vecAngularVelocity[2]);
+			// one weight for both channels so v and w stay phase consistent
+			// (games compute released object velocity as v + w x gripOffset).
+			// the 0.15 factor converts rad/s to an effective m/s so wrist
+			// flick throws (w dominant, little linear motion) also engage.
+			double linS = derivedSpeed > reportedSpeed ? derivedSpeed : reportedSpeed;
+			double angS = derivedAngSpeed > reportedAngSpeed ? derivedAngSpeed : reportedAngSpeed;
+			double sEff = linS > 0.15 * angS ? linS : 0.15 * angS;
+			if(classicMode){
+				sEff = linS; // classic: linear speeds only, as in v3
+			}
+			if(derivedSpeed < 20.0 && derivedAngSpeed < 60.0 && sEff > 1.0){
+				double w = (sEff - 1.0) / 1.5;
 				if(w > 1.0){ w = 1.0; }
 				w = w * w * (3.0 - 2.0 * w); // smoothstep
-				pose.vecVelocity[0] = pose.vecVelocity[0] * (1.0 - w) + derived[0] * w;
-				pose.vecVelocity[1] = pose.vecVelocity[1] * (1.0 - w) + derived[1] * w;
-				pose.vecVelocity[2] = pose.vecVelocity[2] * (1.0 - w) + derived[2] * w;
+				pose.vecVelocity[0] = pose.vecVelocity[0] * (1.0 - w) + derivedVel[0] * w;
+				pose.vecVelocity[1] = pose.vecVelocity[1] * (1.0 - w) + derivedVel[1] * w;
+				pose.vecVelocity[2] = pose.vecVelocity[2] * (1.0 - w) + derivedVel[2] * w;
+				if(!classicMode){
+					pose.vecAngularVelocity[0] = pose.vecAngularVelocity[0] * (1.0 - w) + derivedAng[0] * w;
+					pose.vecAngularVelocity[1] = pose.vecAngularVelocity[1] * (1.0 - w) + derivedAng[1] * w;
+					pose.vecAngularVelocity[2] = pose.vecAngularVelocity[2] * (1.0 - w) + derivedAng[2] * w;
+				}
 			}
+			// record the motion snapshot for the release tap regardless of
+			// what the peak hold decides below
+			// (filled in after the hold logic so it reflects the final output)
+			// full mode only from here: classic (v3) is estimator + blend
+			// and nothing else, matching the best-rated field iteration
+			if(!classicMode)
+			// joint peak hold: right after release the hand snaps back and
+			// a low lag estimate faithfully reports that reversal, so games
+			// sampling a frame or two late read a backward/down vector.
+			// hold the (v, w) pair from the most recent linear speed peak,
+			// decaying over 90ms, so late sampling still reads the throw.
+			{
+				const double holdSeconds = 0.07;
+				std::lock_guard<std::mutex> guard(poseLogLock);
+				VelFixState &state = velFixStates[openVRID];
+				double outSpeed = sqrt(pose.vecVelocity[0] * pose.vecVelocity[0]
+					+ pose.vecVelocity[1] * pose.vecVelocity[1]
+					+ pose.vecVelocity[2] * pose.vecVelocity[2]);
+				double elapsed = now - state.peakTime;
+				double decay = 1.0 - elapsed / holdSeconds;
+				if(decay < 0){ decay = 0; }
+				// plausibility: a step to more than 1.8x + 1 of the previous
+				// output is a suspected spike; let it pass through this
+				// frame but never latch it as a peak
+				bool plausible = outSpeed <= state.lastOutSpeed * 1.8 + 1.0;
+				// hold only engages on VIOLENT deceleration (>60 m/s^2 drop
+				// from the previous output). post release snap back is
+				// 100+ m/s^2, deliberate stops are 10-30, so normal play no
+				// longer floats on held velocity (session 8 feedback).
+				double sampleDt = now - state.lastOutTime;
+				bool violentDecel = state.lastOutTime > 0 && sampleDt > 0.001 && sampleDt < 0.1
+					&& (state.lastOutSpeed - outSpeed) / sampleDt > 60.0;
+				// direction aware latch: a fresh peak may only be replaced
+				// by motion in the same hemisphere. session 11 forensics: a
+				// gentle lob's hand RETRACTION (faster than the lob itself)
+				// latched as "the peak" and the direction hold then
+				// enforced the downward retraction. opposite-direction
+				// motion must wait out the freshness window (a new gesture)
+				// before it can own the peak.
+				bool sameHemisphere = true;
+				if(now - state.peakTime < 0.25 && state.peakSpeed > 0.3 && outSpeed > 0.3){
+					double dot = pose.vecVelocity[0] * state.peakVel[0]
+						+ pose.vecVelocity[1] * state.peakVel[1]
+						+ pose.vecVelocity[2] * state.peakVel[2];
+					sameHemisphere = dot > 0;
+				}
+				if(plausible && sameHemisphere && outSpeed >= state.peakSpeed * decay){
+					state.holdActive = false;
+					state.peakSpeed = outSpeed;
+					state.peakTime = now;
+					state.peakVel[0] = pose.vecVelocity[0];
+					state.peakVel[1] = pose.vecVelocity[1];
+					state.peakVel[2] = pose.vecVelocity[2];
+					state.peakAng[0] = pose.vecAngularVelocity[0];
+					state.peakAng[1] = pose.vecAngularVelocity[1];
+					state.peakAng[2] = pose.vecAngularVelocity[2];
+				}else if(state.peakSpeed > 2.0 && decay > 0 && state.peakSpeed * decay > outSpeed
+						&& (violentDecel || state.holdActive)){
+					state.holdActive = true;
+					pose.vecVelocity[0] = state.peakVel[0] * decay;
+					pose.vecVelocity[1] = state.peakVel[1] * decay;
+					pose.vecVelocity[2] = state.peakVel[2] * decay;
+					pose.vecAngularVelocity[0] = state.peakAng[0] * decay;
+					pose.vecAngularVelocity[1] = state.peakAng[1] * decay;
+					pose.vecAngularVelocity[2] = state.peakAng[2] * decay;
+				}
+				// direction hold: within 120ms of a real peak, keep the
+				// OUTPUT DIRECTION aligned with the peak's direction while
+				// magnitude stays honest. session 10 forensics: throw
+				// releases scatter up to ~60ms after the velocity peak, and
+				// by then the upward component has flipped sign — the item
+				// dives ("textbook failure") even though speed is fine.
+				// direction hold fixes that without the magnitude float
+				// that the violent-decel gate was added to prevent, because
+				// prediction still moves hands at the true (decaying) speed.
+				double elapsedDir = now - state.peakTime;
+				if(state.peakSpeed > 1.5 && elapsedDir < 0.12
+						&& outSpeed > 0.25 * state.peakSpeed && outSpeed > 0.3){
+					double hw = 1.0 - elapsedDir / 0.12;
+					double curSpeed = sqrt(pose.vecVelocity[0] * pose.vecVelocity[0]
+						+ pose.vecVelocity[1] * pose.vecVelocity[1]
+						+ pose.vecVelocity[2] * pose.vecVelocity[2]);
+					double peakMag = state.peakSpeed;
+					if(curSpeed > 0.001 && peakMag > 0.001){
+						// nlerp between near-opposite unit vectors passes
+						// through ~zero and normalizes into noise (= the
+						// "random direction" throws). opposite-direction
+						// current output within the window IS the snap back
+						// we are protecting against: use the peak direction
+						// outright.
+						double dirDot = (pose.vecVelocity[0] * state.peakVel[0]
+							+ pose.vecVelocity[1] * state.peakVel[1]
+							+ pose.vecVelocity[2] * state.peakVel[2]) / (curSpeed * peakMag);
+						double useHw = dirDot < 0.1 ? 1.0 : hw;
+						double dir[3];
+						double blended[3] = {
+							pose.vecVelocity[0] / curSpeed * (1.0 - useHw) + state.peakVel[0] / peakMag * useHw,
+							pose.vecVelocity[1] / curSpeed * (1.0 - useHw) + state.peakVel[1] / peakMag * useHw,
+							pose.vecVelocity[2] / curSpeed * (1.0 - useHw) + state.peakVel[2] / peakMag * useHw,
+						};
+						double bn = sqrt(blended[0] * blended[0] + blended[1] * blended[1] + blended[2] * blended[2]);
+						if(bn > 0.001){
+							dir[0] = blended[0] / bn; dir[1] = blended[1] / bn; dir[2] = blended[2] / bn;
+							pose.vecVelocity[0] = dir[0] * curSpeed;
+							pose.vecVelocity[1] = dir[1] * curSpeed;
+							pose.vecVelocity[2] = dir[2] * curSpeed;
+						}
+					}
+					// same treatment for angular velocity so w x r keeps
+					// steering with the throw
+					double curAng = sqrt(pose.vecAngularVelocity[0] * pose.vecAngularVelocity[0]
+						+ pose.vecAngularVelocity[1] * pose.vecAngularVelocity[1]
+						+ pose.vecAngularVelocity[2] * pose.vecAngularVelocity[2]);
+					double peakAngMag = sqrt(state.peakAng[0] * state.peakAng[0]
+						+ state.peakAng[1] * state.peakAng[1] + state.peakAng[2] * state.peakAng[2]);
+					if(curAng > 0.05 && peakAngMag > 0.05){
+						double angDot = (pose.vecAngularVelocity[0] * state.peakAng[0]
+							+ pose.vecAngularVelocity[1] * state.peakAng[1]
+							+ pose.vecAngularVelocity[2] * state.peakAng[2]) / (curAng * peakAngMag);
+						double useHwAng = angDot < 0.1 ? 1.0 : hw;
+						double blended[3] = {
+							pose.vecAngularVelocity[0] / curAng * (1.0 - useHwAng) + state.peakAng[0] / peakAngMag * useHwAng,
+							pose.vecAngularVelocity[1] / curAng * (1.0 - useHwAng) + state.peakAng[1] / peakAngMag * useHwAng,
+							pose.vecAngularVelocity[2] / curAng * (1.0 - useHwAng) + state.peakAng[2] / peakAngMag * useHwAng,
+						};
+						double bn = sqrt(blended[0] * blended[0] + blended[1] * blended[1] + blended[2] * blended[2]);
+						if(bn > 0.001){
+							pose.vecAngularVelocity[0] = blended[0] / bn * curAng;
+							pose.vecAngularVelocity[1] = blended[1] / bn * curAng;
+							pose.vecAngularVelocity[2] = blended[2] / bn * curAng;
+						}
+					}
+				}
+				// release gesture anchor takes precedence over the
+				// heuristic holds above: from the moment the finger starts
+				// opening (scalar falling from plateau) until 150ms later,
+				// the output RATCHETS — rising motion updates it, falling
+				// motion cannot degrade it. games sample their release
+				// anywhere in this window; all of them read the peak.
+				if(now - state.anchorTime < 0.15 && state.anchorTime > 0){
+					double curOutSpeed = sqrt(pose.vecVelocity[0] * pose.vecVelocity[0]
+						+ pose.vecVelocity[1] * pose.vecVelocity[1]
+						+ pose.vecVelocity[2] * pose.vecVelocity[2]);
+					if(!state.anchorHasValue || curOutSpeed > state.anchorSpeed){
+						state.anchorHasValue = true;
+						state.anchorSpeed = curOutSpeed;
+						state.anchorVel[0] = pose.vecVelocity[0];
+						state.anchorVel[1] = pose.vecVelocity[1];
+						state.anchorVel[2] = pose.vecVelocity[2];
+						state.anchorAng[0] = pose.vecAngularVelocity[0];
+						state.anchorAng[1] = pose.vecAngularVelocity[1];
+						state.anchorAng[2] = pose.vecAngularVelocity[2];
+					}else{
+						pose.vecVelocity[0] = state.anchorVel[0];
+						pose.vecVelocity[1] = state.anchorVel[1];
+						pose.vecVelocity[2] = state.anchorVel[2];
+						pose.vecAngularVelocity[0] = state.anchorAng[0];
+						pose.vecAngularVelocity[1] = state.anchorAng[1];
+						pose.vecAngularVelocity[2] = state.anchorAng[2];
+					}
+				}
+				state.lastOutSpeed = outSpeed;
+				state.lastOutTime = now;
+				MotionSnapshot &snap = motionSnapshots[openVRID];
+				snap.time = now;
+				snap.outVel[0] = pose.vecVelocity[0];
+				snap.outVel[1] = pose.vecVelocity[1];
+				snap.outVel[2] = pose.vecVelocity[2];
+				snap.outAng[0] = pose.vecAngularVelocity[0];
+				snap.outAng[1] = pose.vecAngularVelocity[1];
+				snap.outAng[2] = pose.vecAngularVelocity[2];
+				snap.outSpeed = sqrt(pose.vecVelocity[0] * pose.vecVelocity[0]
+					+ pose.vecVelocity[1] * pose.vecVelocity[1]
+					+ pose.vecVelocity[2] * pose.vecVelocity[2]);
+				snap.trackingOk = true;
+				snap.result = (int)pose.result;
+			}
+		}
+	}else if(velocityFixMode == 2 && openVRID != vr::k_unTrackedDeviceIndex_Hmd){
+		// tracking dropped mid motion (camera based tracking loses the
+		// controller exactly at throw windup). bridge VELOCITY only: if a
+		// peak is fresh, keep replaying its decay so a release read during
+		// a short dropout still carries the throw instead of zero.
+		// positions are never synthesized.
+		double now = std::chrono::duration_cast<std::chrono::microseconds>(
+			std::chrono::steady_clock::now().time_since_epoch()).count() / 1000000.0;
+		std::lock_guard<std::mutex> guard(poseLogLock);
+		auto found = velFixStates.find(openVRID);
+		if(found != velFixStates.end()){
+			VelFixState &state = found->second;
+			double elapsed = now - state.peakTime;
+			double decay = 1.0 - elapsed / 0.07;
+			if(state.peakSpeed > 2.0 && decay > 0){
+				pose.vecVelocity[0] = state.peakVel[0] * decay;
+				pose.vecVelocity[1] = state.peakVel[1] * decay;
+				pose.vecVelocity[2] = state.peakVel[2] * decay;
+				pose.vecAngularVelocity[0] = state.peakAng[0] * decay;
+				pose.vecAngularVelocity[1] = state.peakAng[1] * decay;
+				pose.vecAngularVelocity[2] = state.peakAng[2] * decay;
+			}
+			MotionSnapshot &snap = motionSnapshots[openVRID];
+			snap.time = now;
+			snap.outVel[0] = pose.vecVelocity[0];
+			snap.outVel[1] = pose.vecVelocity[1];
+			snap.outVel[2] = pose.vecVelocity[2];
+			snap.outSpeed = sqrt(pose.vecVelocity[0] * pose.vecVelocity[0]
+				+ pose.vecVelocity[1] * pose.vecVelocity[1]
+				+ pose.vecVelocity[2] * pose.vecVelocity[2]);
+			snap.trackingOk = false;
+			snap.result = (int)pose.result;
 		}
 	}
 	if(driverConfig.streamFrame.poseLogging && openVRID != vr::k_unTrackedDeviceIndex_Hmd){
@@ -314,7 +831,7 @@ bool CustomHeadsetDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 	return true;
 }
 
-bool CustomHeadsetDeviceProvider::DeriveVelocity(uint32_t openVRID, const vr::DriverPose_t &pose, double derived[3]){
+bool CustomHeadsetDeviceProvider::DeriveMotion(uint32_t openVRID, const vr::DriverPose_t &pose, double derivedVel[3], double derivedAng[3]){
 	double now = std::chrono::duration_cast<std::chrono::microseconds>(
 		std::chrono::steady_clock::now().time_since_epoch()).count() / 1000000.0;
 	std::lock_guard<std::mutex> guard(poseLogLock);
@@ -328,6 +845,7 @@ bool CustomHeadsetDeviceProvider::DeriveVelocity(uint32_t openVRID, const vr::Dr
 		if(dt <= 0 || dt > 0.1){
 			state.count = 0;
 			state.haveEma = false;
+			state.haveEmaAng = false;
 		}else{
 			double dx = pose.vecPosition[0] - state.pos[prev][0];
 			double dy = pose.vecPosition[1] - state.pos[prev][1];
@@ -335,6 +853,7 @@ bool CustomHeadsetDeviceProvider::DeriveVelocity(uint32_t openVRID, const vr::Dr
 			if(sqrt(dx * dx + dy * dy + dz * dz) / dt > 30.0){
 				state.count = 0;
 				state.haveEma = false;
+				state.haveEmaAng = false;
 			}
 		}
 	}
@@ -344,23 +863,28 @@ bool CustomHeadsetDeviceProvider::DeriveVelocity(uint32_t openVRID, const vr::Dr
 		int prev = (state.head + VelFixState::ringSize - 1) % VelFixState::ringSize;
 		if(now - state.time[prev] < 0.003){
 			// still allow output from the existing window
-			if(state.count < VelFixState::ringSize || !state.haveEma){
+			if(state.count < VelFixState::ringSize || !state.haveEma || !state.haveEmaAng){
 				return false;
 			}
-			derived[0] = state.emaVel[0];
-			derived[1] = state.emaVel[1];
-			derived[2] = state.emaVel[2];
+			derivedVel[0] = state.emaVel[0];
+			derivedVel[1] = state.emaVel[1];
+			derivedVel[2] = state.emaVel[2];
+			derivedAng[0] = state.emaAng[0];
+			derivedAng[1] = state.emaAng[1];
+			derivedAng[2] = state.emaAng[2];
 			return true;
 		}
 	}
 	state.pos[state.head][0] = pose.vecPosition[0];
 	state.pos[state.head][1] = pose.vecPosition[1];
 	state.pos[state.head][2] = pose.vecPosition[2];
+	state.quat[state.head] = pose.qRotation;
 	state.time[state.head] = now;
 	state.head = (state.head + 1) % VelFixState::ringSize;
 	if(state.count < VelFixState::ringSize){
 		state.count++;
 		state.haveEma = false;
+		state.haveEmaAng = false;
 	}
 	if(state.count < VelFixState::ringSize){
 		return false;
@@ -409,6 +933,37 @@ bool CustomHeadsetDeviceProvider::DeriveVelocity(uint32_t openVRID, const vr::Dr
 		// v(t) = b + 2 c t, evaluated at the newest sample
 		slope[a] = b + 2.0 * c * tN;
 	}
+	// angular velocity through the same machinery: express each ring
+	// orientation as a rotation vector relative to the middle sample
+	// (halves the max angle, keeping the small angle linearization honest:
+	// < ~0.4 rad within the window even at 10 rad/s), fit the same
+	// endpoint evaluated quadratic to the rotation vector series, then map
+	// the derivative back to world axes through the reference orientation.
+	int refIdx = (state.head + VelFixState::ringSize / 2) % VelFixState::ringSize;
+	vr::HmdQuaternion_t qRef = state.quat[refIdx];
+	vr::HmdQuaternion_t qRefConj = {qRef.w, -qRef.x, -qRef.y, -qRef.z};
+	double sr[3] = {0, 0, 0}, srt[3] = {0, 0, 0}, srt2[3] = {0, 0, 0};
+	for(int i = 0; i < VelFixState::ringSize; i++){
+		vr::HmdQuaternion_t dq = QuatMultiply(qRefConj, state.quat[i]);
+		double sign = dq.w < 0 ? -1.0 : 1.0;
+		double vn = sqrt(dq.x * dq.x + dq.y * dq.y + dq.z * dq.z);
+		double angle = 2.0 * atan2(vn, fabs(dq.w));
+		double scale = vn > 1e-9 ? sign * angle / vn : sign * 2.0;
+		double r[3] = {dq.x * scale, dq.y * scale, dq.z * scale};
+		double dt = state.time[i] - tMean;
+		for(int a = 0; a < 3; a++){
+			sr[a] += r[a]; srt[a] += r[a] * dt; srt2[a] += r[a] * dt * dt;
+		}
+	}
+	double angSlopeRef[3];
+	for(int a = 0; a < 3; a++){
+		double b = (n * s4 * srt[a] - n * s3 * srt2[a] + s2 * s3 * sr[a] - s2 * s2 * srt[a]) / det;
+		double c = (n * s2 * srt2[a] - n * s3 * srt[a] - s2 * s2 * sr[a]) / det;
+		angSlopeRef[a] = b + 2.0 * c * tN;
+	}
+	double angSlope[3];
+	QuatRotateVector(qRef, angSlopeRef, angSlope);
+	
 	// light EMA for smoothness in time (kept small: it adds lag back)
 	if(!state.haveEma){
 		state.haveEma = true;
@@ -420,9 +975,22 @@ bool CustomHeadsetDeviceProvider::DeriveVelocity(uint32_t openVRID, const vr::Dr
 		state.emaVel[1] = state.emaVel[1] * 0.65 + slope[1] * 0.35;
 		state.emaVel[2] = state.emaVel[2] * 0.65 + slope[2] * 0.35;
 	}
-	derived[0] = state.emaVel[0];
-	derived[1] = state.emaVel[1];
-	derived[2] = state.emaVel[2];
+	if(!state.haveEmaAng){
+		state.haveEmaAng = true;
+		state.emaAng[0] = angSlope[0];
+		state.emaAng[1] = angSlope[1];
+		state.emaAng[2] = angSlope[2];
+	}else{
+		state.emaAng[0] = state.emaAng[0] * 0.65 + angSlope[0] * 0.35;
+		state.emaAng[1] = state.emaAng[1] * 0.65 + angSlope[1] * 0.35;
+		state.emaAng[2] = state.emaAng[2] * 0.65 + angSlope[2] * 0.35;
+	}
+	derivedVel[0] = state.emaVel[0];
+	derivedVel[1] = state.emaVel[1];
+	derivedVel[2] = state.emaVel[2];
+	derivedAng[0] = state.emaAng[0];
+	derivedAng[1] = state.emaAng[1];
+	derivedAng[2] = state.emaAng[2];
 	return true;
 }
 
@@ -442,6 +1010,7 @@ void CustomHeadsetDeviceProvider::LogDevicePose(uint32_t openVRID, const vr::Dri
 	bool steady = false;
 	bool burst = false;
 	bool announce = false;
+	bool trackChange = false;
 	double peakForLog = 0;
 	double fdSpeed = 0;
 	double fdAngSpeed = 0;
@@ -496,18 +1065,64 @@ void CustomHeadsetDeviceProvider::LogDevicePose(uint32_t openVRID, const vr::Dri
 		}
 		fdSpeed = state.fdSpeedEma;
 		fdAngSpeed = state.fdAngSpeedEma;
+		// with velocityFix off the fix path never runs, so record the raw
+		// pose as the release snapshot here — A/B sessions then get
+		// ReleaseSnap lines in both arms
+		// full mode records snapshots in the fix path; off and classic
+		// record here (classic's post-blend velocities are what this pose
+		// carries by the time logging runs)
+		if(driverConfig.streamFrame.velocityFixMode != 2){
+			MotionSnapshot &snap = motionSnapshots[openVRID];
+			snap.time = now;
+			snap.outVel[0] = pose.vecVelocity[0];
+			snap.outVel[1] = pose.vecVelocity[1];
+			snap.outVel[2] = pose.vecVelocity[2];
+			snap.outAng[0] = pose.vecAngularVelocity[0];
+			snap.outAng[1] = pose.vecAngularVelocity[1];
+			snap.outAng[2] = pose.vecAngularVelocity[2];
+			snap.outSpeed = speed;
+			snap.trackingOk = pose.poseIsValid && pose.result == vr::TrackingResult_Running_OK;
+			snap.result = (int)pose.result;
+		}
 		if(speed > state.peakSpeed){
 			state.peakSpeed = speed;
 		}
+		// tracking state transitions are logged immediately (dropouts during
+		// fast motion zero the speed, so speed-triggered bursts miss them —
+		// exactly the "item falls straight down" moments)
+		bool nowValid = pose.poseIsValid;
+		int nowResult = (int)pose.result;
+		if(!state.haveTrackState){
+			state.haveTrackState = true;
+			state.lastLoggedValid = nowValid;
+			state.lastLoggedResult = nowResult;
+		}else if((nowValid != state.lastLoggedValid || nowResult != state.lastLoggedResult)
+				&& now - state.lastBurstLog >= 0.005){
+			state.lastLoggedValid = nowValid;
+			state.lastLoggedResult = nowResult;
+			state.lastBurstLog = now;
+			trackChange = true;
+		}
+		// keep burst logging alive for 300ms after fast motion so the
+		// post release phase (including any dropout / zeroing) is captured
+		if(speed > 2.0 || fdSpeed > 2.0){
+			state.recentFastTime = now;
+		}
+		bool inPostFastWindow = now - state.recentFastTime < 0.3;
 		if(now - state.lastSteadyLog >= 2.0){
 			state.lastSteadyLog = now;
 			steady = true;
 			peakForLog = state.peakSpeed;
 			state.peakSpeed = 0;
-		}else if((speed > 2.0 || fdSpeed > 2.0) && now - state.lastBurstLog >= 0.01){
+		}else if((speed > 2.0 || fdSpeed > 2.0 || inPostFastWindow) && now - state.lastBurstLog >= 0.01){
 			state.lastBurstLog = now;
 			burst = true;
 		}
+	}
+	if(trackChange){
+		DriverLog("PoseLog: TRACKING id=%u valid=%d result=%d |v|=%.3f fd|v|=%.3f pos=(%.3f, %.3f, %.3f)",
+			openVRID, (int)pose.poseIsValid, (int)pose.result, speed, fdSpeed,
+			pose.vecPosition[0], pose.vecPosition[1], pose.vecPosition[2]);
 	}
 	if(announce){
 		// resolve which physical device this id is, once, so pose lines are
@@ -541,6 +1156,9 @@ bool CustomHeadsetDeviceProvider::HandleDeviceAdded(const char *&pchDeviceSerial
 	#endif
 	DriverLog("HandleDeviceAdded %s\n", pchDeviceSerialNumber);
 	if(eDeviceClass == vr::TrackedDeviceClass_HMD){
+		// keep the (possibly later wrapped) source device for projection
+		// queries; GetComponent forwards through shims either way
+		hmdDevice = pDriver;
 		
 		// add more shims here, they can stack and none of the functions are particularly hot
 		// later shims can override earlier shims

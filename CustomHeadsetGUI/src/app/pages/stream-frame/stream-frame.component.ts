@@ -9,7 +9,7 @@ import { MatIconModule } from '@angular/material/icon';
 import { MatInputModule } from '@angular/material/input';
 import { DriverSettingService } from '../../services/driver-setting.service';
 import { DriverInfoService } from '../../services/driver-info.service';
-import { Settings, StreamFrameConfig } from '../../services/JsonFileDefines';
+import { Settings, StreamFrameConfig, ControllersConfig } from '../../services/JsonFileDefines';
 import { FieldTipComponent } from '../../utilities/field-tip/field-tip.component';
 import { ResetButtonComponent } from '../../utilities/reset-button/reset-button.component';
 import { StreamFrameCurveComponent } from '../../utilities/stream-frame-curve/stream-frame-curve.component';
@@ -44,12 +44,22 @@ function defaultStreamFrame(): StreamFrameConfig {
     processAtSubmitLayer: false,
     syncTimeoutMs: 5,
     velocityFix: false,
+    velocityFixMode: 'off',
+    eyeGaze: { debugRing: false, tanHalfFovX: 1.19, tanHalfFovY: 1.19, predictionMs: 30, debugGrid: false, gridMode: 'uv', gridAngularDeg: 2.5 },
+    pupilSwim: { centerStrengthX: 0, centerStrengthY: 0 },
     poseLogging: false
   };
 }
 
 // fill missing fields without touching set ones, so older settings files and
 // files written before this page existed load into a complete object
+function defaultControllers(): ControllersConfig {
+  return {
+    rotationOffsetDeg: { x: 0, y: 0, z: 0 },
+    positionOffsetCm: { x: 0, y: 0, z: 0 },
+  };
+}
+
 function fillDefaults(target: any, defaults: any): any {
   if (target === undefined || target === null) {
     return JSON.parse(JSON.stringify(defaults));
@@ -85,6 +95,8 @@ export class StreamFrameComponent {
   dis = inject(DriverInfoService);
 
   rootSetting?: Settings;
+  controllerSettings?: ControllersConfig;
+  controllerDefaults: ControllersConfig = defaultControllers();
   settings?: StreamFrameConfig;
   defaults: StreamFrameConfig = defaultStreamFrame();
   // bumped on every edit so the curve component redraws immediately
@@ -97,6 +109,8 @@ export class StreamFrameComponent {
       this.rootSetting = this.dss.values();
       if (this.rootSetting) {
         this.rootSetting.streamFrame = fillDefaults(this.rootSetting.streamFrame, defaultStreamFrame());
+        this.rootSetting.controllers = fillDefaults(this.rootSetting.controllers, defaultControllers());
+        this.controllerSettings = this.rootSetting.controllers;
         this.settings = this.rootSetting.streamFrame;
         this.matrixText.set((this.settings?.srgbMatrix ?? []).join(', '));
       }
@@ -115,6 +129,13 @@ export class StreamFrameComponent {
     if (!cs.enable || !cs.enableForOther) return false;
     if (sf.skipColorWhileDashboardOpen) return false;
     return (cs as any).saturation !== 50 || cs.contrast !== 50;
+  }
+
+  resetControllers(group: keyof ControllersConfig) {
+    if (this.controllerSettings) {
+      this.controllerSettings[group] = JSON.parse(JSON.stringify(this.controllerDefaults[group]));
+      this.save();
+    }
   }
 
   save() {

@@ -151,12 +151,55 @@ struct StreamFrameConfig{
 	// instead of during Present. try this if Present time processing has no
 	// visible effect because the driver already consumes the layer at submit.
 	bool processAtSubmitLayer = false;
+	// gaze consumption (eye tracking tap must be receiving valid data).
+	// debugRing draws a small ring at the mapped gaze point per eye — the
+	// live calibration tool for the direction->viewport mapping that the
+	// dynamic pupil swim pass will reuse. tanHalfFov are the assumed
+	// symmetric projection half-angle tangents used for the mapping; tune
+	// until the ring lands where you look (live reload, shader hot reload).
+	struct {
+		bool debugRing = false;
+		// fallback mapping only (used when the HMD display component's real
+		// projection frusta are unavailable)
+		double tanHalfFovX = 1.19;
+		double tanHalfFovY = 1.19;
+		// lead the gaze by extrapolating recent gaze motion this many ms
+		// forward, compensating capture->link->publish latency. 0 disables.
+		double predictionMs = 30;
+		// overlay a calibration grid: the straight-line reference for pupil
+		// swim calibration. mode "uv" = lines every 0.1 uv; mode "angular"
+		// = lines every gridAngularDeg degrees of visual angle computed
+		// from the real projection frusta (sboy-style distortion photos:
+		// each rendered line has a known angular position, so a photo
+		// through the lens directly measures distortion error)
+		bool debugGrid = false;
+		std::string gridMode = "uv";
+		double gridAngularDeg = 2.5;
+	} eyeGaze = {};
+	// dynamic pupil swim correction (requires gaze). phase A: the
+	// distortion center follows the gaze point by these fractions per
+	// axis; 0 = static behavior, correction vanishes at center gaze by
+	// construction. tune with the debug grid: fixate an intersection,
+	// move gaze around it, raise until nearby lines stop
+	// bending/shifting with gaze. shift clamped to +-0.15 uv.
+	struct {
+		double centerStrengthX = 0;
+		double centerStrengthY = 0;
+	} pupilSwim = {};
 	// keyed mutex acquire timeout for the frame sync texture, in ms. when it
 	// expires the frame passes through unprocessed (a visible "flash" of
 	// ungraded color), which happens under heavy load (shader compilation,
 	// level streaming). after a skip the timeout escalates (3x, min 15ms) to
 	// break flash streaks, and resets on the next acquired frame.
 	int syncTimeoutMs = 5;
+	// experimental throw/velocity fix mode: 0 = off, 1 = classic (the v3
+	// estimator: position-derived linear velocity substituted via a smooth
+	// speed-ramped blend, nothing else), 2 = full (adds angular velocity
+	// substitution, wrist-flick blend term, peak/direction holds and the
+	// release-gesture anchor). classic preserved because field testing
+	// rated it the best-feeling iteration; full is the later heuristic
+	// stack. json values: "off" / "classic" / "full".
+	int velocityFixMode = 0;
 	// experimental throw/velocity fix. vrlink's reported controller velocity
 	// is heavily smoothed (field data: peaks read ~50-65% of position-derived
 	// velocity during throws, ratio varies with motion phase = filter lag,
