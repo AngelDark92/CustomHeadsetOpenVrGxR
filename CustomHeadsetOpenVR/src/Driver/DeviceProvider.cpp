@@ -324,6 +324,8 @@ static int TunerRoleForPath(const std::string &lower, bool isScalar){
 	if(isScalar){
 		if(endsWith("/input/joystick/y")){ return 1; }
 		if(endsWith("/input/grip/value")){ return 6; }
+		if(endsWith("/input/joystick/x")){ return 7; }
+		if(endsWith("/input/trigger/value")){ return 8; }
 		return 0;
 	}
 	if(endsWith("/input/a/click")){ return 2; }
@@ -344,6 +346,18 @@ void CustomHeadsetDeviceProvider::OnInputComponentCreated(vr::PropertyContainerH
 	for(auto &c : lower){ c = (char)tolower(c); }
 	info.interesting = InputPathInteresting(lower);
 	info.tunerRole = TunerRoleForPath(lower, false);
+	// hand classification from the quest layout: x/y buttons exist only on
+	// the left controller, a/b only on the right. once known, resolve the
+	// openVR id too so pose updates can be routed per hand.
+	if(info.tunerRole >= 2 && info.tunerRole <= 5){
+		int hand = (info.tunerRole == 2 || info.tunerRole == 3) ? 1 : 0;
+		std::lock_guard<std::mutex> handGuard(poseLogLock);
+		containerHand[container] = hand;
+		uint32_t id = ResolveContainerId(container);
+		if(id != vr::k_unTrackedDeviceIndexInvalid){
+			openVRIDHand[id] = hand;
+		}
+	}
 	// always log creates: component names are the map of vrlink's input
 	// surface, and not having them cost a session
 	DriverLog("InputTap: boolean component container=%llu path=%s handle=%llu%s",
@@ -549,6 +563,19 @@ void CustomHeadsetDeviceProvider::OnPoseComponentUpdated(vr::VRInputComponentHan
 		if(found == poseComponents.end()){
 			return;
 		}
+		// tip offset capture for the controller aligner: /pose/tip is the
+		// controller-local tip transform vrlink itself publishes
+		if(offset && found->second.name.size() >= 9
+				&& found->second.name.compare(found->second.name.size() - 9, 9, "/pose/tip") == 0){
+			auto handFound = containerHand.find(found->second.container);
+			if(handFound != containerHand.end()){
+				AlignControllerState &state = alignControllers[handFound->second];
+				state.tipValid = true;
+				state.tipLocal[0] = offset->m[0][3];
+				state.tipLocal[1] = offset->m[1][3];
+				state.tipLocal[2] = offset->m[2][3];
+			}
+		}
 		found->second.updates++;
 		// first update always, then 1 per 5s per component
 		if(found->second.updates == 1 || now - found->second.lastLogTime >= 5.0){
@@ -588,17 +615,33 @@ bool CustomHeadsetDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 	// (a config change mid-session moves the origin once; the teleport guard
 	// resets the ring and the moment passes.)
 	const ControllersConfig &controllersConfig = driverConfig.controllers;
-	bool hasRotationOffset = controllersConfig.rotationOffsetDeg[0] != 0
-		|| controllersConfig.rotationOffsetDeg[1] != 0 || controllersConfig.rotationOffsetDeg[2] != 0;
-	bool hasPositionOffset = controllersConfig.positionOffsetCm[0] != 0
-		|| controllersConfig.positionOffsetCm[1] != 0 || controllersConfig.positionOffsetCm[2] != 0;
+	double rotationOffsetDeg[3];
+	double positionOffsetCm[3];
+	if(alignerOverrideActive.load(std::memory_order_relaxed)){
+		// aligner working offsets replace the configured ones, so stick
+		// edits and pivot solves are visible in the very next pose
+		std::lock_guard<std::mutex> alignGuard(poseLogLock);
+		for(int i = 0; i < 3; i++){
+			rotationOffsetDeg[i] = alignerRotDeg[i];
+			positionOffsetCm[i] = alignerPosCm[i];
+		}
+	}else{
+		for(int i = 0; i < 3; i++){
+			rotationOffsetDeg[i] = controllersConfig.rotationOffsetDeg[i];
+			positionOffsetCm[i] = controllersConfig.positionOffsetCm[i];
+		}
+	}
+	bool hasRotationOffset = rotationOffsetDeg[0] != 0
+		|| rotationOffsetDeg[1] != 0 || rotationOffsetDeg[2] != 0;
+	bool hasPositionOffset = positionOffsetCm[0] != 0
+		|| positionOffsetCm[1] != 0 || positionOffsetCm[2] != 0;
 	if((hasRotationOffset || hasPositionOffset) && openVRID != vr::k_unTrackedDeviceIndex_Hmd
 			&& GetDeviceClass(openVRID) == (int)vr::TrackedDeviceClass_Controller){
 		if(hasPositionOffset){
 			double local[3] = {
-				controllersConfig.positionOffsetCm[0] / 100.0,
-				controllersConfig.positionOffsetCm[1] / 100.0,
-				controllersConfig.positionOffsetCm[2] / 100.0,
+				positionOffsetCm[0] / 100.0,
+				positionOffsetCm[1] / 100.0,
+				positionOffsetCm[2] / 100.0,
 			};
 			double world[3];
 			QuatRotateVector(pose.qRotation, local, world);
@@ -607,7 +650,23 @@ bool CustomHeadsetDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 			pose.vecPosition[2] += world[2];
 		}
 		if(hasRotationOffset){
-			pose.qRotation = QuatMultiply(pose.qRotation, QuatFromEulerDeg(controllersConfig.rotationOffsetDeg));
+			pose.qRotation = QuatMultiply(pose.qRotation, QuatFromEulerDeg(rotationOffsetDeg));
+		}
+	}
+	// capture the post-offset pose per hand for the controller aligner (the
+	// drawn tip marker must reflect the live working offsets)
+	if(openVRID != vr::k_unTrackedDeviceIndex_Hmd && pose.poseIsValid){
+		std::lock_guard<std::mutex> alignGuard(poseLogLock);
+		auto handFound = openVRIDHand.find(openVRID);
+		if(handFound != openVRIDHand.end()){
+			AlignControllerState &state = alignControllers[handFound->second];
+			state.poseValid = true;
+			state.pos[0] = pose.vecPosition[0];
+			state.pos[1] = pose.vecPosition[1];
+			state.pos[2] = pose.vecPosition[2];
+			state.rot = pose.qRotation;
+			state.poseTime = std::chrono::duration_cast<std::chrono::microseconds>(
+				std::chrono::steady_clock::now().time_since_epoch()).count() / 1000000.0;
 		}
 	}
 	// throw/velocity fix: substitute position-derived velocity when it is
@@ -1247,6 +1306,30 @@ void CustomHeadsetDeviceProvider::GetTunerInput(TunerInputState &out){
 			case 4: out.eyeToggle = out.eyeToggle || info.tunerBool; break;
 			case 5: out.resetBand = out.resetBand || info.tunerBool; break;
 			case 6: if(info.tunerScalar > out.grip){ out.grip = info.tunerScalar; } break;
+			case 7:
+				if(fabsf(info.tunerScalar) > fabsf(out.stickX)){ out.stickX = info.tunerScalar; }
+				break;
+			case 8: if(info.tunerScalar > out.trigger){ out.trigger = info.tunerScalar; } break;
 		}
 	}
+}
+
+void CustomHeadsetDeviceProvider::GetAlignController(int hand, AlignControllerState &out){
+	std::lock_guard<std::mutex> guard(poseLogLock);
+	if(hand == 0 || hand == 1){
+		out = alignControllers[hand];
+	}else{
+		out = AlignControllerState();
+	}
+}
+
+void CustomHeadsetDeviceProvider::SetAlignerOffsets(bool active, const double rotDeg[3], const double posCm[3]){
+	{
+		std::lock_guard<std::mutex> guard(poseLogLock);
+		for(int i = 0; i < 3; i++){
+			alignerRotDeg[i] = rotDeg[i];
+			alignerPosCm[i] = posCm[i];
+		}
+	}
+	alignerOverrideActive.store(active, std::memory_order_relaxed);
 }

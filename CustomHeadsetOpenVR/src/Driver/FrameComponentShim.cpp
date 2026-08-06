@@ -153,11 +153,13 @@ void DirectModeComponentShim::UpdateSwimProbePose(const vr::HmdMatrix34_t &pose)
 	float x[3] = { pose.m[0][0], pose.m[1][0], pose.m[2][0] };
 	float y[3] = { pose.m[0][1], pose.m[1][1], pose.m[2][1] };
 	float z[3] = { pose.m[0][2], pose.m[1][2], pose.m[2][2] };
-	// keep the full basis for the world-locked calibration grid
+	// keep the full basis + position for the world-locked calibration grid
+	// and the controller aligner's tip marker
 	for(int i = 0; i < 3; i++){
 		headBasisW[0][i] = x[i];
 		headBasisW[1][i] = y[i];
 		headBasisW[2][i] = z[i];
+		headPosW[i] = pose.m[i][3];
 	}
 	headBasisValid = true;
 	// head angular velocity between successive submitted render poses, so
@@ -271,6 +273,556 @@ void DirectModeComponentShim::MaybeLogSwimProbe(const FrameProcessSettings &sett
 		settings.gazeRawDirX, settings.gazeRawDirY, settings.gazeRawDirZ);
 }
 
+
+
+// rotate a vector by a unit quaternion (w, x, y, z) — local copy so the
+// shim has no dependency on DeviceProvider's file-static math helpers
+static void ShimQuatRotate(const vr::HmdQuaternion_t &q, const double v[3], double out[3]){
+	double w = q.w, x = q.x, y = q.y, z = q.z;
+	out[0] = (1 - 2 * (y * y + z * z)) * v[0] + 2 * (x * y - w * z) * v[1] + 2 * (x * z + w * y) * v[2];
+	out[1] = 2 * (x * y + w * z) * v[0] + (1 - 2 * (x * x + z * z)) * v[1] + 2 * (y * z - w * x) * v[2];
+	out[2] = 2 * (x * z - w * y) * v[0] + 2 * (y * z + w * x) * v[1] + (1 - 2 * (x * x + y * y)) * v[2];
+}
+
+// ---------------------------------------------------------------------------
+// interactive mode dispatcher
+// ---------------------------------------------------------------------------
+// the three in-headset calibration modes share the controller inputs, so
+// exactly one runs per frame: aligner > center tune > band tuner. a mode
+// being superseded is deactivated with a log line so precedence is visible.
+
+void DirectModeComponentShim::UpdateInteractiveModes(FrameProcessSettings &settings){
+	bool alignOn;
+	{
+		std::lock_guard<std::mutex> configGuard(driverConfigLock);
+		alignOn = driverConfig.controllers.aligner.enable;
+	}
+	bool centerOn = settings.config.distortion.centerTune.enable;
+	bool bandOn = settings.config.distortion.tune.enable;
+	deviceProvider.SetTunerInputActive(alignOn || centerOn || bandOn);
+	if(alignOn){
+		if(tuner.active){ tuner.active = false; DriverLog("Tuner: suspended (controller aligner active)"); }
+		if(centerTune.active){ centerTune.active = false; DriverLog("CenterTune: suspended (controller aligner active)"); }
+		UpdateAligner(settings);
+		return;
+	}
+	if(aligner.active){
+		aligner.active = false;
+		deviceProvider.SetAlignerOffsets(false, aligner.rotDeg, aligner.posCm);
+		DriverLog("Aligner: disabled (configured offsets apply again; unsaved edits dropped)");
+	}
+	if(centerOn){
+		if(tuner.active){ tuner.active = false; DriverLog("Tuner: suspended (center tune active)"); }
+		UpdateCenterTune(settings);
+		return;
+	}
+	if(centerTune.active){ centerTune.active = false; DriverLog("CenterTune: disabled (configured centers apply again; unsaved edits dropped)"); }
+	UpdateTuner(settings);
+}
+
+// ---------------------------------------------------------------------------
+// center-offset tuning mode
+// ---------------------------------------------------------------------------
+// the distortion is replaced by a small sinusoidal "breathing" k1 pulse.
+// everything on screen pulses radially around the CURRENT center — the
+// stationary point of the pulse IS the configured center, made visible.
+// task: drag that still-point (amber cross marks it) onto the lens's true
+// center, i.e. the fringe-free sharpest point of the fine grid.
+// stick X/Y move the center; X cycles both-shift / both-mirrored / L / R
+// (donning shifts move both eyes the SAME way, ipd error moves them
+// MIRRORED — both linked variants exist for that reason); Y resets; grip
+// hold saves. results are written independently of the band tuner.
+
+void DirectModeComponentShim::UpdateCenterTune(FrameProcessSettings &settings){
+	double now = NowSeconds();
+	if(!centerTune.active){
+		centerTune.active = true;
+		centerTune.cxL = settings.config.centerOffsetXLeft;
+		centerTune.cxR = settings.config.centerOffsetXRight;
+		centerTune.cy = settings.config.centerOffsetY;
+		centerTune.initCxL = centerTune.cxL;
+		centerTune.initCxR = centerTune.cxR;
+		centerTune.initCy = centerTune.cy;
+		centerTune.eyeMode = 0;
+		centerTune.prevEyeToggle = centerTune.prevReset = false;
+		centerTune.lastTime = now;
+		centerTune.gripWasHigh = false;
+		centerTune.savedThisHold = false;
+		DriverLog("CenterTune: ACTIVE cxL=%+.4f cxR=%+.4f cy=%+.4f. "
+			"Controls: stick moves the center, X = both(shift)/both(mirrored)/L/R, Y = reset, hold grip 1.5s = save",
+			centerTune.cxL, centerTune.cxR, centerTune.cy);
+	}
+	double dt = now - centerTune.lastTime;
+	centerTune.lastTime = now;
+	if(dt < 0 || dt > 0.5){ dt = 0; }
+	CustomHeadsetDeviceProvider::TunerInputState in;
+	deviceProvider.GetTunerInput(in);
+	auto edge = [](bool current, bool &previous){
+		bool rising = current && !previous;
+		previous = current;
+		return rising;
+	};
+	static const char* eyeModeNames[4] = {"BOTH (shift together)", "BOTH (mirrored / ipd)", "LEFT only", "RIGHT only"};
+	if(edge(in.eyeToggle, centerTune.prevEyeToggle)){
+		centerTune.eyeMode = (centerTune.eyeMode + 1) % 4;
+		DriverLog("CenterTune: editing %s", eyeModeNames[centerTune.eyeMode]);
+	}
+	if(edge(in.resetBand, centerTune.prevReset)){
+		centerTune.cxL = centerTune.initCxL;
+		centerTune.cxR = centerTune.initCxR;
+		centerTune.cy = centerTune.initCy;
+		DriverLog("CenterTune: reset to activation values");
+	}
+	// stick: squared response, 0.02 uv/s at full deflection. stick up moves
+	// the center up on screen, i.e. v decreases.
+	auto axisDelta = [&](double v){
+		double magnitude = fabs(v);
+		double deadzone = 0.2;
+		if(magnitude <= deadzone || dt <= 0){ return 0.0; }
+		double normalized = (magnitude - deadzone) / (1.0 - deadzone);
+		if(normalized > 1.0){ normalized = 1.0; }
+		return (v > 0 ? 1.0 : -1.0) * normalized * normalized * 0.02 * dt;
+	};
+	double dx = axisDelta(in.stickX);
+	double dy = -axisDelta(in.stickY);
+	if(dx != 0 || dy != 0){
+		switch(centerTune.eyeMode){
+			case 0: centerTune.cxL += dx; centerTune.cxR += dx; break;
+			case 1: centerTune.cxL += dx; centerTune.cxR -= dx; break;
+			case 2: centerTune.cxL += dx; break;
+			case 3: centerTune.cxR += dx; break;
+		}
+		centerTune.cy += dy;
+		auto clampC = [](double &v){ if(v < -0.3){ v = -0.3; } if(v > 0.3){ v = 0.3; } };
+		clampC(centerTune.cxL); clampC(centerTune.cxR); clampC(centerTune.cy);
+		if(now - centerTune.lastLogTime > 0.3){
+			centerTune.lastLogTime = now;
+			DriverLog("CenterTune: cxL=%+.4f cxR=%+.4f cy=%+.4f", centerTune.cxL, centerTune.cxR, centerTune.cy);
+		}
+	}
+	if(in.grip > 0.8){
+		if(!centerTune.gripWasHigh){
+			centerTune.gripWasHigh = true;
+			centerTune.gripHoldStart = now;
+			centerTune.savedThisHold = false;
+		}else if(!centerTune.savedThisHold && now - centerTune.gripHoldStart > 1.5){
+			centerTune.savedThisHold = true;
+			SaveCenterProfile(settings);
+		}
+	}else if(in.grip < 0.5){
+		centerTune.gripWasHigh = false;
+	}
+	// take over the frame: breathing k1 pulse + working centers + fine grid
+	double amp = settings.config.distortion.centerTune.breatheAmp;
+	if(amp < 0.005){ amp = 0.005; }
+	if(amp > 0.2){ amp = 0.2; }
+	StreamFrameDistortionConfig &d = settings.config.distortion;
+	d.mode = "k1k2";
+	d.perEye = false;
+	d.perAxis = false;
+	d.gain = 1.0;
+	d.points.clear();
+	d.curves.clear();
+	d.annulus.enable = false;
+	settings.config.k1 = amp * sin(now * 2.0 * 3.14159265358979 * 0.7);
+	settings.config.k2 = 0;
+	settings.config.centerOffsetXLeft = centerTune.cxL;
+	settings.config.centerOffsetXRight = centerTune.cxR;
+	settings.config.centerOffsetY = centerTune.cy;
+	settings.config.eyeGaze.debugGrid = true;
+	settings.config.eyeGaze.overlayWarped = true;
+	settings.auxMarkerMode = 2;
+}
+
+void DirectModeComponentShim::SaveCenterProfile(const FrameProcessSettings &settings){
+	using nlohmann::json;
+	// combine the CONFIGURED curves (fresh from driverConfig, not this
+	// frame's breathing override) with the tuned centers: profile = curves
+	// + centers, so the artifact is complete and importable on its own
+	StreamFrameDistortionConfig distortion;
+	double baseK1, baseK2;
+	{
+		std::lock_guard<std::mutex> configGuard(driverConfigLock);
+		distortion = driverConfig.streamFrame.distortion;
+		baseK1 = driverConfig.streamFrame.k1;
+		baseK2 = driverConfig.streamFrame.k2;
+	}
+	json curves = json::object();
+	for(const auto &pair : distortion.curves){
+		json points = json::array();
+		for(const auto &point : pair.second.points){
+			points.push_back({{"r", point.r}, {"scale", point.scale}});
+		}
+		curves[pair.first] = {{"k1", pair.second.k1}, {"k2", pair.second.k2}, {"points", points}};
+	}
+	json rootPoints = json::array();
+	for(const auto &point : distortion.points){
+		rootPoints.push_back({{"r", point.r}, {"scale", point.scale}});
+	}
+	char stamp[32];
+	time_t rawTime = time(nullptr);
+	struct tm timeInfo;
+#ifdef _WIN32
+	localtime_s(&timeInfo, &rawTime);
+#else
+	localtime_r(&rawTime, &timeInfo);
+#endif
+	strftime(stamp, sizeof(stamp), "%Y%m%d-%H%M%S", &timeInfo);
+	json profile = {
+		{"type", "streamFrameDistortionProfile"},
+		{"version", 1},
+		{"name", std::string("Centers ") + stamp},
+		{"distortion", {
+			{"mode", distortion.mode},
+			{"points", rootPoints},
+			{"perEye", distortion.perEye},
+			{"perAxis", distortion.perAxis},
+			{"curves", curves},
+		}},
+		{"k1", baseK1},
+		{"k2", baseK2},
+		{"centerOffsetXLeft", centerTune.cxL},
+		{"centerOffsetXRight", centerTune.cxR},
+		{"centerOffsetY", centerTune.cy},
+	};
+	std::string folder = driverConfigLoader.GetConfigFolder() + "Distortion/";
+	std::error_code ec;
+	std::filesystem::create_directories(folder, ec);
+	std::string path = folder + "centers-" + stamp + ".json";
+	std::ofstream out(path);
+	bool ok = false;
+	if(out){
+		out << profile.dump(2);
+		ok = out.good();
+	}
+	DriverLog("CenterTune: %s %s", ok ? "SAVED" : "FAILED to write", path.c_str());
+	DriverLog("CenterTune: settings block: \"centerOffsetXLeft\": %.4f, \"centerOffsetXRight\": %.4f, \"centerOffsetY\": %.4f",
+		centerTune.cxL, centerTune.cxR, centerTune.cy);
+}
+
+// ---------------------------------------------------------------------------
+// controller offset aligner
+// ---------------------------------------------------------------------------
+// manual: X switches hand, Y switches position<->rotation, A/B cycle the
+// axis, stick Y adjusts the selected axis (both live: the working offsets
+// override the configured ones in the pose path). the magenta marker draws
+// at the driver's belief of the selected controller's TIP.
+// automatic: plant the tip on any solid surface (armrest, desk edge —
+// chest/waist height, away from the body), HOLD THE TRIGGER and slowly
+// swirl a wide cone around the planted tip for a few seconds, release. a
+// least-squares pivot solve (verified against synthetic ground truth:
+// ~1-2mm at realistic tracking noise with a 15-40 degree cone) recovers
+// where the physical tip actually is and updates the position offset so
+// the marker freezes. rotation stays a manual aim task.
+// NOTE: offsets are currently a single shared config for both hands; hand
+// selection chooses which controller is visualized/solved. per-hand solved
+// results are logged individually — persistent differences between hands
+// are the data that decides whether per-hand config is worth adding.
+
+void DirectModeComponentShim::UpdateAligner(FrameProcessSettings &settings){
+	double now = NowSeconds();
+	if(!aligner.active){
+		aligner.active = true;
+		ControllersConfig controllers;
+		{
+			std::lock_guard<std::mutex> configGuard(driverConfigLock);
+			controllers = driverConfig.controllers;
+		}
+		for(int i = 0; i < 3; i++){
+			aligner.rotDeg[i] = controllers.rotationOffsetDeg[i];
+			aligner.posCm[i] = controllers.positionOffsetCm[i];
+			aligner.initRot[i] = aligner.rotDeg[i];
+			aligner.initPos[i] = aligner.posCm[i];
+		}
+		aligner.hand = 1;
+		aligner.group = 0;
+		aligner.axis = 0;
+		aligner.prevHandToggle = aligner.prevGroupToggle = false;
+		aligner.prevAxisUp = aligner.prevAxisDown = false;
+		aligner.lastTime = now;
+		aligner.gripWasHigh = false;
+		aligner.savedThisHold = false;
+		aligner.capturing = false;
+		aligner.sampleQ.clear();
+		aligner.sampleP.clear();
+		DriverLog("Aligner: ACTIVE rot=(%.1f, %.1f, %.1f)deg pos=(%.2f, %.2f, %.2f)cm. "
+			"Controls: X = hand, Y = position/rotation, A/B = axis, stick = adjust, "
+			"TRIGGER HELD + tip planted + swirl = auto position solve, hold grip 1.5s = save",
+			aligner.rotDeg[0], aligner.rotDeg[1], aligner.rotDeg[2],
+			aligner.posCm[0], aligner.posCm[1], aligner.posCm[2]);
+	}
+	double dt = now - aligner.lastTime;
+	aligner.lastTime = now;
+	if(dt < 0 || dt > 0.5){ dt = 0; }
+	CustomHeadsetDeviceProvider::TunerInputState in;
+	deviceProvider.GetTunerInput(in);
+	auto edge = [](bool current, bool &previous){
+		bool rising = current && !previous;
+		previous = current;
+		return rising;
+	};
+	static const char* axisNames[3] = {"x", "y", "z"};
+	if(edge(in.eyeToggle, aligner.prevHandToggle)){
+		aligner.hand = 1 - aligner.hand;
+		DriverLog("Aligner: %s controller selected", aligner.hand == 0 ? "LEFT" : "RIGHT");
+	}
+	if(edge(in.resetBand, aligner.prevGroupToggle)){
+		aligner.group = 1 - aligner.group;
+		DriverLog("Aligner: adjusting %s, axis %s", aligner.group == 0 ? "POSITION (cm)" : "ROTATION (deg)", axisNames[aligner.axis]);
+	}
+	if(edge(in.bandOut, aligner.prevAxisUp)){
+		aligner.axis = (aligner.axis + 1) % 3;
+		DriverLog("Aligner: axis %s (%s)", axisNames[aligner.axis], aligner.group == 0 ? "position" : "rotation");
+	}
+	if(edge(in.bandIn, aligner.prevAxisDown)){
+		aligner.axis = (aligner.axis + 2) % 3;
+		DriverLog("Aligner: axis %s (%s)", axisNames[aligner.axis], aligner.group == 0 ? "position" : "rotation");
+	}
+	// stick Y adjusts the selected axis: position 2 cm/s, rotation 10 deg/s
+	// at full deflection, squared response
+	double magnitude = fabs(in.stickY);
+	double deadzone = 0.2;
+	if(magnitude > deadzone && dt > 0){
+		double normalized = (magnitude - deadzone) / (1.0 - deadzone);
+		if(normalized > 1.0){ normalized = 1.0; }
+		double rate = aligner.group == 0 ? 2.0 : 10.0;
+		double delta = (in.stickY > 0 ? 1.0 : -1.0) * normalized * normalized * rate * dt;
+		double* target = aligner.group == 0 ? aligner.posCm : aligner.rotDeg;
+		target[aligner.axis] += delta;
+		double limit = aligner.group == 0 ? 20.0 : 90.0;
+		if(target[aligner.axis] < -limit){ target[aligner.axis] = -limit; }
+		if(target[aligner.axis] > limit){ target[aligner.axis] = limit; }
+		if(now - aligner.lastLogTime > 0.3){
+			aligner.lastLogTime = now;
+			DriverLog("Aligner: rot=(%.1f, %.1f, %.1f)deg pos=(%.2f, %.2f, %.2f)cm",
+				aligner.rotDeg[0], aligner.rotDeg[1], aligner.rotDeg[2],
+				aligner.posCm[0], aligner.posCm[1], aligner.posCm[2]);
+		}
+	}
+	// pivot capture on the trigger
+	CustomHeadsetDeviceProvider::AlignControllerState controller;
+	deviceProvider.GetAlignController(aligner.hand, controller);
+	bool poseFresh = controller.poseValid && now - controller.poseTime < 0.1;
+	if(in.trigger > 0.6){
+		if(!aligner.capturing){
+			aligner.capturing = true;
+			aligner.sampleQ.clear();
+			aligner.sampleP.clear();
+			DriverLog("Aligner: pivot capture STARTED (%s hand) - keep the tip planted, swirl a wide slow cone",
+				aligner.hand == 0 ? "left" : "right");
+		}
+		if(poseFresh && now - aligner.lastSampleTime > 0.02 && aligner.sampleQ.size() < 4 * 600){
+			aligner.lastSampleTime = now;
+			aligner.sampleQ.push_back(controller.rot.w);
+			aligner.sampleQ.push_back(controller.rot.x);
+			aligner.sampleQ.push_back(controller.rot.y);
+			aligner.sampleQ.push_back(controller.rot.z);
+			aligner.sampleP.push_back(controller.pos[0]);
+			aligner.sampleP.push_back(controller.pos[1]);
+			aligner.sampleP.push_back(controller.pos[2]);
+		}
+	}else if(aligner.capturing && in.trigger < 0.4){
+		aligner.capturing = false;
+		size_t count = aligner.sampleQ.size() / 4;
+		// rotation spread: max angular distance from the first sample. the
+		// residual alone cannot catch a too-narrow swirl (synthetic test:
+		// a 3 degree cone fits with low residual but ~7mm offset error)
+		double maxSpreadDeg = 0;
+		if(count > 1){
+			double w0 = aligner.sampleQ[0], x0 = aligner.sampleQ[1], y0 = aligner.sampleQ[2], z0 = aligner.sampleQ[3];
+			for(size_t sample = 1; sample < count; sample++){
+				double dot = fabs(w0 * aligner.sampleQ[sample * 4] + x0 * aligner.sampleQ[sample * 4 + 1]
+					+ y0 * aligner.sampleQ[sample * 4 + 2] + z0 * aligner.sampleQ[sample * 4 + 3]);
+				if(dot > 1.0){ dot = 1.0; }
+				double angle = 2.0 * acos(dot) * 180.0 / 3.14159265358979;
+				if(angle > maxSpreadDeg){ maxSpreadDeg = angle; }
+			}
+		}
+		double pivot[3], residual;
+		if(count < 60){
+			DriverLog("Aligner: pivot capture too short (%zu samples, need 60+ / ~2s) - discarded", count);
+		}else if(maxSpreadDeg < 12.0){
+			DriverLog("Aligner: swirl cone too narrow (%.0f deg spread, need 12+) - tilt the controller further around the planted tip and retry", maxSpreadDeg);
+		}else if(!SolvePivot(aligner.sampleQ, aligner.sampleP, pivot, residual)){
+			DriverLog("Aligner: pivot solve DEGENERATE - swirl a wider cone (more rotation spread) and retry");
+		}else if(residual > 0.010){
+			DriverLog("Aligner: pivot residual %.1fmm too high (tip slid or tracking glitched) - discarded", residual * 1000.0);
+		}else if(!controller.tipValid){
+			DriverLog("Aligner: no /pose/tip component seen for this hand - cannot relate pivot to tip, solve logged only: pivotLocal=(%.4f, %.4f, %.4f)m", pivot[0], pivot[1], pivot[2]);
+		}else{
+			// marker freeze condition: tipLocal + posOffset == pivot. the
+			// solve ran on post-offset poses, so the correction is additive.
+			double deltaCm[3];
+			for(int i = 0; i < 3; i++){
+				deltaCm[i] = (pivot[i] - controller.tipLocal[i]) * 100.0;
+				aligner.posCm[i] += deltaCm[i];
+			}
+			DriverLog("Aligner: pivot SOLVED (%s hand, %zu samples, residual %.1fmm): position offset += (%.2f, %.2f, %.2f)cm -> (%.2f, %.2f, %.2f)cm",
+				aligner.hand == 0 ? "left" : "right", count, residual * 1000.0,
+				deltaCm[0], deltaCm[1], deltaCm[2],
+				aligner.posCm[0], aligner.posCm[1], aligner.posCm[2]);
+			DriverLog("Aligner: verify by swirling again WITHOUT the trigger - the magenta marker should now stay frozen");
+		}
+	}
+	// save
+	if(in.grip > 0.8){
+		if(!aligner.gripWasHigh){
+			aligner.gripWasHigh = true;
+			aligner.gripHoldStart = now;
+			aligner.savedThisHold = false;
+		}else if(!aligner.savedThisHold && now - aligner.gripHoldStart > 1.5){
+			aligner.savedThisHold = true;
+			SaveControllerOffsets();
+		}
+	}else if(in.grip < 0.5){
+		aligner.gripWasHigh = false;
+	}
+	// push the working offsets into the pose path (live)
+	deviceProvider.SetAlignerOffsets(true, aligner.rotDeg, aligner.posCm);
+	// tip marker for the selected hand, in head space (y up, -z forward)
+	if(poseFresh && controller.tipValid && headBasisValid){
+		double tipWorld[3];
+		double tipLocal[3] = {controller.tipLocal[0], controller.tipLocal[1], controller.tipLocal[2]};
+		double rotated[3];
+		ShimQuatRotate(controller.rot, tipLocal, rotated);
+		for(int i = 0; i < 3; i++){
+			tipWorld[i] = controller.pos[i] + rotated[i];
+		}
+		double rel[3] = {tipWorld[0] - headPosW[0], tipWorld[1] - headPosW[1], tipWorld[2] - headPosW[2]};
+		settings.auxHeadX = rel[0] * headBasisW[0][0] + rel[1] * headBasisW[0][1] + rel[2] * headBasisW[0][2];
+		settings.auxHeadY = rel[0] * headBasisW[1][0] + rel[1] * headBasisW[1][1] + rel[2] * headBasisW[1][2];
+		settings.auxHeadZ = rel[0] * headBasisW[2][0] + rel[1] * headBasisW[2][1] + rel[2] * headBasisW[2][2];
+		settings.auxMarkerMode = 3;
+	}
+}
+
+void DirectModeComponentShim::SaveControllerOffsets(){
+	using nlohmann::json;
+	json block = {{"controllers", {
+		{"rotationOffsetDeg", {{"x", aligner.rotDeg[0]}, {"y", aligner.rotDeg[1]}, {"z", aligner.rotDeg[2]}}},
+		{"positionOffsetCm", {{"x", aligner.posCm[0]}, {"y", aligner.posCm[1]}, {"z", aligner.posCm[2]}}},
+	}}};
+	char stamp[32];
+	time_t rawTime = time(nullptr);
+	struct tm timeInfo;
+#ifdef _WIN32
+	localtime_s(&timeInfo, &rawTime);
+#else
+	localtime_r(&rawTime, &timeInfo);
+#endif
+	strftime(stamp, sizeof(stamp), "%Y%m%d-%H%M%S", &timeInfo);
+	std::string folder = driverConfigLoader.GetConfigFolder();
+	std::string path = folder + "controllers-" + stamp + ".json";
+	std::ofstream out(path);
+	bool ok = false;
+	if(out){
+		out << block.dump(2);
+		ok = out.good();
+	}
+	DriverLog("Aligner: %s %s", ok ? "SAVED" : "FAILED to write", path.c_str());
+	DriverLog("Aligner: settings block: %s", block.dump().c_str());
+}
+
+bool DirectModeComponentShim::SolvePivot(const std::vector<double> &sampleQ, const std::vector<double> &sampleP,
+		double pivotLocal[3], double &residualM){
+	// equations R_i o - c = -p_i; normal equations, 6 unknowns [o; c].
+	// rotations are orthonormal so the top-left block is N*I exactly.
+	size_t count = sampleQ.size() / 4;
+	if(count < 10 || sampleP.size() / 3 != count){
+		return false;
+	}
+	double SR[3][3] = {}; double SRt[3][3] = {};
+	double SRtp[3] = {}; double Sp[3] = {};
+	auto rotColumns = [](const double q[4], double columns[3][3]){
+		// columns[j] = R * e_j from the quaternion (w, x, y, z)
+		double w = q[0], x = q[1], y = q[2], z = q[3];
+		columns[0][0] = 1 - 2 * (y * y + z * z);
+		columns[0][1] = 2 * (x * y + w * z);
+		columns[0][2] = 2 * (x * z - w * y);
+		columns[1][0] = 2 * (x * y - w * z);
+		columns[1][1] = 1 - 2 * (x * x + z * z);
+		columns[1][2] = 2 * (y * z + w * x);
+		columns[2][0] = 2 * (x * z + w * y);
+		columns[2][1] = 2 * (y * z - w * x);
+		columns[2][2] = 1 - 2 * (x * x + y * y);
+	};
+	for(size_t sample = 0; sample < count; sample++){
+		double q[4] = {sampleQ[sample * 4], sampleQ[sample * 4 + 1], sampleQ[sample * 4 + 2], sampleQ[sample * 4 + 3]};
+		const double* p = &sampleP[sample * 3];
+		double columns[3][3];
+		rotColumns(q, columns);
+		for(int i = 0; i < 3; i++){
+			for(int j = 0; j < 3; j++){
+				SR[i][j] += columns[j][i];   // R_ij
+				SRt[i][j] += columns[i][j];  // (R^T)_ij = R_ji
+			}
+		}
+		for(int i = 0; i < 3; i++){
+			double rtp = columns[i][0] * p[0] + columns[i][1] * p[1] + columns[i][2] * p[2]; // (R^T p)_i
+			SRtp[i] += rtp;
+			Sp[i] += p[i];
+		}
+	}
+	double matrix[6][7] = {};
+	double n = (double)count;
+	for(int i = 0; i < 3; i++){
+		matrix[i][i] = n;
+		for(int j = 0; j < 3; j++){ matrix[i][3 + j] = -SRt[i][j]; }
+		matrix[i][6] = -SRtp[i];
+	}
+	for(int i = 0; i < 3; i++){
+		for(int j = 0; j < 3; j++){ matrix[3 + i][j] = -SR[i][j]; }
+		matrix[3 + i][3 + i] = n;
+		matrix[3 + i][6] = Sp[i];
+	}
+	// gauss-jordan with partial pivoting; a tiny pivot means the rotations
+	// had no spread (pure translation swirl) and the system is degenerate
+	for(int col = 0; col < 6; col++){
+		int best = col;
+		for(int row = col + 1; row < 6; row++){
+			if(fabs(matrix[row][col]) > fabs(matrix[best][col])){ best = row; }
+		}
+		if(fabs(matrix[best][col]) < 1e-6 * n){
+			return false;
+		}
+		if(best != col){
+			for(int cc = 0; cc < 7; cc++){
+				double tmp = matrix[col][cc];
+				matrix[col][cc] = matrix[best][cc];
+				matrix[best][cc] = tmp;
+			}
+		}
+		for(int row = 0; row < 6; row++){
+			if(row == col){ continue; }
+			double factor = matrix[row][col] / matrix[col][col];
+			for(int cc = col; cc < 7; cc++){
+				matrix[row][cc] -= factor * matrix[col][cc];
+			}
+		}
+	}
+	double solution[6];
+	for(int i = 0; i < 6; i++){
+		solution[i] = matrix[i][6] / matrix[i][i];
+	}
+	pivotLocal[0] = solution[0];
+	pivotLocal[1] = solution[1];
+	pivotLocal[2] = solution[2];
+	// residual: rms of |R o + p - c|
+	double sum = 0;
+	for(size_t sample = 0; sample < count; sample++){
+		double q[4] = {sampleQ[sample * 4], sampleQ[sample * 4 + 1], sampleQ[sample * 4 + 2], sampleQ[sample * 4 + 3]};
+		const double* p = &sampleP[sample * 3];
+		double columns[3][3];
+		rotColumns(q, columns);
+		for(int i = 0; i < 3; i++){
+			double world = columns[0][i] * pivotLocal[0] + columns[1][i] * pivotLocal[1] + columns[2][i] * pivotLocal[2];
+			double diff = world + p[i] - solution[3 + i];
+			sum += diff * diff;
+		}
+	}
+	residualM = sqrt(sum / (double)count);
+	return true;
+}
 
 // ---------------------------------------------------------------------------
 // interactive distortion tuner
@@ -654,10 +1206,10 @@ bool DirectModeComponentShim::GetActiveSettings(FrameProcessSettings &settings, 
 			settings.headBasis[bi][bj] = headBasisW[bi][bj];
 		}
 	}
-	// interactive distortion tuner: may replace settings.config.distortion
-	// with the live working curves and force the calibration overlays on,
-	// so it must run before the activity checks below read the config
-	UpdateTuner(settings);
+	// interactive calibration modes (aligner > center tune > band tuner):
+	// they may replace settings.config.distortion / overlays / controller
+	// offsets, so they must run before the activity checks read the config
+	UpdateInteractiveModes(settings);
 	const StreamFrameConfig &config = settings.config;
 	// skip the whole pass when it would be an identity transform
 	bool colorActive = settings.applyColor && (

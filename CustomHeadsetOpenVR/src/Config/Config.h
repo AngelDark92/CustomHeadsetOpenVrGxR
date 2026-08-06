@@ -89,6 +89,18 @@ struct StreamFrameDistortionTuneConfig{
 	bool forceGrid = true;
 };
 
+// center-offset tuning mode: distinct from the band tuner and used
+// independently. while enabled the distortion is replaced by a small
+// "breathing" radial pulse (sinusoidal k1) whose stationary point makes the
+// currently configured optical center directly visible; the sticks then
+// drag it onto the lens's true center (the fringe-free sharpest point of
+// the fine grid). results are the centerOffset values, saved independently.
+struct StreamFrameCenterTuneConfig{
+	bool enable = false;
+	// amplitude of the breathing pulse (k1 peak). 0.05 = +-1.25% scale at r=0.5
+	double breatheAmp = 0.05;
+};
+
 // one distortion curve: k1/k2 polynomial coefficients and/or spline points,
 // which of the two is evaluated follows the global distortion mode
 struct StreamFrameCurve{
@@ -121,6 +133,7 @@ struct StreamFrameDistortionConfig{
 	std::map<std::string, StreamFrameCurve> curves = {};
 	StreamFrameAnnulusConfig annulus = {};
 	StreamFrameDistortionTuneConfig tune = {};
+	StreamFrameCenterTuneConfig centerTune = {};
 };
 
 struct StreamFrameCASConfig{
@@ -278,9 +291,19 @@ struct StreamFrameConfig{
 // tilts the top of the controller back toward the user), position is a local
 // frame offset in cm. lets the grip/aim angle be matched to what games
 // expect from other controller types. live reloaded.
+// in-headset controller offset aligner. manual mode: sticks adjust the
+// selected axis of the selected group (position/rotation) live. automatic
+// mode: plant the controller tip on any solid surface, hold the trigger and
+// swirl a cone around the planted tip; a least-squares pivot solve recovers
+// the position offset (the drawn tip marker freezing is the confirmation).
+struct ControllerAlignerConfig{
+	bool enable = false;
+};
+
 struct ControllersConfig{
 	double rotationOffsetDeg[3] = {0, 0, 0};
 	double positionOffsetCm[3] = {0, 0, 0};
+	ControllerAlignerConfig aligner = {};
 };
 
 struct CustomShaderConfig{

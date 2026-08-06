@@ -83,6 +83,7 @@ private:
 	// render pose, for the world-locked calibration grid
 	bool headBasisValid = false;
 	float headBasisW[3][3] = {{1,0,0},{0,1,0},{0,0,1}};
+	float headPosW[3] = {0, 0, 0};
 	float probePrevX[3] = {1, 0, 0};
 	float probePrevZ[3] = {0, 0, 1};
 	double probePrevTime = 0;
@@ -111,6 +112,56 @@ private:
 		double lastStepTime = 0;
 	};
 	TunerState tuner;
+	// ---- center-offset tuning mode (distinct from the band tuner) ----
+	struct CenterTuneState {
+		bool active = false;
+		int eyeMode = 0; // 0 both-shift, 1 both-mirrored (ipd), 2 left, 3 right
+		double cxL = 0, cxR = 0, cy = 0;
+		double initCxL = 0, initCxR = 0, initCy = 0;
+		bool prevEyeToggle = false, prevReset = false;
+		double lastTime = 0;
+		bool gripWasHigh = false;
+		double gripHoldStart = 0;
+		bool savedThisHold = false;
+		double lastLogTime = 0;
+	};
+	CenterTuneState centerTune;
+	// ---- controller offset aligner ----
+	struct AlignerState {
+		bool active = false;
+		int hand = 1;      // start on the right controller
+		int group = 0;     // 0 position (cm), 1 rotation (deg)
+		int axis = 0;      // 0 x, 1 y, 2 z
+		double rotDeg[3] = {0, 0, 0};
+		double posCm[3] = {0, 0, 0};
+		double initRot[3] = {0, 0, 0};
+		double initPos[3] = {0, 0, 0};
+		bool prevHandToggle = false, prevGroupToggle = false;
+		bool prevAxisUp = false, prevAxisDown = false;
+		double lastTime = 0;
+		bool gripWasHigh = false;
+		double gripHoldStart = 0;
+		bool savedThisHold = false;
+		double lastLogTime = 0;
+		// pivot capture (trigger held, tip planted, swirl)
+		bool capturing = false;
+		std::vector<double> sampleQ; // w,x,y,z per sample
+		std::vector<double> sampleP; // x,y,z per sample
+		double lastSampleTime = 0;
+	};
+	AlignerState aligner;
+	// mode dispatcher: aligner > center tune > band tuner, one active at a
+	// time (they share the controller inputs)
+	void UpdateInteractiveModes(FrameProcessSettings &settings);
+	void UpdateCenterTune(FrameProcessSettings &settings);
+	void SaveCenterProfile(const FrameProcessSettings &settings);
+	void UpdateAligner(FrameProcessSettings &settings);
+	void SaveControllerOffsets();
+	// least-squares pivot solve: R_i o + p_i = c over the captured swirl.
+	// returns false when the system is degenerate (not enough rotation
+	// spread). residualM reports fit quality in meters.
+	static bool SolvePivot(const std::vector<double> &sampleQ, const std::vector<double> &sampleP,
+		double pivotLocal[3], double &residualM);
 	// advance the tuner from controller input and, while active, override
 	// the frame's distortion config with the working bands + force the
 	// calibration view (angular grid + warped overlays) on

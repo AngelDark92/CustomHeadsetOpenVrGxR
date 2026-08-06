@@ -412,6 +412,15 @@ void ConfigLoader::ParseConfig(){
 				if(distortionData["gain"].is_number()){
 					newConfig.streamFrame.distortion.gain = distortionData["gain"].get<double>();
 				}
+				if(distortionData["centerTune"].is_object()){
+					json centerData = distortionData["centerTune"];
+					if(centerData["enable"].is_boolean()){
+						newConfig.streamFrame.distortion.centerTune.enable = centerData["enable"].get<bool>();
+					}
+					if(centerData["breatheAmp"].is_number()){
+						newConfig.streamFrame.distortion.centerTune.breatheAmp = centerData["breatheAmp"].get<double>();
+					}
+				}
 				if(distortionData["tune"].is_object()){
 					json tuneData = distortionData["tune"];
 					if(tuneData["enable"].is_boolean()){
@@ -583,6 +592,9 @@ void ConfigLoader::ParseConfig(){
 						newConfig.controllers.rotationOffsetDeg[i] = controllersData["rotationOffsetDeg"][axes[i]].get<double>();
 					}
 				}
+			}
+			if(controllersData["aligner"].is_object() && controllersData["aligner"]["enable"].is_boolean()){
+				newConfig.controllers.aligner.enable = controllersData["aligner"]["enable"].get<bool>();
 			}
 			if(controllersData["positionOffsetCm"].is_object()){
 				for(int i = 0; i < 3; i++){
@@ -807,6 +819,7 @@ void ConfigLoader::WriteInfo(){
 					{"y", defaultSettings.controllers.positionOffsetCm[1]},
 					{"z", defaultSettings.controllers.positionOffsetCm[2]},
 				}},
+				{"aligner", {{"enable", defaultSettings.controllers.aligner.enable}}},
 			}},
 			{"streamFrame", {
 				{"enable", defaultSettings.streamFrame.enable},
@@ -839,6 +852,10 @@ void ConfigLoader::WriteInfo(){
 					{"mode", defaultSettings.streamFrame.distortion.mode},
 					{"points", json::array()},
 					{"gain", defaultSettings.streamFrame.distortion.gain},
+					{"centerTune", {
+						{"enable", defaultSettings.streamFrame.distortion.centerTune.enable},
+						{"breatheAmp", defaultSettings.streamFrame.distortion.centerTune.breatheAmp},
+					}},
 					{"tune", {
 						{"enable", defaultSettings.streamFrame.distortion.tune.enable},
 						{"rate", defaultSettings.streamFrame.distortion.tune.rate},

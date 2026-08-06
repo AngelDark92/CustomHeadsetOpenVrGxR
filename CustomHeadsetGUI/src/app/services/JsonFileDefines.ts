@@ -25,6 +25,7 @@ export type Settings = {
 export type ControllersConfig = {
   rotationOffsetDeg: { x: number, y: number, z: number },
   positionOffsetCm: { x: number, y: number, z: number },
+  aligner: { enable: boolean },
 }
 export type StationaryDimmingConfig = {
   enable: boolean,
@@ -71,6 +72,10 @@ export type StreamFrameDistortionTuneConfig = {
   ringOpacity: number;
   forceGrid: boolean;
 };
+export type StreamFrameCenterTuneConfig = {
+  enable: boolean;
+  breatheAmp: number;
+};
 export type StreamFrameDistortionConfig = {
   gain: number;
   mode: string;
@@ -80,6 +85,7 @@ export type StreamFrameDistortionConfig = {
   curves: { [key: string]: StreamFrameCurveData };
   annulus: StreamFrameAnnulusConfig;
   tune: StreamFrameDistortionTuneConfig;
+  centerTune: StreamFrameCenterTuneConfig;
 };
 export type StreamFrameCASConfig = {
   enable: boolean;

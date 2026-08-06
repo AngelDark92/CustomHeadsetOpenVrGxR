@@ -275,6 +275,16 @@
 
 <div class="field">
     <div class="title">
+        <span>Center Tuner (in-headset)</span>
+        <app-field-tip info="Interactive tuning of the distortion CENTER offsets — a distinct mode from the band tuner, used and saved independently. While on: the image gently 'breathes' (pulses radially) around the currently configured center, an amber cross marks it, and the fine grid is shown. The lens's true center is the point where color fringing on the grid lines vanishes and sharpness peaks. Drag the breathing's still-point onto it with the stick. X cycles both-shift / both-mirrored(IPD) / left / right (donning shifts move both eyes the same way; IPD error moves them mirrored). Y resets, holding a grip 1.5s saves a centers profile + paste block. Do this BEFORE band tuning — a wrong center masquerades as top/bottom or nasal/temporal asymmetry the bands cannot fix." />
+    </div>
+    <div class="control">
+        <mat-slide-toggle [(ngModel)]="settings.distortion.centerTune.enable" (ngModelChange)="save()"></mat-slide-toggle>
+    </div>
+</div>
+
+<div class="field">
+    <div class="title">
         <span>Correction Gain</span>
         <app-field-tip info="Multiplies the whole correction: 1 = curve as authored, 0 = off, -1 = exact inverse, values between scale it. THE perceptual search knob: turn on Warped Overlays + the angular grid, fixate a grid intersection, slowly rotate your head, and sweep the gain until the lines swim least. Settles the correction's sign and strength in one pass, without trusting eye tracking." />
     </div>
@@ -542,6 +552,16 @@
 </div>
 
 @if (controllerSettings) {
+<div class="field">
+    <div class="title">
+        <span>Controller Aligner (in-headset)</span>
+        <app-field-tip info="Interactive tuning of the controller offsets below, with the controllers themselves. A magenta marker draws where the driver believes the selected controller's TIP is. MANUAL: X switches hand, Y switches position/rotation, A/B cycle the axis, stick adjusts it live. AUTOMATIC (position): plant the tip on any solid surface at chest height away from your body (armrest, desk edge), HOLD THE TRIGGER, slowly swirl a wide cone around the planted tip for a few seconds, release — a pivot solve computes the position offset and the marker freezes. Swirl again without the trigger to verify: a frozen marker means the offset is right. Rotation is finished manually by aiming. Hold a grip 1.5s to save (paste block + file). Offsets are shared by both hands for now; per-hand solve results are logged so we learn whether per-hand config is needed." />
+    </div>
+    <div class="control">
+        <mat-slide-toggle [(ngModel)]="controllerSettings.aligner.enable" (ngModelChange)="save()"></mat-slide-toggle>
+    </div>
+</div>
+
 <div class="section">
     <div class="section-title"><span>Controllers</span></div>
 </div>

@@ -262,9 +262,25 @@ float4 main(float4 pos : SV_Position, float2 uv : TEXCOORD0) : SV_Target0{
 		float2 dd = ovUv - float2(dotU, dotV);
 		dd.y *= aspect;
 		float dr = length(dd);
-		float dotMask = 1.0 - smoothstep(0.004, 0.007, dr);
-		float haloMask = smoothstep(0.004, 0.0015, abs(dr - 0.016));
-		color.rgb = lerp(color.rgb, float3(0.1, 0.9, 1.0), max(dotMask, haloMask * 0.7));
+		if(dotMode > 2.5){
+			// controller tip marker (aligner): magenta dot + fine halo. the
+			// nulling cue is this marker freezing while the physical tip is
+			// planted and the controller swirls around it.
+			float dotMask = 1.0 - smoothstep(0.003, 0.006, dr);
+			float haloMask = smoothstep(0.003, 0.001, abs(dr - 0.012));
+			color.rgb = lerp(color.rgb, float3(1.0, 0.2, 0.9), max(dotMask, haloMask * 0.8));
+		}else if(dotMode > 1.5){
+			// distortion center cross (center tune): thin amber crosshair
+			// with an open middle so the breathing still-point stays visible
+			float armX = (1.0 - smoothstep(0.0012, 0.0028, abs(dd.x))) * step(abs(dd.y), 0.035) * step(0.006, abs(dd.y));
+			float armY = (1.0 - smoothstep(0.0012, 0.0028, abs(dd.y))) * step(abs(dd.x), 0.035) * step(0.006, abs(dd.x));
+			color.rgb = lerp(color.rgb, float3(1.0, 0.8, 0.2), max(armX, armY) * 0.8);
+		}else{
+			// fixation dot (VOR swim probe target)
+			float dotMask = 1.0 - smoothstep(0.004, 0.007, dr);
+			float haloMask = smoothstep(0.004, 0.0015, abs(dr - 0.016));
+			color.rgb = lerp(color.rgb, float3(0.1, 0.9, 1.0), max(dotMask, haloMask * 0.7));
+		}
 	}
 
 	// ---- interactive tuner band ring: marks the radius the active spline

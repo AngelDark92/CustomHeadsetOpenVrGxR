@@ -184,6 +184,7 @@ private:
 	std::map<vr::VRInputComponentHandle_t, InputComponentInfo> inputComponents = {};
 	// gate for tuner input capture on the hot component-update path
 	std::atomic<bool> tunerInputActive {false};
+
 	std::map<vr::PropertyContainerHandle_t, uint32_t> containerToId = {};
 	struct MotionSnapshot {
 		double time = 0;
@@ -218,14 +219,41 @@ public:
 	// tuner is armed (cheap atomic gate on the hot update path).
 	struct TunerInputState {
 		float stickY = 0;
+		float stickX = 0;
 		bool bandOut = false;   // a click
 		bool bandIn = false;    // b click
 		bool eyeToggle = false; // x click
 		bool resetBand = false; // y click
 		float grip = 0;
+		float trigger = 0;
 	};
 	void SetTunerInputActive(bool active){ tunerInputActive.store(active, std::memory_order_relaxed); }
 	void GetTunerInput(TunerInputState &out);
+	// ---- controller aligner surface ----
+	// latest post-offset controller pose + vrlink tip offset per hand
+	// (0 = left, 1 = right), for the aligner's tip marker and pivot solve
+	struct AlignControllerState {
+		bool poseValid = false;
+		double pos[3] = {0, 0, 0};
+		vr::HmdQuaternion_t rot = {1, 0, 0, 0};
+		double poseTime = 0;      // NowSeconds of last update
+		bool tipValid = false;
+		double tipLocal[3] = {0, 0, 0};
+	};
+	void GetAlignController(int hand, AlignControllerState &out);
+	// while the aligner is active its WORKING offsets replace the configured
+	// controller offsets in the pose path, so edits are live
+	void SetAlignerOffsets(bool active, const double rotDeg[3], const double posCm[3]);
+private:
+	// controller aligner state (guarded by poseLogLock): per-hand pose/tip
+	// capture, container->hand classification, live offset override
+	AlignControllerState alignControllers[2] = {};
+	std::map<vr::PropertyContainerHandle_t, int> containerHand;
+	std::map<uint32_t, int> openVRIDHand;
+	std::atomic<bool> alignerOverrideActive {false};
+	double alignerRotDeg[3] = {0, 0, 0};
+	double alignerPosCm[3] = {0, 0, 0};
+public:
 	void OnInputComponentCreated(vr::PropertyContainerHandle_t container, const char* name, vr::VRInputComponentHandle_t handle);
 	void OnBooleanComponentUpdated(vr::VRInputComponentHandle_t handle, bool value);
 	void OnScalarComponentCreated(vr::PropertyContainerHandle_t container, const char* name, vr::VRInputComponentHandle_t handle);

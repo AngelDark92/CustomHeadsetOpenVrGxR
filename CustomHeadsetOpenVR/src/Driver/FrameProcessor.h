@@ -68,6 +68,14 @@ struct FrameProcessSettings{
 	// frame's submitted render pose, for the world-locked calibration grid
 	bool headBasisValid = false;
 	float headBasis[3][3] = {{1,0,0},{0,1,0},{0,0,1}};
+	// auxiliary calibration marker: 0 none, 2 = cross at each eye's
+	// configured distortion center (center tune mode), 3 = controller tip
+	// marker at auxHead* (head-space position, meters; drawn with a simple
+	// per-eye parallax so it reads at roughly the right depth)
+	int auxMarkerMode = 0;
+	double auxHeadX = 0;
+	double auxHeadY = 0;
+	double auxHeadZ = -1;
 };
 
 // interpolate a spline distortion curve (monotone-ordered points assumed) at

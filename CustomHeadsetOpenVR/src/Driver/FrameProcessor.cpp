@@ -424,10 +424,14 @@ bool FrameProcessor::EnsureShaders(){
 		bool hasWarpedOverlay = source.find("overlayWarped > 0.5") != std::string::npos;
 		bool hasTuneRing = source.find("tuneRingMode > 0.5") != std::string::npos;
 		bool hasWorldGrid = source.find("gridWorldLock > 0.5") != std::string::npos;
+		bool hasAuxMarkers = source.find("dotMode > 2.5") != std::string::npos;
 		DriverLog("FrameProcessor: pixel shader ready (%s, gaze ring support: %s, calib dot support: %s, warped overlays: %s, tuner ring: %s, world grid: %s)",
 			fileTime ? "from file" : "embedded", hasGazeRing ? "yes" : "NO - stale hlsl?",
 			hasCalibDot ? "yes" : "NO - stale hlsl?", hasWarpedOverlay ? "yes" : "NO - stale hlsl?",
 			hasTuneRing ? "yes" : "NO - stale hlsl?", hasWorldGrid ? "yes" : "NO - stale hlsl?");
+		if(!hasAuxMarkers){
+			DriverLog("FrameProcessor: aux markers (center cross / tip marker): NO - stale hlsl?");
+		}
 	}
 	return pixelShader != nullptr;
 }
@@ -774,6 +778,28 @@ bool FrameProcessor::ProcessEye(ID3D11Texture2D* texture, const vr::VRTextureBou
 			constants.dotU = (float)du;
 			constants.dotV = (float)dv;
 			constants.dotMode = 1.0f;
+		}
+	}
+	// auxiliary calibration markers reuse the dot constants when the probe
+	// dot is not active. mode 2: cross at this eye's configured distortion
+	// center. mode 3: controller tip marker with a fixed 63mm ipd parallax
+	// (millimeter-level ipd error is irrelevant for the freeze judgment,
+	// which is differential).
+	if(constants.dotMode < 0.5 && settings.auxMarkerMode == 2){
+		double cx = eye == 0 ? settings.config.centerOffsetXLeft : settings.config.centerOffsetXRight;
+		constants.dotU = (float)(0.5 + cx);
+		constants.dotV = (float)(0.5 + settings.config.centerOffsetY);
+		constants.dotMode = 2.0f;
+	}else if(constants.dotMode < 0.5 && settings.auxMarkerMode == 3){
+		double eyeOffsetX = (eye == 0 ? -1.0 : 1.0) * 0.0315;
+		double dirX = settings.auxHeadX - eyeOffsetX;
+		double dirY = settings.auxHeadY;
+		double dirZ = settings.auxHeadZ;
+		double u, v;
+		if(dirZ < -0.02 && MapHeadDirToEyeUv(settings, eye, dirX, dirY, dirZ, u, v)){
+			constants.dotU = (float)u;
+			constants.dotV = (float)v;
+			constants.dotMode = 3.0f;
 		}
 	}
 	// interactive tuner band ring, gated per eye by the edit mode so the

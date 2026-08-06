@@ -36,7 +36,8 @@ function defaultStreamFrame(): StreamFrameConfig {
       perAxis: false,
       curves: {},
       annulus: { enable: false, rMin: 0, rMax: 0.75, feather: 0.05 },
-      tune: { enable: false, rate: 0.08, bands: [0.15, 0.22, 0.3, 0.38, 0.46, 0.55, 0.65], stepSize: 0, ringOpacity: 0.55, forceGrid: true }
+      tune: { enable: false, rate: 0.08, bands: [0.15, 0.22, 0.3, 0.38, 0.46, 0.55, 0.65], stepSize: 0, ringOpacity: 0.55, forceGrid: true },
+      centerTune: { enable: false, breatheAmp: 0.05 }
     },
     centerOffsetXLeft: 0,
     centerOffsetXRight: 0,
@@ -58,6 +59,7 @@ function defaultControllers(): ControllersConfig {
   return {
     rotationOffsetDeg: { x: 0, y: 0, z: 0 },
     positionOffsetCm: { x: 0, y: 0, z: 0 },
+    aligner: { enable: false },
   };
 }
 
@@ -209,6 +211,7 @@ export class StreamFrameComponent {
     // the annulus and tuner are tuning diagnostics, not part of a shareable profile
     delete profile.distortion.annulus;
     delete profile.distortion.tune;
+    delete profile.distortion.centerTune;
     const text = JSON.stringify(profile, null, 2);
     this.shareText.set(text);
     this.shareStatus.set('Profile exported below. Copy it anywhere.');
