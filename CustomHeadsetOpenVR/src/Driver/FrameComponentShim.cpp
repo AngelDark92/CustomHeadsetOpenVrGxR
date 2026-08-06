@@ -471,6 +471,10 @@ void DirectModeComponentShim::SaveCenterProfile(const FrameProcessSettings &sett
 	json profile = {
 		{"type", "streamFrameDistortionProfile"},
 		{"version", 1},
+		// the GUI applies centersOnly files to the center offsets alone,
+		// leaving the configured curves untouched; the embedded curves are
+		// a snapshot for standalone/manual use only
+		{"centersOnly", true},
 		{"name", std::string("Centers ") + stamp},
 		{"distortion", {
 			{"mode", distortion.mode},
@@ -1019,6 +1023,15 @@ void DirectModeComponentShim::UpdateTuner(FrameProcessSettings &settings){
 			point.scale = scales[i];
 			points.push_back(point);
 		}
+		// past the last band the curve returns to identity (short blend to
+		// avoid a visible crease) instead of freezing the last value over
+		// the whole unmeasured periphery
+		if(n > 0){
+			StreamFrameDistortionPoint taper;
+			taper.r = tuner.bandR[n - 1] + 0.08;
+			taper.scale = 1.0;
+			points.push_back(taper);
+		}
 		return points;
 	};
 	d.mode = "spline";
@@ -1055,6 +1068,10 @@ void DirectModeComponentShim::SaveTunedProfile(const FrameProcessSettings &setti
 		for(int i = 0; i < n; i++){
 			// round through text once so the file matches what the log shows
 			points.push_back({{"r", tuner.bandR[i]}, {"scale", (double)((long long)(scales[i] * 100000.0 + (scales[i] >= 0 ? 0.5 : -0.5))) / 100000.0}});
+		}
+		// identity taper past the last band, matching the live curve
+		if(n > 0){
+			points.push_back({{"r", tuner.bandR[n - 1] + 0.08}, {"scale", 1.0}});
 		}
 		return points;
 	};

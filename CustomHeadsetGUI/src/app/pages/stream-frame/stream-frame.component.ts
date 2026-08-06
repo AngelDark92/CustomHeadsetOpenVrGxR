@@ -194,6 +194,61 @@ export class StreamFrameComponent {
   // ---- distortion profile sharing ----
   shareText = signal('');
   shareStatus = signal('');
+  // collapsible section state; debug starts closed, everything else open.
+  // concrete shape (no index signature) so strict templates allow dot access
+  sections = { color: true, enhance: true, distortion: true, share: true, advanced: true, debug: false };
+  // any calibration overlay/mode that would be visible or disruptive in a
+  // normal play session — drives the warning banner at the top of the page
+  calibrationActive(): boolean {
+    const s = this.settings;
+    const c = this.controllerSettings;
+    if (!s) return false;
+    return !!(s.distortion?.tune?.enable || s.distortion?.centerTune?.enable
+      || c?.aligner?.enable || s.eyeGaze?.probeCapture || s.eyeGaze?.debugGrid
+      || s.eyeGaze?.calibDot || s.eyeGaze?.debugRing || s.eyeGaze?.overlayWarped
+      || s.eyeGaze?.swimProbe);
+  }
+  private buildProfile(): any {
+    const s = this.settings!;
+    const profile: any = {
+      type: 'streamFrameDistortionProfile',
+      version: 1,
+      name: 'My Galaxy XR profile',
+      distortion: JSON.parse(JSON.stringify(s.distortion)),
+      k1: s.k1,
+      k2: s.k2,
+      centerOffsetXLeft: s.centerOffsetXLeft,
+      centerOffsetXRight: s.centerOffsetXRight,
+      centerOffsetY: s.centerOffsetY
+    };
+    // the annulus and tuners are tuning diagnostics, not part of a shareable profile
+    delete profile.distortion.annulus;
+    delete profile.distortion.tune;
+    delete profile.distortion.centerTune;
+    return profile;
+  }
+  exportJsonFile() {
+    if (!this.settings) return;
+    const text = JSON.stringify(this.buildProfile(), null, 2);
+    const blob = new Blob([text], { type: 'application/json' });
+    const anchor = document.createElement('a');
+    anchor.href = URL.createObjectURL(blob);
+    const stamp = new Date().toISOString().slice(0, 10);
+    anchor.download = 'gxr-distortion-profile-' + stamp + '.json';
+    anchor.click();
+    URL.revokeObjectURL(anchor.href);
+    this.shareStatus.set('Profile downloaded as ' + anchor.download);
+  }
+  importJsonFile(event: Event) {
+    const input = event.target as HTMLInputElement;
+    const file = input.files?.[0];
+    if (!file) return;
+    file.text().then(text => {
+      this.shareText.set(text);
+      this.importProfile();
+      input.value = '';
+    });
+  }
   exportProfile() {
     if (!this.settings) return;
     const s = this.settings;
@@ -229,12 +284,38 @@ export class StreamFrameComponent {
       this.shareStatus.set('Not valid JSON: ' + e.message);
       return;
     }
+    // controller-aligner save files ({"controllers": {...}}) import here too,
+    // applying straight into the offset fields below
+    const controllers = parsed?.controllers;
+    if (controllers && (controllers.rotationOffsetDeg || controllers.positionOffsetCm) && this.controllerSettings) {
+      const applyAxes = (target: { x: number, y: number, z: number }, source: any) => {
+        for (const axis of ['x', 'y', 'z'] as const) {
+          if (Number.isFinite(source?.[axis])) target[axis] = source[axis];
+        }
+      };
+      applyAxes(this.controllerSettings.rotationOffsetDeg, controllers.rotationOffsetDeg);
+      applyAxes(this.controllerSettings.positionOffsetCm, controllers.positionOffsetCm);
+      this.save();
+      this.shareStatus.set('Controller offsets imported and applied.');
+      return;
+    }
     if (parsed?.type !== 'streamFrameDistortionProfile' || typeof parsed.distortion !== 'object') {
       this.shareStatus.set('Not a stream frame distortion profile.');
       return;
     }
     const num = (v: any, fallback: number) => (Number.isFinite(v) ? v : fallback);
     const s = this.settings;
+    // center-tuner saves apply ONLY the center offsets: importing a stale
+    // centers file must never roll the curves back to its embedded snapshot
+    if (parsed.centersOnly) {
+      s.centerOffsetXLeft = num(parsed.centerOffsetXLeft, s.centerOffsetXLeft);
+      s.centerOffsetXRight = num(parsed.centerOffsetXRight, s.centerOffsetXRight);
+      s.centerOffsetY = num(parsed.centerOffsetY, s.centerOffsetY);
+      this.save();
+      this.revision.update(v => v + 1);
+      this.shareStatus.set('Center offsets imported and applied (curves untouched).');
+      return;
+    }
     const d = parsed.distortion;
     s.distortion.mode = d.mode === 'spline' ? 'spline' : 'k1k2';
     s.distortion.perEye = !!d.perEye;

@@ -22,9 +22,14 @@
 </div>
 }
 
+@if(calibrationActive()){
+<div class="calibration-banner">Calibration overlays / modes are active (tuner, grids, probe, dot or aligner). Remember to turn them off before a normal play session.</div>
+}
+
 <div class="field">
-    <div class="section-title"><span>Color</span></div>
+    <div class="section-title collapsible" (click)="sections.color = !sections.color"><span>Color</span><span class="chevron" [class.closed]="!sections.color">▾</span></div>
 </div>
+@if(sections.color){
 
 <div class="field">
     <div class="title">
@@ -117,7 +122,12 @@
         @if(matrixError()){<span class="matrix-error">{{matrixError()}}</span>}
     </div>
 </div>
+}
 
+<div class="field">
+    <div class="section-title collapsible" (click)="sections.enhance = !sections.enhance"><span>Image Enhancements</span><span class="chevron" [class.closed]="!sections.enhance">▾</span></div>
+</div>
+@if(sections.enhance){
 <div class="field">
     <div class="title">
         <span>CAS Sharpening</span>
@@ -174,10 +184,12 @@
     </div>
 </div>
 }
+}
 
 <div class="field">
-    <div class="section-title"><span>Distortion Correction</span></div>
+    <div class="section-title collapsible" (click)="sections.distortion = !sections.distortion"><span>Distortion Correction</span><span class="chevron" [class.closed]="!sections.distortion">▾</span></div>
 </div>
+@if(sections.distortion){
 <div class="field">
     <div class="note">Compensates an imperfect distortion profile on the headset that shows up as rippling or swimming of the world during head rotation. The curve sets a radial scale per distance from the optical center: 1.0 leaves that ring untouched, above 1.0 pulls its content toward the center, below pushes it outward. Real corrections are usually within a percent of 1.0.</div>
 </div>
@@ -217,7 +229,7 @@
 <div class="field">
     <div class="title">
         <span>Interactive Tuner (in-headset)</span>
-        <app-field-tip info="Hand-tune the distortion with the controllers while wearing the headset — the eye is the measurement instrument, so no eye tracking or camera is involved. While on: the angular grid + warped overlays are forced on, an orange ring marks the radius band being edited, and the current curve is taken over by a live working copy. Controls: joystick up/down adjusts the highlighted band, A/B moves the band outward/inward, X cycles both/left/right eye editing (the ring shows in the eyes being edited), Y resets the band, and holding a grip for 1.5s saves an importable profile into the Distortion folder (also logged as a paste block). Procedure: slowly rotate your head while looking at grid features near the ring; adjust until the lines near the ring stop swimming, then step outward. Turning the tuner off returns to the saved/configured profile." />
+        <app-field-tip info="In-headset configurable distortion profile tuner. For usage refer to the GxR Tuner and Scoring guide." />
     </div>
     <div class="control">
         <mat-slide-toggle [(ngModel)]="settings.distortion.tune.enable" (ngModelChange)="save()"></mat-slide-toggle>
@@ -236,7 +248,7 @@
 <div class="field">
     <div class="title">
         <span>Tuner Step Size</span>
-        <app-field-tip info="0 = analog stick response (see Adjust Rate). Above 0, the stick instead applies exactly this scale step every 0.1s while deflected past halfway — deterministic one-click-at-a-time nulling. Try 0.001 for fine work, 0.005 for coarse." />
+        <app-field-tip info="0 = analog mode. For higher values apply this step per 0.1s while the joystick is deflected." />
     </div>
     <div class="control">
         <input matInput [(ngModel)]="settings.distortion.tune.stepSize" step="0.001" min="0" max="0.05" (ngModelChange)="save()" type="number">
@@ -253,15 +265,6 @@
 </div>
 <div class="field">
     <div class="title">
-        <span>Force Calibration Grid</span>
-        <app-field-tip info="On (default): the tuner forces the angular grid + warped overlays on while active. Off: overlays follow your own toggles below — tune against real game content, or enable the world-locked grid variant instead." />
-    </div>
-    <div class="control">
-        <mat-slide-toggle [(ngModel)]="settings.distortion.tune.forceGrid" (ngModelChange)="save()"></mat-slide-toggle>
-    </div>
-</div>
-<div class="field">
-    <div class="title">
         <span>Band Layout (count / first r / last r)</span>
         <app-field-tip info="How many radius bands the tuner edits and where they start and end, spaced evenly (defaults: 7 bands, 0.15 to 0.65). More bands = finer control but a longer session. Edits regenerate the band list; the active session picks it up next time the tuner is toggled on." />
     </div>
@@ -271,15 +274,52 @@
         <input matInput [(ngModel)]="tuneBandLast" step="0.01" min="0.1" max="1.2" (ngModelChange)="updateBands()" type="number">
     </div>
 </div>
+<div class="field">
+    <div class="title">
+        <span>Force Calibration Grid</span>
+        <app-field-tip info="On (default): the tuner forces the angular grid + warped overlays on while active. Off: overlays follow your own toggles below." />
+    </div>
+    <div class="control">
+        <mat-slide-toggle [(ngModel)]="settings.distortion.tune.forceGrid" (ngModelChange)="save()"></mat-slide-toggle>
+    </div>
+</div>
+<div class="field">
+    <div class="title">
+        <span>World-Locked Grid</span>
+        <app-field-tip info="Draws the angular grid at fixed WORLD azimuth/elevation instead of head-locked lens angles. Angular grid mode only."/>
+    </div>
+    <div class="control">
+        <mat-slide-toggle [(ngModel)]="settings.eyeGaze.gridWorldLocked" (ngModelChange)="save()"></mat-slide-toggle>
+    </div>
+</div>
+<div class="field">
+    <div class="title">
+        <span>Warped Overlays (profile validation)</span>
+        <app-field-tip info="Draws the calibration grid and the fixation dot in content space, so the active distortion profile warps them exactly like scene content. With the ANGULAR grid: a correct profile makes the lines look straight through the lens. With the fixation dot + swim probe: run probe sessions with profile off / A / B and let the fitter score which one flattens the residual. Leave off for plain measurement runs." />
+    </div>
+    <div class="control">
+        <mat-slide-toggle [(ngModel)]="settings.eyeGaze.overlayWarped" (ngModelChange)="save()"></mat-slide-toggle>
+    </div>
+</div>
 }
 
 <div class="field">
     <div class="title">
         <span>Center Tuner (in-headset)</span>
-        <app-field-tip info="Interactive tuning of the distortion CENTER offsets — a distinct mode from the band tuner, used and saved independently. While on: the image gently 'breathes' (pulses radially) around the currently configured center, an amber cross marks it, and the fine grid is shown. The lens's true center is the point where color fringing on the grid lines vanishes and sharpness peaks. Drag the breathing's still-point onto it with the stick. X cycles both-shift / both-mirrored(IPD) / left / right (donning shifts move both eyes the same way; IPD error moves them mirrored). Y resets, holding a grip 1.5s saves a centers profile + paste block. Do this BEFORE band tuning — a wrong center masquerades as top/bottom or nasal/temporal asymmetry the bands cannot fix." />
+        <app-field-tip info="Interactive tuning of the distortion CENTER offsets. While on: the image gently 'breathes' (pulses radially) around the currently configured center, an amber cross marks it, and the fine grid is shown. The lens's true center is the point where color fringing on the grid lines vanishes and sharpness peaks. Drag the breathing's still-point onto it with the stick. X cycles both-shift / both-mirrored(IPD) / left / right. Y resets, holding a grip 1.5s saves a centers profile + paste block. Do this BEFORE band tuning." />
     </div>
     <div class="control">
         <mat-slide-toggle [(ngModel)]="settings.distortion.centerTune.enable" (ngModelChange)="save()"></mat-slide-toggle>
+    </div>
+</div>
+
+<div class="field">
+    <div class="title">
+        <span>Probe Capture (scoring run)</span>
+        <app-field-tip info="One switch for an A/B scoring run: acts as Fixation Dot + Swim Probe logging + Warped Overlays together, in the right combination, so nothing can be toggled in the wrong order. Procedure: face forward, flip this on (the dot latches ahead), fixate the dot, rotate your head slowly for 60-90s sweeping it around, flip off, save vrserver.txt. Do one run with the profile off (gain 0) and one with it on, then compare with swimprobe_score.py."/>
+    </div>
+    <div class="control">
+        <mat-slide-toggle [(ngModel)]="settings.eyeGaze.probeCapture" (ngModelChange)="save()"></mat-slide-toggle>
     </div>
 </div>
 
@@ -358,27 +398,138 @@
     </div>
 </div>
 
+}
+
 <div class="field">
-    <div class="section-title"><span>Share Distortion Profile</span></div>
+    <div class="section-title collapsible" (click)="sections.share = !sections.share"><span>Share Distortion Profile</span><span class="chevron" [class.closed]="!sections.share">▾</span></div>
 </div>
+@if(sections.share){
 <div class="field">
-    <div class="note">Export copies your distortion settings (curves, mode, center offsets) as text to share. To use someone else's profile, paste it below and press Import.</div>
+    <div class="note">Export copies your distortion settings (curves, mode, center offsets) as text or downloads them as a .json file. To use someone else's profile, paste it below and press Import from text, or pick their file with Import .json. Tuner-saved files from the Distortion folder import the same way.</div>
 </div>
 <div class="field share-field">
     <div class="control share-control">
         <div class="share-buttons">
             <button mat-stroked-button (click)="exportProfile()">Export current</button>
             <button mat-stroked-button (click)="importProfile()">Import from text</button>
+            <button mat-stroked-button (click)="exportJsonFile()">Export .json</button>
+            <button mat-stroked-button (click)="jsonFileInput.click()">Import .json</button>
+            <input #jsonFileInput type="file" accept=".json,application/json" style="display: none" (change)="importJsonFile($event)">
             @if(shareStatus()){<span class="share-status">{{shareStatus()}}</span>}
         </div>
         <textarea [ngModel]="shareText()" (ngModelChange)="shareText.set($event)" rows="6" placeholder="Paste a profile here to import, or press Export current"></textarea>
     </div>
 </div>
 
+}
+
 <div class="field">
-    <div class="section-title"><span>Advanced</span></div>
+    <div class="section-title collapsible" (click)="sections.advanced = !sections.advanced"><span>Advanced</span><span class="chevron" [class.closed]="!sections.advanced">▾</span></div>
+</div>
+@if(sections.advanced){
+
+<div class="field">
+    <div class="title">
+        <span>Sync Timeout (ms)</span>
+        <app-field-tip info="How long to wait for the frame sync before letting a frame through unprocessed (a brief 'flash' of ungraded color). Higher values trade flashes under heavy load for slightly later frames. After a skipped frame the wait automatically escalates to break flash streaks. Default 5, sensible range 3-15." />
+        <app-reset-button [canReset]="settings.syncTimeoutMs != defaults.syncTimeoutMs" (resetClick)="reset('syncTimeoutMs')"></app-reset-button>
+    </div>
+    <div class="control">
+        <input matInput [(ngModel)]="settings.syncTimeoutMs" step="1" min="1" max="100" (ngModelChange)="save()" type="number">
+    </div>
 </div>
 
+<div class="field">
+    <div class="title">
+        <span>Throw Velocity Fix (experimental)</span>
+        <app-field-tip info="The driver's reported controller velocity is heavily smoothed, which makes thrown objects land short and mistimed. Classic recomputes linear velocity from recent positions and substitutes it during fast motion. Full additionally corrects angular velocity and adds release-timing protection." />
+        <app-reset-button [canReset]="settings.velocityFixMode != defaults.velocityFixMode" (resetClick)="reset('velocityFixMode')"></app-reset-button>
+    </div>
+    <div class="control">
+        <mat-select [(ngModel)]="settings.velocityFixMode" (ngModelChange)="save()">
+            <mat-option value="off">Off</mat-option>
+            <mat-option value="classic">Classic (linear velocity only)</mat-option>
+            <mat-option value="full">Full (angular + release timing)</mat-option>
+        </mat-select>
+    </div>
+</div>
+
+<div class="field">
+    <div class="title">
+        <span>Gaze Prediction (ms)</span>
+        <app-field-tip info="Leads the gaze point by extrapolating recent eye motion, compensating the capture-to-display latency that makes the ring trail your eyes. Raise if the ring lags behind saccades, lower if it overshoots. 0 disables." />
+    </div>
+    <div class="control">
+        <input matInput [(ngModel)]="settings.eyeGaze.predictionMs" step="5" min="0" max="100" (ngModelChange)="save()" type="number">
+    </div>
+</div>
+
+<div class="section">
+</div>
+
+<div class="field">
+    <div class="title">
+        <span>Calibration Grid</span>
+        <app-field-tip info="Overlays straight reference lines for pupil swim tuning. Fixate a grid intersection, then move only your eyes around it: if the nearby lines bend or shift as your gaze moves, that's pupil swim." />
+    </div>
+    <div class="control">
+        <mat-slide-toggle [(ngModel)]="settings.eyeGaze.debugGrid" (ngModelChange)="save()"></mat-slide-toggle>
+        <mat-select [(ngModel)]="settings.eyeGaze.gridMode" (ngModelChange)="save()">
+            <mat-option value="uv">UV grid (eye tuning)</mat-option>
+            <mat-option value="angular">Angular grid (camera photos)</mat-option>
+        </mat-select>
+        <span>deg</span><input matInput [(ngModel)]="settings.eyeGaze.gridAngularDeg" step="0.5" min="0.5" max="30" (ngModelChange)="save()" type="number">
+    </div>
+</div>
+
+@if (controllerSettings) {
+<div class="field">
+    <div class="title">
+        <span>Controller Aligner (in-headset)</span>
+        <app-field-tip info="Interactive tuning of the controller offsets below, with the controllers themselves. A magenta marker draws where the driver believes the selected controller's TIP is. MANUAL: X switches hand, Y switches position/rotation, A/B cycle the axis, stick adjusts it live. AUTOMATIC (position): plant the tip on any solid surface at chest height away from your body (armrest, desk edge), HOLD THE TRIGGER, slowly swirl a wide cone around the planted tip for a few seconds, release. Swirl again without the trigger to verify: a frozen marker means the offset is right. Rotation is finished manually by aiming. Hold a grip 1.5s to save (paste block + file). Offsets are shared by both hands for now." />
+    </div>
+    <div class="control">
+        <mat-slide-toggle [(ngModel)]="controllerSettings.aligner.enable" (ngModelChange)="save()"></mat-slide-toggle>
+    </div>
+</div>
+
+<div class="section">
+    <div class="section-title"><span>Controllers</span></div>
+</div>
+
+<div class="field">
+    <div class="title">
+        <span>Rotation Offset (deg)</span>
+        <app-field-tip info="Local frame rotation added to both controllers' poses, live reloaded. X (pitch): positive tilts the top back toward you. Typical useful range 5-20. Y = yaw, Z = roll." />
+        <app-reset-button [canReset]="controllerSettings.rotationOffsetDeg.x != controllerDefaults.rotationOffsetDeg.x || controllerSettings.rotationOffsetDeg.y != controllerDefaults.rotationOffsetDeg.y || controllerSettings.rotationOffsetDeg.z != controllerDefaults.rotationOffsetDeg.z" (resetClick)="resetControllers('rotationOffsetDeg')"></app-reset-button>
+    </div>
+    <div class="control">
+        <span>X</span><input matInput [(ngModel)]="controllerSettings.rotationOffsetDeg.x" step="1" (ngModelChange)="save()" type="number">
+        <span>Y</span><input matInput [(ngModel)]="controllerSettings.rotationOffsetDeg.y" step="1" (ngModelChange)="save()" type="number">
+        <span>Z</span><input matInput [(ngModel)]="controllerSettings.rotationOffsetDeg.z" step="1" (ngModelChange)="save()" type="number">
+    </div>
+</div>
+
+<div class="field">
+    <div class="title">
+        <span>Position Offset (cm)</span>
+        <app-field-tip info="Local frame position offset added to both controllers' poses, live reloaded. Use when the virtual grip point sits offset from where the controller feels like it is (beam parallel but displaced): Z = forward/back along the controller, Y = up/down, X = sideways." />
+        <app-reset-button [canReset]="controllerSettings.positionOffsetCm.x != controllerDefaults.positionOffsetCm.x || controllerSettings.positionOffsetCm.y != controllerDefaults.positionOffsetCm.y || controllerSettings.positionOffsetCm.z != controllerDefaults.positionOffsetCm.z" (resetClick)="resetControllers('positionOffsetCm')"></app-reset-button>
+    </div>
+    <div class="control">
+        <span>X</span><input matInput [(ngModel)]="controllerSettings.positionOffsetCm.x" step="0.5" (ngModelChange)="save()" type="number">
+        <span>Y</span><input matInput [(ngModel)]="controllerSettings.positionOffsetCm.y" step="0.5" (ngModelChange)="save()" type="number">
+        <span>Z</span><input matInput [(ngModel)]="controllerSettings.positionOffsetCm.z" step="0.5" (ngModelChange)="save()" type="number">
+    </div>
+</div>
+}
+
+}
+
+<div class="field">
+    <div class="section-title collapsible" (click)="sections.debug = !sections.debug"><span>Debug</span><span class="chevron" [class.closed]="!sections.debug">▾</span></div>
+</div>
+@if(sections.debug){
 <div class="field">
     <div class="title">
         <span>Skip Color While Dashboard Open</span>
@@ -403,34 +554,8 @@
 
 <div class="field">
     <div class="title">
-        <span>Sync Timeout (ms)</span>
-        <app-field-tip info="How long to wait for the frame sync before letting a frame through unprocessed (a brief 'flash' of ungraded color). Higher values trade flashes under heavy load for slightly later frames. After a skipped frame the wait automatically escalates to break flash streaks. Default 5, sensible range 3-15." />
-        <app-reset-button [canReset]="settings.syncTimeoutMs != defaults.syncTimeoutMs" (resetClick)="reset('syncTimeoutMs')"></app-reset-button>
-    </div>
-    <div class="control">
-        <input matInput [(ngModel)]="settings.syncTimeoutMs" step="1" min="1" max="100" (ngModelChange)="save()" type="number">
-    </div>
-</div>
-
-<div class="field">
-    <div class="title">
-        <span>Throw Velocity Fix (experimental)</span>
-        <app-field-tip info="The driver's reported controller velocity is heavily smoothed, which makes thrown objects land short and mistimed. Classic recomputes linear velocity from recent positions and substitutes it during fast motion — the best-rated iteration in testing. Full additionally corrects angular velocity and adds release-timing protection (peak/direction holds, grip-gesture anchor) — more corrections, more moving parts. Try Classic first." />
-        <app-reset-button [canReset]="settings.velocityFixMode != defaults.velocityFixMode" (resetClick)="reset('velocityFixMode')"></app-reset-button>
-    </div>
-    <div class="control">
-        <mat-select [(ngModel)]="settings.velocityFixMode" (ngModelChange)="save()">
-            <mat-option value="off">Off</mat-option>
-            <mat-option value="classic">Classic (linear velocity only)</mat-option>
-            <mat-option value="full">Full (angular + release timing)</mat-option>
-        </mat-select>
-    </div>
-</div>
-
-<div class="field">
-    <div class="title">
         <span>Gaze Debug Ring</span>
-        <app-field-tip info="Draws a small red ring where the eye tracker says you are looking (requires eye tracking data to be flowing — check SteamVR's Steam Link tab for 'Share ET data with other apps'). Used to calibrate the gaze-to-viewport mapping for dynamic pupil swim correction: look at fixed points and adjust the FOV tangents below until the ring tracks your gaze everywhere." />
+        <app-field-tip info="Draws a small red ring where the eye tracker says you are looking (requires SteamVR's Steam Link tab's 'Share ET data with other apps' to be on)." />
         <app-reset-button [canReset]="settings.eyeGaze.debugRing != defaults.eyeGaze.debugRing" (resetClick)="reset('eyeGaze')"></app-reset-button>
     </div>
     <div class="control">
@@ -451,82 +576,11 @@
 
 <div class="field">
     <div class="title">
-        <span>Gaze Prediction (ms)</span>
-        <app-field-tip info="Leads the gaze point by extrapolating recent eye motion, compensating the capture-to-display latency that makes the ring trail your eyes. Raise if the ring lags behind saccades, lower if it overshoots. 0 disables." />
-    </div>
-    <div class="control">
-        <input matInput [(ngModel)]="settings.eyeGaze.predictionMs" step="5" min="0" max="100" (ngModelChange)="save()" type="number">
-    </div>
-</div>
-
-<div class="section">
-    <div class="section-title"><span>Dynamic Pupil Swim (requires eye tracking)</span></div>
-</div>
-
-<div class="field">
-    <div class="title">
-        <span>Calibration Grid</span>
-        <app-field-tip info="Overlays straight reference lines for pupil swim tuning. Fixate a grid intersection, then move only your eyes around it: if the nearby lines bend or shift as your gaze moves, that's pupil swim." />
-    </div>
-    <div class="control">
-        <mat-slide-toggle [(ngModel)]="settings.eyeGaze.debugGrid" (ngModelChange)="save()"></mat-slide-toggle>
-        <mat-select [(ngModel)]="settings.eyeGaze.gridMode" (ngModelChange)="save()">
-            <mat-option value="uv">UV grid (eye tuning)</mat-option>
-            <mat-option value="angular">Angular grid (camera photos)</mat-option>
-        </mat-select>
-        <span>deg</span><input matInput [(ngModel)]="settings.eyeGaze.gridAngularDeg" step="0.5" min="0.5" max="30" (ngModelChange)="save()" type="number">
-    </div>
-</div>
-
-<div class="field">
-    <div class="title">
-        <span>World-Locked Grid</span>
-        <app-field-tip info="Draws the angular grid at fixed WORLD azimuth/elevation instead of head-locked lens angles: the lines stay put while you rotate your head, which is exactly the stimulus swim nulling wants — any residual line motion IS the distortion error. Angular grid mode only. Pairs well with the tuner's Force Calibration Grid off + Warped Overlays on."/>
-    </div>
-    <div class="control">
-        <mat-slide-toggle [(ngModel)]="settings.eyeGaze.gridWorldLocked" (ngModelChange)="save()"></mat-slide-toggle>
-    </div>
-</div>
-
-<div class="field">
-    <div class="title">
-        <span>Center Follow Strength</span>
-        <app-field-tip info="How strongly the distortion center follows your gaze (X horizontal, Y vertical). 0 = static calibration exactly. With the grid on, raise slowly (try 0.05 steps) until lines near your gaze stay straight and still as you look around; too high and the periphery starts swimming instead. Expected useful range roughly 0.05-0.3." />
-        <app-reset-button [canReset]="settings.pupilSwim.centerStrengthX != defaults.pupilSwim.centerStrengthX || settings.pupilSwim.centerStrengthY != defaults.pupilSwim.centerStrengthY" (resetClick)="reset('pupilSwim')"></app-reset-button>
-    </div>
-    <div class="control">
-        <span>X</span><input matInput [(ngModel)]="settings.pupilSwim.centerStrengthX" step="0.01" min="0" max="0.8" (ngModelChange)="save()" type="number">
-        <span>Y</span><input matInput [(ngModel)]="settings.pupilSwim.centerStrengthY" step="0.01" min="0" max="0.8" (ngModelChange)="save()" type="number">
-    </div>
-</div>
-
-<div class="field">
-    <div class="title">
-        <span>Probe Capture (scoring run)</span>
-        <app-field-tip info="One switch for an A/B scoring run: acts as Fixation Dot + Swim Probe logging + Warped Overlays together, in the right combination, so nothing can be toggled in the wrong order. Procedure: face forward, flip this on (the dot latches ahead), fixate the dot, rotate your head slowly for 60-90s sweeping it around, flip off, save vrserver.txt. Do one run with the profile off (gain 0) and one with it on, then compare with swimprobe_score.py."/>
-    </div>
-    <div class="control">
-        <mat-slide-toggle [(ngModel)]="settings.eyeGaze.probeCapture" (ngModelChange)="save()"></mat-slide-toggle>
-    </div>
-</div>
-
-<div class="field">
-    <div class="title">
         <span>Fixation Dot (VOR probe)</span>
         <app-field-tip info="Draws a world-locked cyan dot, latched to your view direction the moment it's enabled (toggle off and on to re-center it). Stare at the dot and slowly ROTATE your head in place - don't translate, the dot is at infinity. With the gaze ring on, the red ring should stay centered on the dot. This is the fixation target for swim probe data collection." />
     </div>
     <div class="control">
         <mat-slide-toggle [(ngModel)]="settings.eyeGaze.calibDot" (ngModelChange)="save()"></mat-slide-toggle>
-    </div>
-</div>
-
-<div class="field">
-    <div class="title">
-        <span>Warped Overlays (profile validation)</span>
-        <app-field-tip info="Draws the calibration grid and the fixation dot in content space, so the active distortion profile warps them exactly like scene content. With the ANGULAR grid: a correct profile makes the lines look straight through the lens. With the fixation dot + swim probe: run probe sessions with profile off / A / B and let the fitter score which one flattens the residual. Leave off for plain measurement runs." />
-    </div>
-    <div class="control">
-        <mat-slide-toggle [(ngModel)]="settings.eyeGaze.overlayWarped" (ngModelChange)="save()"></mat-slide-toggle>
     </div>
 </div>
 
@@ -550,48 +604,6 @@
         <mat-slide-toggle [(ngModel)]="settings.poseLogging" (ngModelChange)="save()"></mat-slide-toggle>
     </div>
 </div>
-
-@if (controllerSettings) {
-<div class="field">
-    <div class="title">
-        <span>Controller Aligner (in-headset)</span>
-        <app-field-tip info="Interactive tuning of the controller offsets below, with the controllers themselves. A magenta marker draws where the driver believes the selected controller's TIP is. MANUAL: X switches hand, Y switches position/rotation, A/B cycle the axis, stick adjusts it live. AUTOMATIC (position): plant the tip on any solid surface at chest height away from your body (armrest, desk edge), HOLD THE TRIGGER, slowly swirl a wide cone around the planted tip for a few seconds, release — a pivot solve computes the position offset and the marker freezes. Swirl again without the trigger to verify: a frozen marker means the offset is right. Rotation is finished manually by aiming. Hold a grip 1.5s to save (paste block + file). Offsets are shared by both hands for now; per-hand solve results are logged so we learn whether per-hand config is needed." />
-    </div>
-    <div class="control">
-        <mat-slide-toggle [(ngModel)]="controllerSettings.aligner.enable" (ngModelChange)="save()"></mat-slide-toggle>
-    </div>
-</div>
-
-<div class="section">
-    <div class="section-title"><span>Controllers</span></div>
-</div>
-
-<div class="field">
-    <div class="title">
-        <span>Rotation Offset (deg)</span>
-        <app-field-tip info="Local frame rotation added to both controllers' poses, live reloaded. X (pitch): positive tilts the top back toward you — start here if aiming or thrown objects feel consistently tilted; typical useful range 5-20. Y = yaw, Z = roll." />
-        <app-reset-button [canReset]="controllerSettings.rotationOffsetDeg.x != controllerDefaults.rotationOffsetDeg.x || controllerSettings.rotationOffsetDeg.y != controllerDefaults.rotationOffsetDeg.y || controllerSettings.rotationOffsetDeg.z != controllerDefaults.rotationOffsetDeg.z" (resetClick)="resetControllers('rotationOffsetDeg')"></app-reset-button>
-    </div>
-    <div class="control">
-        <span>X</span><input matInput [(ngModel)]="controllerSettings.rotationOffsetDeg.x" step="1" (ngModelChange)="save()" type="number">
-        <span>Y</span><input matInput [(ngModel)]="controllerSettings.rotationOffsetDeg.y" step="1" (ngModelChange)="save()" type="number">
-        <span>Z</span><input matInput [(ngModel)]="controllerSettings.rotationOffsetDeg.z" step="1" (ngModelChange)="save()" type="number">
-    </div>
-</div>
-
-<div class="field">
-    <div class="title">
-        <span>Position Offset (cm)</span>
-        <app-field-tip info="Local frame position offset added to both controllers' poses, live reloaded. Use when the virtual grip point sits offset from where the controller feels like it is (beam parallel but displaced): Z = forward/back along the controller, Y = up/down, X = sideways." />
-        <app-reset-button [canReset]="controllerSettings.positionOffsetCm.x != controllerDefaults.positionOffsetCm.x || controllerSettings.positionOffsetCm.y != controllerDefaults.positionOffsetCm.y || controllerSettings.positionOffsetCm.z != controllerDefaults.positionOffsetCm.z" (resetClick)="resetControllers('positionOffsetCm')"></app-reset-button>
-    </div>
-    <div class="control">
-        <span>X</span><input matInput [(ngModel)]="controllerSettings.positionOffsetCm.x" step="0.5" (ngModelChange)="save()" type="number">
-        <span>Y</span><input matInput [(ngModel)]="controllerSettings.positionOffsetCm.y" step="0.5" (ngModelChange)="save()" type="number">
-        <span>Z</span><input matInput [(ngModel)]="controllerSettings.positionOffsetCm.z" step="0.5" (ngModelChange)="save()" type="number">
-    </div>
-</div>
 }
-
 }
 }

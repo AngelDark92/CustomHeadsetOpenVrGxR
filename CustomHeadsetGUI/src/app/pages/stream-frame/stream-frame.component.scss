@@ -73,3 +73,23 @@
         }
     }
 }
+
+// collapsible section headers + calibration banner (gui cleanup, session 24)
+.section-title.collapsible {
+    cursor: pointer;
+    user-select: none;
+    .chevron {
+        display: inline-block;
+        margin-left: 8px;
+        transition: transform 0.15s;
+        &.closed { transform: rotate(-90deg); }
+    }
+}
+.calibration-banner {
+    background: #4a3b00;
+    border: 1px solid #a08500;
+    color: #ffe97a;
+    border-radius: 6px;
+    padding: 8px 14px;
+    margin: 8px 0;
+}
