@@ -249,6 +249,12 @@ private:
 	// capture, container->hand classification, live offset override
 	AlignControllerState alignControllers[2] = {};
 	std::map<vr::PropertyContainerHandle_t, int> containerHand;
+	// containers whose /pose/tip belongs to left(0)/right(1), resolved from
+	// the container's own controller-role property: vrlink publishes tip
+	// poses on the paired hand devices, NOT the button controllers, so the
+	// button-derived containerHand map cannot associate them (session 25)
+	std::map<vr::PropertyContainerHandle_t, int> containerTipHand;
+	bool alignerAppliedLogged = false;
 	std::map<uint32_t, int> openVRIDHand;
 	std::atomic<bool> alignerOverrideActive {false};
 	double alignerRotDeg[3] = {0, 0, 0};

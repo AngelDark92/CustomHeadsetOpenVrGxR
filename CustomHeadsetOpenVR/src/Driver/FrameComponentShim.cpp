@@ -554,6 +554,13 @@ void DirectModeComponentShim::UpdateAligner(FrameProcessSettings &settings){
 			"TRIGGER HELD + tip planted + swirl = auto position solve, hold grip 1.5s = save",
 			aligner.rotDeg[0], aligner.rotDeg[1], aligner.rotDeg[2],
 			aligner.posCm[0], aligner.posCm[1], aligner.posCm[2]);
+		CustomHeadsetDeviceProvider::AlignControllerState stateL, stateR;
+		deviceProvider.GetAlignController(0, stateL);
+		deviceProvider.GetAlignController(1, stateR);
+		DriverLog("Aligner: availability L pose=%d tip=%d, R pose=%d tip=%d "
+			"(no tip = no magenta marker and no auto-solve apply for that hand; move the controllers once if poses are 0)",
+			stateL.poseValid ? 1 : 0, stateL.tipValid ? 1 : 0,
+			stateR.poseValid ? 1 : 0, stateR.tipValid ? 1 : 0);
 	}
 	double dt = now - aligner.lastTime;
 	aligner.lastTime = now;
@@ -1017,6 +1024,15 @@ void DirectModeComponentShim::UpdateTuner(FrameProcessSettings &settings){
 		origin.r = 0.0;
 		origin.scale = 1.0;
 		points.push_back(origin);
+		// hold identity until just inside the first band: without this
+		// anchor the spline ramps from r=0 toward the first band's value
+		// and warps the central area the tuner is not editing
+		if(n > 0 && tuner.bandR[0] > 0.08){
+			StreamFrameDistortionPoint inner;
+			inner.r = tuner.bandR[0] - 0.06;
+			inner.scale = 1.0;
+			points.push_back(inner);
+		}
 		for(int i = 0; i < n; i++){
 			StreamFrameDistortionPoint point;
 			point.r = tuner.bandR[i];
@@ -1051,6 +1067,10 @@ void DirectModeComponentShim::UpdateTuner(FrameProcessSettings &settings){
 	// tune against game content, or the world-locked grid variant)
 	if(settings.config.distortion.tune.forceGrid){
 		settings.config.eyeGaze.debugGrid = true;
+		// force ANGULAR mode: the nulling stimulus, and the only mode the
+		// world-locked option exists in — with the configured 'uv' default
+		// the forced grid silently ignored World-Locked (session 25 report)
+		settings.config.eyeGaze.gridMode = "angular";
 		settings.config.eyeGaze.overlayWarped = true;
 	}
 	// band highlight for the shader (per-eye gating in ProcessEye)
@@ -1065,6 +1085,10 @@ void DirectModeComponentShim::SaveTunedProfile(const FrameProcessSettings &setti
 	auto pointsJson = [&](const std::vector<double> &scales){
 		json points = json::array();
 		points.push_back({{"r", 0.0}, {"scale", 1.0}});
+		// inner identity anchor, matching the live curve
+		if(n > 0 && tuner.bandR[0] > 0.08){
+			points.push_back({{"r", tuner.bandR[0] - 0.06}, {"scale", 1.0}});
+		}
 		for(int i = 0; i < n; i++){
 			// round through text once so the file matches what the log shows
 			points.push_back({{"r", tuner.bandR[i]}, {"scale", (double)((long long)(scales[i] * 100000.0 + (scales[i] >= 0 ? 0.5 : -0.5))) / 100000.0}});

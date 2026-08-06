@@ -283,15 +283,27 @@
         <mat-slide-toggle [(ngModel)]="settings.distortion.tune.forceGrid" (ngModelChange)="save()"></mat-slide-toggle>
     </div>
 </div>
+
+@if(settings.distortion.tune.forceGrid){
+<div class="field">
+    <div class="note">While Force Calibration Grid is on, the ANGULAR grid and Warped Overlays are forced on and their toggles below are hidden. World-Locked Grid still applies.</div>
+</div>
+} @else {
 <div class="field">
     <div class="title">
-        <span>World-Locked Grid</span>
-        <app-field-tip info="Draws the angular grid at fixed WORLD azimuth/elevation instead of head-locked lens angles. Angular grid mode only."/>
+        <span>Calibration Grid</span>
+        <app-field-tip info="Overlays straight reference lines for pupil swim tuning. Fixate a grid intersection, then move only your eyes around it: if the nearby lines bend or shift as your gaze moves, that's pupil swim." />
     </div>
     <div class="control">
-        <mat-slide-toggle [(ngModel)]="settings.eyeGaze.gridWorldLocked" (ngModelChange)="save()"></mat-slide-toggle>
+        <mat-slide-toggle [(ngModel)]="settings.eyeGaze.debugGrid" (ngModelChange)="save()"></mat-slide-toggle>
+        <mat-select [(ngModel)]="settings.eyeGaze.gridMode" (ngModelChange)="save()">
+            <mat-option value="uv">UV grid (eye tuning)</mat-option>
+            <mat-option value="angular">Angular grid (camera photos)</mat-option>
+        </mat-select>
+        <span>deg</span><input matInput [(ngModel)]="settings.eyeGaze.gridAngularDeg" step="0.5" min="0.5" max="30" (ngModelChange)="save()" type="number">
     </div>
 </div>
+
 <div class="field">
     <div class="title">
         <span>Warped Overlays (profile validation)</span>
@@ -299,6 +311,17 @@
     </div>
     <div class="control">
         <mat-slide-toggle [(ngModel)]="settings.eyeGaze.overlayWarped" (ngModelChange)="save()"></mat-slide-toggle>
+    </div>
+</div>
+}
+
+<div class="field">
+    <div class="title">
+        <span>World-Locked Grid</span>
+        <app-field-tip info="Draws the angular grid at fixed WORLD azimuth/elevation instead of head-locked lens angles. Angular grid mode only."/>
+    </div>
+    <div class="control">
+        <mat-slide-toggle [(ngModel)]="settings.eyeGaze.gridWorldLocked" (ngModelChange)="save()"></mat-slide-toggle>
     </div>
 </div>
 }
@@ -465,21 +488,6 @@
 </div>
 
 <div class="section">
-</div>
-
-<div class="field">
-    <div class="title">
-        <span>Calibration Grid</span>
-        <app-field-tip info="Overlays straight reference lines for pupil swim tuning. Fixate a grid intersection, then move only your eyes around it: if the nearby lines bend or shift as your gaze moves, that's pupil swim." />
-    </div>
-    <div class="control">
-        <mat-slide-toggle [(ngModel)]="settings.eyeGaze.debugGrid" (ngModelChange)="save()"></mat-slide-toggle>
-        <mat-select [(ngModel)]="settings.eyeGaze.gridMode" (ngModelChange)="save()">
-            <mat-option value="uv">UV grid (eye tuning)</mat-option>
-            <mat-option value="angular">Angular grid (camera photos)</mat-option>
-        </mat-select>
-        <span>deg</span><input matInput [(ngModel)]="settings.eyeGaze.gridAngularDeg" step="0.5" min="0.5" max="30" (ngModelChange)="save()" type="number">
-    </div>
 </div>
 
 @if (controllerSettings) {

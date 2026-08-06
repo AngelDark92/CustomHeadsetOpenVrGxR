@@ -1,4 +1,4 @@
-import { Component, ElementRef, effect, inject, input, output, signal, viewChild, AfterViewInit } from '@angular/core';
+import { Component, ElementRef, effect, inject, input, output, signal, untracked, viewChild, AfterViewInit } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { MatButtonModule } from '@angular/material/button';
@@ -64,6 +64,19 @@ export class StreamFrameCurveComponent implements AfterViewInit {
   private viewReady = false;
 
   constructor() {
+    // keep the stored selection valid when per-eye/per-axis toggles or an
+    // imported profile change the available keys (write moved here from
+    // activeCurve: signal writes are allowed in effects, not in render)
+    effect(() => {
+      // settings are mutated in place; the parent signals edits via the
+      // revision input, so track it to catch per-eye/per-axis toggles
+      this.revision();
+      this.dss.values();
+      const keys = this.curveKeys();
+      if (!keys.includes(untracked(() => this.curveKey()))) {
+        this.curveKey.set(keys[0]);
+      }
+    });
     effect(() => {
       // redraw on external settings reloads, parent edits, and local ui state
       this.dss.values();
@@ -112,13 +125,19 @@ export class StreamFrameCurveComponent implements AfterViewInit {
     }
     return curve ?? { k1: cfg.k1, k2: cfg.k2, points: cfg.distortion.points };
   }
-  activeCurve(seed = true): StreamFrameCurveData {
-    // keep the selected key valid when toggles change
+  // the key to actually use this render: falls back to the first valid key
+  // when the stored selection doesn't exist in the current mode (e.g. a
+  // per-eye profile was just imported while 'base' was selected). READ-ONLY:
+  // writing curveKey here threw NG0600 (template expressions run in a
+  // reactive context in Angular 19) and aborted the whole page's first
+  // render — the stored signal is normalized by the constructor effect.
+  private effectiveKey(): string {
     const keys = this.curveKeys();
-    if (!keys.includes(this.curveKey())) {
-      this.curveKey.set(keys[0]);
-    }
-    return this.curveData(this.curveKey(), seed);
+    const key = this.curveKey();
+    return keys.includes(key) ? key : keys[0];
+  }
+  activeCurve(seed = true): StreamFrameCurveData {
+    return this.curveData(this.effectiveKey(), seed);
   }
 
   // ---- shared curve math (annulus + exaggeration applied for the preview only) ----

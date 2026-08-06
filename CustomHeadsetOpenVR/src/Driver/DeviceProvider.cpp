@@ -551,6 +551,29 @@ void CustomHeadsetDeviceProvider::OnPoseComponentCreated(vr::PropertyContainerHa
 	PoseComponentInfo info;
 	info.container = container;
 	info.name = name;
+	// tip components: resolve which HAND this container's tip belongs to
+	// from the container's own controller-role property (vrlink puts tip
+	// poses on the paired hand devices, not the button controllers, so
+	// button-derived hand maps can't associate them). resolved OUTSIDE
+	// poseLogLock: property queries must never run under our lock.
+	std::string nameStr = name;
+	if(nameStr.size() >= 9 && nameStr.compare(nameStr.size() - 9, 9, "/pose/tip") == 0){
+		vr::ETrackedPropertyError propError = vr::TrackedProp_Success;
+		int32_t role = vr::VRProperties()->GetInt32Property(container,
+			vr::Prop_ControllerRoleHint_Int32, &propError);
+		int hand = -1;
+		if(propError == vr::TrackedProp_Success){
+			if(role == vr::TrackedControllerRole_LeftHand){ hand = 0; }
+			if(role == vr::TrackedControllerRole_RightHand){ hand = 1; }
+		}
+		DriverLog("InputTap: /pose/tip container=%llu role=%d -> hand=%s",
+			(unsigned long long)container, (int)role,
+			hand == 0 ? "LEFT" : (hand == 1 ? "RIGHT" : "UNKNOWN (aligner tip marker unavailable for it)"));
+		if(hand >= 0){
+			std::lock_guard<std::mutex> tipGuard(poseLogLock);
+			containerTipHand[container] = hand;
+		}
+	}
 	std::lock_guard<std::mutex> guard(poseLogLock);
 	poseComponents[handle] = info;
 }
@@ -571,8 +594,8 @@ void CustomHeadsetDeviceProvider::OnPoseComponentUpdated(vr::VRInputComponentHan
 		// controller-local tip transform vrlink itself publishes
 		if(offset && found->second.name.size() >= 9
 				&& found->second.name.compare(found->second.name.size() - 9, 9, "/pose/tip") == 0){
-			auto handFound = containerHand.find(found->second.container);
-			if(handFound != containerHand.end()){
+			auto handFound = containerTipHand.find(found->second.container);
+			if(handFound != containerTipHand.end()){
 				AlignControllerState &state = alignControllers[handFound->second];
 				state.tipValid = true;
 				state.tipLocal[0] = offset->m[0][3];
@@ -655,6 +678,15 @@ bool CustomHeadsetDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 		}
 		if(hasRotationOffset){
 			pose.qRotation = QuatMultiply(pose.qRotation, QuatFromEulerDeg(rotationOffsetDeg));
+		}
+		if(alignerOverrideActive.load(std::memory_order_relaxed)){
+			std::lock_guard<std::mutex> logGuard(poseLogLock);
+			if(!alignerAppliedLogged){
+				alignerAppliedLogged = true;
+				DriverLog("Aligner: working offsets APPLYING to device id=%u (rot %.1f,%.1f,%.1f deg pos %.2f,%.2f,%.2f cm)",
+					openVRID, rotationOffsetDeg[0], rotationOffsetDeg[1], rotationOffsetDeg[2],
+					positionOffsetCm[0], positionOffsetCm[1], positionOffsetCm[2]);
+			}
 		}
 	}
 	// capture the post-offset pose per hand for the controller aligner (the
@@ -1333,6 +1365,9 @@ void CustomHeadsetDeviceProvider::SetAlignerOffsets(bool active, const double ro
 		for(int i = 0; i < 3; i++){
 			alignerRotDeg[i] = rotDeg[i];
 			alignerPosCm[i] = posCm[i];
+		}
+		if(!active){
+			alignerAppliedLogged = false;
 		}
 	}
 	alignerOverrideActive.store(active, std::memory_order_relaxed);
