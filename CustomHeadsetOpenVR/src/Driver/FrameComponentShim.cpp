@@ -1020,19 +1020,22 @@ void DirectModeComponentShim::UpdateTuner(FrameProcessSettings &settings){
 	StreamFrameDistortionConfig &d = settings.config.distortion;
 	auto buildPoints = [&](const std::vector<double> &scales){
 		std::vector<StreamFrameDistortionPoint> points;
-		StreamFrameDistortionPoint origin;
-		origin.r = 0.0;
-		origin.scale = 1.0;
-		points.push_back(origin);
-		// hold identity until just inside the first band: without this
-		// anchor the spline ramps from r=0 toward the first band's value
-		// and warps the central area the tuner is not editing
+		// inner identity guard, built to mirror the OUTER taper exactly: the
+		// guard is the FIRST knot, so everything inside it is the
+		// evaluator's front-clamp — mathematically flat 1.0. an extra r=0
+		// anchor knot here was WRONG: between two knots the catmull-rom
+		// tangent at the guard (fed by the first band's value) made the
+		// "flat" span dip below identity (session 25 exaggerated-curve
+		// demo). flat regions must live OUTSIDE the knot range, never
+		// between knots.
+		StreamFrameDistortionPoint inner;
+		inner.scale = 1.0;
 		if(n > 0 && tuner.bandR[0] > 0.08){
-			StreamFrameDistortionPoint inner;
 			inner.r = tuner.bandR[0] - 0.06;
-			inner.scale = 1.0;
-			points.push_back(inner);
+		}else{
+			inner.r = 0.0;
 		}
+		points.push_back(inner);
 		for(int i = 0; i < n; i++){
 			StreamFrameDistortionPoint point;
 			point.r = tuner.bandR[i];
@@ -1084,10 +1087,12 @@ void DirectModeComponentShim::SaveTunedProfile(const FrameProcessSettings &setti
 	int n = (int)tuner.bandR.size();
 	auto pointsJson = [&](const std::vector<double> &scales){
 		json points = json::array();
-		points.push_back({{"r", 0.0}, {"scale", 1.0}});
-		// inner identity anchor, matching the live curve
+		// inner guard as the FIRST knot (front-clamp flat inside it),
+		// matching the live curve — no r=0 anchor, see buildPoints
 		if(n > 0 && tuner.bandR[0] > 0.08){
 			points.push_back({{"r", tuner.bandR[0] - 0.06}, {"scale", 1.0}});
+		}else{
+			points.push_back({{"r", 0.0}, {"scale", 1.0}});
 		}
 		for(int i = 0; i < n; i++){
 			// round through text once so the file matches what the log shows
