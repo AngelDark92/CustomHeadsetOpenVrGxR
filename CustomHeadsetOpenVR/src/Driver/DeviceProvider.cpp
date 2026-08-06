@@ -351,9 +351,13 @@ void CustomHeadsetDeviceProvider::OnInputComponentCreated(vr::PropertyContainerH
 	// openVR id too so pose updates can be routed per hand.
 	if(info.tunerRole >= 2 && info.tunerRole <= 5){
 		int hand = (info.tunerRole == 2 || info.tunerRole == 3) ? 1 : 0;
+		// resolve BEFORE taking poseLogLock: ResolveContainerId takes that
+		// lock itself, and std::mutex is non-recursive — nesting it here
+		// deadlocked vrserver at the first x/click creation and tripped a
+		// SteamVR safe-mode block (session 24 regression)
+		uint32_t id = ResolveContainerId(container);
 		std::lock_guard<std::mutex> handGuard(poseLogLock);
 		containerHand[container] = hand;
-		uint32_t id = ResolveContainerId(container);
 		if(id != vr::k_unTrackedDeviceIndexInvalid){
 			openVRIDHand[id] = hand;
 		}
