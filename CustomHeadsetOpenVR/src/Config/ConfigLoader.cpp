@@ -584,6 +584,18 @@ void ConfigLoader::ParseConfig(){
 			if(streamFrameData["deriveSmoothSpeedHigh"].is_number()){
 				newConfig.streamFrame.deriveSmoothSpeedHigh = streamFrameData["deriveSmoothSpeedHigh"].get<double>();
 			}
+			if(streamFrameData["deriveSplitDirLinear"].is_boolean()){
+				newConfig.streamFrame.deriveSplitDirLinear = streamFrameData["deriveSplitDirLinear"].get<bool>();
+			}
+			if(streamFrameData["deriveSplitDirAngular"].is_boolean()){
+				newConfig.streamFrame.deriveSplitDirAngular = streamFrameData["deriveSplitDirAngular"].get<bool>();
+			}
+			if(streamFrameData["deriveDirWindowMs"].is_number()){
+				newConfig.streamFrame.deriveDirWindowMs = streamFrameData["deriveDirWindowMs"].get<double>();
+			}
+			if(streamFrameData["deriveDirWeightPow"].is_number()){
+				newConfig.streamFrame.deriveDirWeightPow = streamFrameData["deriveDirWeightPow"].get<double>();
+			}
 			if(streamFrameData["eyeGaze"].is_object()){
 				json eyeGazeData = streamFrameData["eyeGaze"];
 				if(eyeGazeData["debugRing"].is_boolean()){
@@ -987,6 +999,10 @@ void ConfigLoader::WriteInfo(){
 				{"deriveSmoothTauFastMs", defaultSettings.streamFrame.deriveSmoothTauFastMs},
 				{"deriveSmoothSpeedLow", defaultSettings.streamFrame.deriveSmoothSpeedLow},
 				{"deriveSmoothSpeedHigh", defaultSettings.streamFrame.deriveSmoothSpeedHigh},
+				{"deriveSplitDirLinear", defaultSettings.streamFrame.deriveSplitDirLinear},
+				{"deriveSplitDirAngular", defaultSettings.streamFrame.deriveSplitDirAngular},
+				{"deriveDirWindowMs", defaultSettings.streamFrame.deriveDirWindowMs},
+				{"deriveDirWeightPow", defaultSettings.streamFrame.deriveDirWeightPow},
 			}},
 			{"takeCompositorScreenshots", defaultSettings.takeCompositorScreenshots},
 			{"onlyHandlePrivateFunctionality", defaultSettings.onlyHandlePrivateFunctionality},

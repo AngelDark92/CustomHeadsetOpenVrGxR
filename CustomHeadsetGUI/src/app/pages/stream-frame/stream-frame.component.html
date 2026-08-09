@@ -577,7 +577,7 @@
 <div class="field">
     <div class="title">
         <span>Throw Velocity Fix (experimental)</span>
-        <app-field-tip info="The driver's reported controller velocity is heavily smoothed, which makes thrown objects land short and mistimed. Classic recomputes linear velocity from recent positions and substitutes it during fast motion. Full additionally corrects angular velocity and adds release-timing protection. Derive discards the reported velocity entirely and always reports the pose-derived estimate - one consistent signal with no engage threshold (the previous modes blended the two sources, which can misbehave exactly at release). All modes apply only to the streamed (Galaxy XR) controllers; lighthouse devices like Knuckles keep their native velocity untouched. Derive smoothing is speed-adaptive (strong when held still, near-raw at throw speeds); tune it live via the deriveSmooth* values in settings.json if needed." />
+        <app-field-tip info="The driver's reported controller velocity is heavily smoothed, which makes thrown objects land short and mistimed. Classic recomputes linear velocity from recent positions and substitutes it during fast motion. Full additionally corrects angular velocity and adds release-timing protection. Derive discards the reported velocity entirely and always reports the pose-derived estimate - one consistent signal with no engage threshold (the previous modes blended the two sources, which can misbehave exactly at release). All modes apply only to the streamed (Galaxy XR) controllers; lighthouse devices like Knuckles keep their native velocity untouched. Derive smoothing is speed-adaptive (strong when held still, near-raw at throw speeds); tune it live under Debug (Derive Smoothing / Split Direction knobs)." />
         <app-reset-button [canReset]="settings.velocityFixMode != defaults.velocityFixMode" (resetClick)="reset('velocityFixMode')"></app-reset-button>
     </div>
     <div class="control">
@@ -734,6 +734,54 @@
     </div>
     <div class="control">
         <mat-slide-toggle [(ngModel)]="settings.poseLogging" (ngModelChange)="save()"></mat-slide-toggle>
+    </div>
+</div>
+
+<div class="field">
+    <div class="title">
+        <span>Derive Smoothing (tau slow/fast ms, speed low/high)</span>
+        <app-field-tip info="Speed-adaptive smoothing for the Derive velocity mode, live reloaded. The filter time constant slides from tau slow (held still: kills trembling) to tau fast (throw speeds: near raw so the peak survives) as effective speed crosses low..high. Lower tau fast raises the reported peak but passes more raw noise at release; if throw directions misbehave, prefer the Split Direction toggles below over pushing tau fast toward zero." />
+        <app-reset-button [canReset]="settings.deriveSmoothTauSlowMs != defaults.deriveSmoothTauSlowMs || settings.deriveSmoothTauFastMs != defaults.deriveSmoothTauFastMs || settings.deriveSmoothSpeedLow != defaults.deriveSmoothSpeedLow || settings.deriveSmoothSpeedHigh != defaults.deriveSmoothSpeedHigh" (resetClick)="reset('deriveSmoothTauSlowMs'); reset('deriveSmoothTauFastMs'); reset('deriveSmoothSpeedLow'); reset('deriveSmoothSpeedHigh')"></app-reset-button>
+    </div>
+    <div class="control">
+        <span>τS</span><input matInput [(ngModel)]="settings.deriveSmoothTauSlowMs" step="5" min="1" max="300" (ngModelChange)="save()" type="number">
+        <span>τF</span><input matInput [(ngModel)]="settings.deriveSmoothTauFastMs" step="1" min="1" max="60" (ngModelChange)="save()" type="number">
+        <span>sL</span><input matInput [(ngModel)]="settings.deriveSmoothSpeedLow" step="0.05" min="0" max="3" (ngModelChange)="save()" type="number">
+        <span>sH</span><input matInput [(ngModel)]="settings.deriveSmoothSpeedHigh" step="0.05" min="0.1" max="5" (ngModelChange)="save()" type="number">
+    </div>
+</div>
+
+<div class="field">
+    <div class="title">
+        <span>Derive Split Direction: Linear</span>
+        <app-field-tip info="Experimental fix for throws flying in random directions with Derive mode. Keeps the smoothed velocity MAGNITUDE but takes the DIRECTION from a speed-weighted average of the raw estimates over a short window, so the fastest (most reliable) samples pin the release direction. Toggle one channel at a time for a clean A/B; the log line 'VelocityFix: split-dir active' confirms it engaged." />
+        <app-reset-button [canReset]="settings.deriveSplitDirLinear != defaults.deriveSplitDirLinear" (resetClick)="reset('deriveSplitDirLinear')"></app-reset-button>
+    </div>
+    <div class="control">
+        <mat-slide-toggle [(ngModel)]="settings.deriveSplitDirLinear" (ngModelChange)="save()"></mat-slide-toggle>
+    </div>
+</div>
+
+<div class="field">
+    <div class="title">
+        <span>Derive Split Direction: Angular</span>
+        <app-field-tip info="Same split treatment for angular velocity (spin direction at release). Independent from the linear toggle so A/B tests stay single-variable." />
+        <app-reset-button [canReset]="settings.deriveSplitDirAngular != defaults.deriveSplitDirAngular" (resetClick)="reset('deriveSplitDirAngular')"></app-reset-button>
+    </div>
+    <div class="control">
+        <mat-slide-toggle [(ngModel)]="settings.deriveSplitDirAngular" (ngModelChange)="save()"></mat-slide-toggle>
+    </div>
+</div>
+
+<div class="field">
+    <div class="title">
+        <span>Split Direction Window (ms) / Weight Power</span>
+        <app-field-tip info="Window: how far back the direction average looks (clamped 5-200 in the driver). Shorter follows wrist snaps tighter but averages less noise. Weight power: how strongly fast samples dominate (speed^power weighting); 2 is a good default, higher approaches 'direction of the single fastest sample', 0 is an unweighted average." />
+        <app-reset-button [canReset]="settings.deriveDirWindowMs != defaults.deriveDirWindowMs || settings.deriveDirWeightPow != defaults.deriveDirWeightPow" (resetClick)="reset('deriveDirWindowMs'); reset('deriveDirWeightPow')"></app-reset-button>
+    </div>
+    <div class="control">
+        <span>W</span><input matInput [(ngModel)]="settings.deriveDirWindowMs" step="5" min="5" max="200" (ngModelChange)="save()" type="number">
+        <span>P</span><input matInput [(ngModel)]="settings.deriveDirWeightPow" step="0.5" min="0" max="6" (ngModelChange)="save()" type="number">
     </div>
 </div>
 }

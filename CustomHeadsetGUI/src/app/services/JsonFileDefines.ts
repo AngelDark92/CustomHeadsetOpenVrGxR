@@ -129,6 +129,14 @@ export type StreamFrameConfig = {
   directRender: boolean;
   velocityFix: boolean;
   velocityFixMode: string;
+  deriveSmoothTauSlowMs: number;
+  deriveSmoothTauFastMs: number;
+  deriveSmoothSpeedLow: number;
+  deriveSmoothSpeedHigh: number;
+  deriveSplitDirLinear: boolean;
+  deriveSplitDirAngular: boolean;
+  deriveDirWindowMs: number;
+  deriveDirWeightPow: number;
   eyeGaze: { debugRing: boolean, tanHalfFovX: number, tanHalfFovY: number, predictionMs: number, debugGrid: boolean, gridMode: string, gridAngularDeg: number, calibDot: boolean, swimProbe: boolean, overlayWarped: boolean, probeCapture: boolean, gridWorldLocked: boolean };
   pupilSwim: { centerStrengthX: number, centerStrengthY: number };
   poseLogging: boolean;

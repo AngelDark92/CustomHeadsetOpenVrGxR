@@ -171,6 +171,22 @@ private:
 		double ang[3] = {};
 		double time = 0;
 		bool have = false;
+		// split-direction support: short ring of RAW estimator outputs.
+		// the axis-wise EMA above smooths magnitude well but its
+		// direction is noise dominated except at the highest speeds
+		// (field data 2026-08-09: 73-83 deg/sample median direction
+		// swings at ~0.5 m/s). direction is instead taken from a
+		// speed^pow weighted sum of these raw samples inside a short
+		// window, so high-SNR samples pin it. 16 slots at 3-10ms
+		// spacing covers the whole allowed window range (5-200ms is
+		// clamped in the consumer; older entries simply age out).
+		static const int dirRingSize = 16;
+		double dirTime[dirRingSize] = {};
+		double dirVel[dirRingSize][3] = {};
+		double dirAng[dirRingSize][3] = {};
+		int dirHead = 0;
+		int dirCount = 0;
+		bool splitLogged = false;
 	};
 	std::map<uint32_t, DeriveFilterState> deriveFilterStates = {};
 	std::mutex deriveFilterLock;

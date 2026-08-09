@@ -761,6 +761,17 @@ bool CustomHeadsetDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 					if(m > 1){ m = 1; }
 					m = m * m * (3.0 - 2.0 * m);
 					double tau = tauSlow + (tauFast - tauSlow) * m;
+					// split-direction knobs read outside the lock (relaxed
+					// consistency is fine: they only shape this frame's math)
+					bool splitLin = driverConfig.streamFrame.deriveSplitDirLinear;
+					bool splitAng = driverConfig.streamFrame.deriveSplitDirAngular;
+					double dirWindow = driverConfig.streamFrame.deriveDirWindowMs / 1000.0;
+					if(dirWindow < 0.005){ dirWindow = 0.005; }
+					if(dirWindow > 0.2){ dirWindow = 0.2; }
+					double dirPow = driverConfig.streamFrame.deriveDirWeightPow;
+					if(dirPow < 0.0){ dirPow = 0.0; }
+					if(dirPow > 6.0){ dirPow = 6.0; }
+					bool logSplit = false;
 					{
 						std::lock_guard<std::mutex> filterGuard(deriveFilterLock);
 						DeriveFilterState &fs = deriveFilterStates[openVRID];
@@ -770,6 +781,10 @@ bool CustomHeadsetDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 								fs.vel[a] = derivedVel[a];
 								fs.ang[a] = derivedAng[a];
 							}
+							// a filter reset means a time gap or teleport:
+							// the direction ring's history is equally stale
+							fs.dirCount = 0;
+							fs.dirHead = 0;
 						}else{
 							double alpha = 1.0 - exp(-fdt / tau);
 							for(int a = 0; a < 3; a++){
@@ -779,12 +794,80 @@ bool CustomHeadsetDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 						}
 						fs.time = now;
 						fs.have = true;
-						pose.vecVelocity[0] = fs.vel[0];
-						pose.vecVelocity[1] = fs.vel[1];
-						pose.vecVelocity[2] = fs.vel[2];
-						pose.vecAngularVelocity[0] = fs.ang[0];
-						pose.vecAngularVelocity[1] = fs.ang[1];
-						pose.vecAngularVelocity[2] = fs.ang[2];
+						// always push the RAW estimate into the direction
+						// ring (cheap), so toggling split live mid-session
+						// starts with a warm window
+						fs.dirTime[fs.dirHead] = now;
+						for(int a = 0; a < 3; a++){
+							fs.dirVel[fs.dirHead][a] = derivedVel[a];
+							fs.dirAng[fs.dirHead][a] = derivedAng[a];
+						}
+						fs.dirHead = (fs.dirHead + 1) % DeriveFilterState::dirRingSize;
+						if(fs.dirCount < DeriveFilterState::dirRingSize){ fs.dirCount++; }
+						double outVel[3] = { fs.vel[0], fs.vel[1], fs.vel[2] };
+						double outAng[3] = { fs.ang[0], fs.ang[1], fs.ang[2] };
+						if(splitLin || splitAng){
+							// speed^pow weighted sums of the raw samples
+							// inside the window, walked newest -> oldest
+							// (ring times are monotonic, so the first
+							// too-old sample ends the walk)
+							double sumVel[3] = { 0, 0, 0 };
+							double sumAng[3] = { 0, 0, 0 };
+							for(int i = 0; i < fs.dirCount; i++){
+								int idx = (fs.dirHead + DeriveFilterState::dirRingSize - 1 - i) % DeriveFilterState::dirRingSize;
+								if(now - fs.dirTime[idx] > dirWindow){
+									break;
+								}
+								double sv = sqrt(fs.dirVel[idx][0] * fs.dirVel[idx][0]
+									+ fs.dirVel[idx][1] * fs.dirVel[idx][1]
+									+ fs.dirVel[idx][2] * fs.dirVel[idx][2]);
+								double sa = sqrt(fs.dirAng[idx][0] * fs.dirAng[idx][0]
+									+ fs.dirAng[idx][1] * fs.dirAng[idx][1]
+									+ fs.dirAng[idx][2] * fs.dirAng[idx][2]);
+								double wv = pow(sv, dirPow);
+								double wa = pow(sa, dirPow);
+								for(int a = 0; a < 3; a++){
+									sumVel[a] += fs.dirVel[idx][a] * wv;
+									sumAng[a] += fs.dirAng[idx][a] * wa;
+								}
+							}
+							if(splitLin){
+								double mag = sqrt(fs.vel[0] * fs.vel[0] + fs.vel[1] * fs.vel[1] + fs.vel[2] * fs.vel[2]);
+								double dn = sqrt(sumVel[0] * sumVel[0] + sumVel[1] * sumVel[1] + sumVel[2] * sumVel[2]);
+								if(dn > 1e-9 && mag > 1e-9){
+									for(int a = 0; a < 3; a++){
+										outVel[a] = sumVel[a] / dn * mag;
+									}
+								}
+							}
+							if(splitAng){
+								double magA = sqrt(fs.ang[0] * fs.ang[0] + fs.ang[1] * fs.ang[1] + fs.ang[2] * fs.ang[2]);
+								double dnA = sqrt(sumAng[0] * sumAng[0] + sumAng[1] * sumAng[1] + sumAng[2] * sumAng[2]);
+								if(dnA > 1e-9 && magA > 1e-9){
+									for(int a = 0; a < 3; a++){
+										outAng[a] = sumAng[a] / dnA * magA;
+									}
+								}
+							}
+							if(!fs.splitLogged){
+								fs.splitLogged = true;
+								logSplit = true;
+							}
+						}else{
+							// re-log if it gets re-enabled after being off
+							fs.splitLogged = false;
+						}
+						pose.vecVelocity[0] = outVel[0];
+						pose.vecVelocity[1] = outVel[1];
+						pose.vecVelocity[2] = outVel[2];
+						pose.vecAngularVelocity[0] = outAng[0];
+						pose.vecAngularVelocity[1] = outAng[1];
+						pose.vecAngularVelocity[2] = outAng[2];
+					}
+					if(logSplit){
+						// outside the lock — lock discipline
+						DriverLog("VelocityFix: split-dir active id=%u linear=%d angular=%d window=%.0fms pow=%.1f",
+							openVRID, splitLin ? 1 : 0, splitAng ? 1 : 0, dirWindow * 1000.0, dirPow);
 					}
 				}
 			}else if(derivedSpeed < 20.0 && derivedAngSpeed < 60.0 && sEff > 1.0){

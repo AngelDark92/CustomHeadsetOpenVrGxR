@@ -357,6 +357,21 @@ struct StreamFrameConfig{
 	double deriveSmoothTauFastMs = 6.0;
 	double deriveSmoothSpeedLow = 0.25;
 	double deriveSmoothSpeedHigh = 1.6;
+	// derive-mode split-channel output. the axis-wise EMA smooths
+	// MAGNITUDE well, but smoothing each axis independently does not
+	// stabilize DIRECTION when components sit near zero crossings: field
+	// data (2026-08-09 burst log) shows the filtered vector's direction
+	// swinging 73-83 deg/sample (median) at ~0.5 m/s and 23-50 deg/sample
+	// inside the 40ms release zone — the "objects fly off in random
+	// directions" residual. split mode keeps the EMA for magnitude only
+	// and takes direction from a speed^weightPow weighted vector sum of
+	// the RAW estimator outputs over a short trailing window: fast,
+	// high-SNR samples pin the direction, slow noisy ones contribute
+	// ~nothing. independent per-channel toggles keep A/B single-variable.
+	bool deriveSplitDirLinear = false;
+	bool deriveSplitDirAngular = false;
+	double deriveDirWindowMs = 50.0;
+	double deriveDirWeightPow = 2.0;
 	// experimental throw/velocity fix. vrlink's reported controller velocity
 	// is heavily smoothed (field data: peaks read ~50-65% of position-derived
 	// velocity during throws, ratio varies with motion phase = filter lag,
