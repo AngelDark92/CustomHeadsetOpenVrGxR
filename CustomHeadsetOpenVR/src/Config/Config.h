@@ -87,6 +87,21 @@ struct StreamFrameDistortionTuneConfig{
 	// tuner leaves the overlays to the user's own toggles (e.g. tuning
 	// against real game content, or the world-locked grid variant).
 	bool forceGrid = true;
+	// band segments for the tuner session: 1 = radial editing as before,
+	// 4 or 8 adds a segment walk (joystick click) so each band can be
+	// nudged per angular sector. the ALL position (walk start) still
+	// edits the whole band; segments carry deltas on top of it.
+	// tune segments last: center first, radial bands second — a wrong
+	// center masquerades as exactly the asymmetry segments would absorb.
+	int segments = 1;
+	// per-band segment counts, one entry per band (inner to outer). outer
+	// bands cover far more circumference, so they can carry far more
+	// segments than inner ones (e.g. 4,4,8,8,12,16,16). empty = uniform
+	// `segments` everywhere; shorter than the band list = last entry
+	// repeats; entries clamp to 1..32. the tuner flattens whatever layout
+	// into uniform max-count segment curves on save, so profiles and the
+	// baked lut are unchanged in shape.
+	std::vector<int> segmentLayout = {};
 };
 
 // center-offset tuning mode: distinct from the band tuner and used
@@ -131,6 +146,15 @@ struct StreamFrameDistortionConfig{
 	// both: "leftHorizontal", "leftVertical", "rightHorizontal", "rightVertical".
 	// a missing key falls back to the base curve.
 	std::map<std::string, StreamFrameCurve> curves = {};
+	// angular band segments: 1 = purely radial curves (default). 2..32
+	// splits every band into that many angular segments with their own
+	// scale, interpolated periodically around the ring — positional
+	// correction for top/bottom/nasal/temporal asymmetry that radial
+	// bands cannot express. segment curves live in `curves` under keys
+	// "left#0".."left#N-1" / "right#0".. and fall back to the plain
+	// per-eye curve when missing. segments > 1 takes precedence over
+	// perAxis (it is a superset of the elliptic blend).
+	int segments = 1;
 	StreamFrameAnnulusConfig annulus = {};
 	StreamFrameDistortionTuneConfig tune = {};
 	StreamFrameCenterTuneConfig centerTune = {};
@@ -141,6 +165,13 @@ struct StreamFrameCASConfig{
 	bool enable = false;
 	// 0 to 1
 	double strength = 0.5;
+	// per-eye override: when enabled, strengthLeft/strengthRight replace the
+	// shared strength. lets one eye be sharpened harder (e.g. masking mild
+	// off-axis lens blur from facial asymmetry) without over-sharpening the
+	// good eye.
+	bool perEye = false;
+	double strengthLeft = 0.5;
+	double strengthRight = 0.5;
 };
 
 // fade the streamed frames to black when the headset has not moved for a
@@ -188,6 +219,19 @@ struct StreamFrameConfig{
 	double centerOffsetXLeft = 0;
 	double centerOffsetXRight = 0;
 	double centerOffsetY = 0;
+	// per-eye whole-image alignment shift (prism correction), in fractions
+	// of the eye's image (bounds-normalized uv). corrects the RELATIVE
+	// alignment between the two eyes' images when an eye sits off its lens
+	// axis (the lens then acts as a weak prism and fusion strains — the
+	// vertical direction especially, fusional range there is tiny).
+	// positive h moves that eye's image right, positive v moves it up.
+	// values are small: 0.002 is already a strong vertical correction.
+	struct {
+		double leftH = 0;
+		double leftV = 0;
+		double rightH = 0;
+		double rightV = 0;
+	} alignment = {};
 	// skip the color adjustment while the dashboard is open, in case the
 	// compositor shader replacement also applies it to the flattened scene in
 	// that state. off by default: the recommended setup is to leave the custom
@@ -263,6 +307,31 @@ struct StreamFrameConfig{
 	// level streaming). after a skip the timeout escalates (3x, min 15ms) to
 	// break flash streaks, and resets on the next acquired frame.
 	int syncTimeoutMs = 5;
+	// passive recon logger: opt-in, off by default. installs observation-only
+	// vtable hooks on vrlink's D3D11 context to map its layer-consumption
+	// point (zero-copy v3 feasibility), NVENC module, and copy/bind shape.
+	// intended for ONE disposable session; never substitutes or alters
+	// anything. see ReconLogger.h.
+	bool reconLogger = false;
+	// render the processed frame directly into the layer texture (slice
+	// aware RTV) instead of drawing into a scratch target and copying the
+	// bounds region back. cuts per-eye traffic from ~6x to ~4x of the
+	// texture size (the field stutter in heavy titles at 5000x5400+ per eye
+	// was bandwidth, not shader math) and halves scratch VRAM. per-texture
+	// automatic fallback to the copy-back path if the layer refuses an RTV.
+	bool directRender = true;
+	// zero-copy path: instead of warping the layer in place, warp into our
+	// own shared shadow textures and hand vrlink the SHADOW handles at
+	// SubmitLayer. the whole frame path becomes one draw (sample app,
+	// write shadow): ~2x traffic vs 4x for directRender and 6x legacy.
+	// costs a triple-buffered shadow ring per layer size (same VRAM as one
+	// extra swap set). array-layer (single-pass instanced) apps still copy
+	// into scratch first (the shader samples Texture2D, not an array), so
+	// they run at ~4x into the shadow. experimental: vrlink accepting
+	// handles outside its own swap sets is the one assumption we cannot
+	// verify from this side, hence default OFF until field-confirmed; if a
+	// session shows black/frozen frames, turn this off.
+	bool zeroCopy = false;
 	// experimental throw/velocity fix mode: 0 = off, 1 = classic (the v3
 	// estimator: position-derived linear velocity substituted via a smooth
 	// speed-ramped blend, nothing else), 2 = full (adds angular velocity
@@ -270,7 +339,24 @@ struct StreamFrameConfig{
 	// release-gesture anchor). classic preserved because field testing
 	// rated it the best-feeling iteration; full is the later heuristic
 	// stack. json values: "off" / "classic" / "full".
+	// 3 = derive: DISCARD the runtime's velocity entirely for streamed
+	// (vrlink) controllers and always report the pose-derived estimate —
+	// no engage gate, no blend, no peak hold: one consistent self
+	// coherent signal, the same method SteamVR itself would use on the
+	// poses. all modes apply ONLY to streamed controllers (serials
+	// VRLINK*/SamsungVST*); lighthouse devices (LHR-*) have native
+	// velocity and are never touched.
 	int velocityFixMode = 0;
+	// derive-mode speed-adaptive smoothing: the estimator is a low lag
+	// endpoint derivative, so its noise shows fully in derive mode (the
+	// old modes' 1 m/s engage gate was hiding it). the filter time
+	// constant slides from tauSlow (held still: kill trembling, latency
+	// invisible) to tauFast (throw speeds: near raw so peak and phase
+	// survive) as effective speed (|v| + 0.15|w|) crosses speedLow..High.
+	double deriveSmoothTauSlowMs = 90.0;
+	double deriveSmoothTauFastMs = 6.0;
+	double deriveSmoothSpeedLow = 0.25;
+	double deriveSmoothSpeedHigh = 1.6;
 	// experimental throw/velocity fix. vrlink's reported controller velocity
 	// is heavily smoothed (field data: peaks read ~50-65% of position-derived
 	// velocity during throws, ratio varies with motion phase = filter lag,
@@ -301,6 +387,17 @@ struct ControllerAlignerConfig{
 };
 
 struct ControllersConfig{
+	// mixed-space velocity frame fix for playspace-override setups (e.g.
+	// lighthouse controllers aligned into the vrlink space): the openvr
+	// header leaves DriverPose_t::vecVelocity's frame unspecified while
+	// positions are driver-space + WorldFromDriver. with a large alignment
+	// yaw the two conventions diverge and thrown objects fly at the right
+	// speed in the WRONG direction. 0 = off, 1 = "world" (rotate reported
+	// velocity by qWorldFromDriverRotation), 2 = "driver" (inverse).
+	// applied only to devices whose WorldFromDriver rotation deviates from
+	// identity by more than ~2 degrees, so vanilla devices are untouched.
+	// the field test decides which mode matches vrserver's real convention.
+	int spaceVelocityFixMode = 0;
 	double rotationOffsetDeg[3] = {0, 0, 0};
 	double positionOffsetCm[3] = {0, 0, 0};
 	ControllerAlignerConfig aligner = {};

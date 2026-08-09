@@ -71,6 +71,8 @@ export type StreamFrameDistortionTuneConfig = {
   stepSize: number;
   ringOpacity: number;
   forceGrid: boolean;
+  segments: number;
+  segmentLayout: number[];
 };
 export type StreamFrameCenterTuneConfig = {
   enable: boolean;
@@ -84,12 +86,16 @@ export type StreamFrameDistortionConfig = {
   perAxis: boolean;
   curves: { [key: string]: StreamFrameCurveData };
   annulus: StreamFrameAnnulusConfig;
+  segments: number;
   tune: StreamFrameDistortionTuneConfig;
   centerTune: StreamFrameCenterTuneConfig;
 };
 export type StreamFrameCASConfig = {
   enable: boolean;
   strength: number;
+  perEye: boolean;
+  strengthLeft: number;
+  strengthRight: number;
 };
 export type StreamFrameDimmingConfig = {
   enable: boolean;
@@ -116,9 +122,11 @@ export type StreamFrameConfig = {
   centerOffsetXLeft: number;
   centerOffsetXRight: number;
   centerOffsetY: number;
+  alignment: { leftH: number, leftV: number, rightH: number, rightV: number };
   skipColorWhileDashboardOpen: boolean;
   processAtSubmitLayer: boolean;
   syncTimeoutMs: number;
+  directRender: boolean;
   velocityFix: boolean;
   velocityFixMode: string;
   eyeGaze: { debugRing: boolean, tanHalfFovX: number, tanHalfFovY: number, predictionMs: number, debugGrid: boolean, gridMode: string, gridAngularDeg: number, calibDot: boolean, swimProbe: boolean, overlayWarped: boolean, probeCapture: boolean, gridWorldLocked: boolean };

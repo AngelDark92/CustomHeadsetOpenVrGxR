@@ -141,6 +141,16 @@
 @if(settings.cas.enable){
 <div class="field">
     <div class="title">
+        <span>Per Eye Strength</span>
+        <app-field-tip info="Sharpen each eye independently. Useful when one eye sits slightly off its lens axis (facial asymmetry) and only that eye needs extra sharpening to mask the mild off-axis blur; the other eye is spared the over-sharpening." />
+    </div>
+    <div class="control">
+        <mat-slide-toggle [(ngModel)]="settings.cas.perEye" (ngModelChange)="save()"></mat-slide-toggle>
+    </div>
+</div>
+@if(!settings.cas.perEye){
+<div class="field">
+    <div class="title">
         <span>CAS Strength</span>
         <app-field-tip info="Strength of the sharpening from 0 to 1." />
     </div>
@@ -151,6 +161,33 @@
         </mat-slider>
     </div>
 </div>
+}
+@if(settings.cas.perEye){
+<div class="field">
+    <div class="title">
+        <span>Strength Left</span>
+        <app-field-tip info="Sharpening strength for the left eye only, 0 to 1." />
+    </div>
+    <div class="control">
+        <input matInput [(ngModel)]="settings.cas.strengthLeft" step="0.05" (ngModelChange)="save()" type="number">
+        <mat-slider max="1" min="0" step="0.05">
+            <input matSliderThumb [(ngModel)]="settings.cas.strengthLeft" (ngModelChange)="save()">
+        </mat-slider>
+    </div>
+</div>
+<div class="field">
+    <div class="title">
+        <span>Strength Right</span>
+        <app-field-tip info="Sharpening strength for the right eye only, 0 to 1." />
+    </div>
+    <div class="control">
+        <input matInput [(ngModel)]="settings.cas.strengthRight" step="0.05" (ngModelChange)="save()" type="number">
+        <mat-slider max="1" min="0" step="0.05">
+            <input matSliderThumb [(ngModel)]="settings.cas.strengthRight" (ngModelChange)="save()">
+        </mat-slider>
+    </div>
+</div>
+}
 }
 
 <div class="field">
@@ -252,6 +289,28 @@
     </div>
     <div class="control">
         <input matInput [(ngModel)]="settings.distortion.tune.stepSize" step="0.001" min="0" max="0.05" (ngModelChange)="save()" type="number">
+    </div>
+</div>
+<div class="field">
+    <div class="title">
+        <span>Band Segments</span>
+        <app-field-tip info="1 = classic radial tuning. 4 or 8 splits every band into angular segments with their own adjustment: in the headset, the X button walks ALL -> segment 0..N-1 -> ALL, and a joystick CLICK cycles the eye (linked/L/R) instead of X. ALL edits the whole band as before; a segment nudges only that sector (the band ring dims outside it). Positional correction for top/bottom or nasal/temporal asymmetry that radial bands cannot express. Tune segments LAST: center first, radial bands second - a wrong center masquerades as exactly the asymmetry segments would absorb. Applies when the tuner is next toggled on." />
+    </div>
+    <div class="control">
+        <mat-select [(ngModel)]="settings.distortion.tune.segments" (ngModelChange)="save()">
+            <mat-option [value]="1">Off (radial only)</mat-option>
+            <mat-option [value]="4">4 (quadrants)</mat-option>
+            <mat-option [value]="8">8 (octants)</mat-option>
+        </mat-select>
+    </div>
+</div>
+<div class="field">
+    <div class="title">
+        <span>Segment Layout (per band)</span>
+        <app-field-tip info="Optional: a comma list of segment counts, one per band from INNER to OUTER (e.g. 4, 4, 8, 8, 12, 16, 16). Outer bands cover far more circumference, so they usually deserve more segments than inner ones. Empty = the uniform Band Segments value everywhere. Shorter than the band list = the last entry repeats. Counts 1-32. The X walk covers the current band's own segments; switching bands restarts at ALL. Applies when the tuner is next toggled on." />
+    </div>
+    <div class="control">
+        <input matInput [(ngModel)]="segLayoutText" (ngModelChange)="updateSegLayout()" placeholder="e.g. 4, 4, 8, 8, 12, 16, 16" type="text">
     </div>
 </div>
 <div class="field">
@@ -453,6 +512,59 @@
 
 <div class="field">
     <div class="title">
+        <span>Eye Alignment Left H</span>
+        <app-field-tip info="Prism correction: shifts the LEFT eye's whole image horizontally, in fractions of the image (positive = right). Corrects binocular misalignment when an eye sits off its lens axis. Use sparingly: horizontal shift also changes apparent depth. Typical useful values are within a few thousandths." />
+        <app-reset-button [canReset]="alignmentDirty()" (resetClick)="reset('alignment')"></app-reset-button>
+    </div>
+    <div class="control">
+        <input matInput [(ngModel)]="settings.alignment.leftH" step="0.0005" min="-0.01" max="0.01" (ngModelChange)="save()" type="number">
+        <mat-slider max="0.01" min="-0.01" step="0.0005">
+            <input matSliderThumb [(ngModel)]="settings.alignment.leftH" (ngModelChange)="save()">
+        </mat-slider>
+    </div>
+</div>
+
+<div class="field">
+    <div class="title">
+        <span>Eye Alignment Left V</span>
+        <app-field-tip info="Prism correction: shifts the LEFT eye's whole image vertically, in fractions of the image (positive = up). Vertical misalignment between the eyes is the main cause of one-eye 'something is off' strain: fusional range is tiny vertically. Tune while alternately closing each eye against a horizontal line until the line does not jump." />
+    </div>
+    <div class="control">
+        <input matInput [(ngModel)]="settings.alignment.leftV" step="0.0005" min="-0.01" max="0.01" (ngModelChange)="save()" type="number">
+        <mat-slider max="0.01" min="-0.01" step="0.0005">
+            <input matSliderThumb [(ngModel)]="settings.alignment.leftV" (ngModelChange)="save()">
+        </mat-slider>
+    </div>
+</div>
+
+<div class="field">
+    <div class="title">
+        <span>Eye Alignment Right H</span>
+        <app-field-tip info="Prism correction: shifts the RIGHT eye's whole image horizontally, in fractions of the image (positive = right)." />
+    </div>
+    <div class="control">
+        <input matInput [(ngModel)]="settings.alignment.rightH" step="0.0005" min="-0.01" max="0.01" (ngModelChange)="save()" type="number">
+        <mat-slider max="0.01" min="-0.01" step="0.0005">
+            <input matSliderThumb [(ngModel)]="settings.alignment.rightH" (ngModelChange)="save()">
+        </mat-slider>
+    </div>
+</div>
+
+<div class="field">
+    <div class="title">
+        <span>Eye Alignment Right V</span>
+        <app-field-tip info="Prism correction: shifts the RIGHT eye's whole image vertically, in fractions of the image (positive = up). Usually only ONE eye needs a vertical correction; pick the eye that feels off." />
+    </div>
+    <div class="control">
+        <input matInput [(ngModel)]="settings.alignment.rightV" step="0.0005" min="-0.01" max="0.01" (ngModelChange)="save()" type="number">
+        <mat-slider max="0.01" min="-0.01" step="0.0005">
+            <input matSliderThumb [(ngModel)]="settings.alignment.rightV" (ngModelChange)="save()">
+        </mat-slider>
+    </div>
+</div>
+
+<div class="field">
+    <div class="title">
         <span>Sync Timeout (ms)</span>
         <app-field-tip info="How long to wait for the frame sync before letting a frame through unprocessed (a brief 'flash' of ungraded color). Higher values trade flashes under heavy load for slightly later frames. After a skipped frame the wait automatically escalates to break flash streaks. Default 5, sensible range 3-15." />
         <app-reset-button [canReset]="settings.syncTimeoutMs != defaults.syncTimeoutMs" (resetClick)="reset('syncTimeoutMs')"></app-reset-button>
@@ -465,7 +577,7 @@
 <div class="field">
     <div class="title">
         <span>Throw Velocity Fix (experimental)</span>
-        <app-field-tip info="The driver's reported controller velocity is heavily smoothed, which makes thrown objects land short and mistimed. Classic recomputes linear velocity from recent positions and substitutes it during fast motion. Full additionally corrects angular velocity and adds release-timing protection." />
+        <app-field-tip info="The driver's reported controller velocity is heavily smoothed, which makes thrown objects land short and mistimed. Classic recomputes linear velocity from recent positions and substitutes it during fast motion. Full additionally corrects angular velocity and adds release-timing protection. Derive discards the reported velocity entirely and always reports the pose-derived estimate - one consistent signal with no engage threshold (the previous modes blended the two sources, which can misbehave exactly at release). All modes apply only to the streamed (Galaxy XR) controllers; lighthouse devices like Knuckles keep their native velocity untouched. Derive smoothing is speed-adaptive (strong when held still, near-raw at throw speeds); tune it live via the deriveSmooth* values in settings.json if needed." />
         <app-reset-button [canReset]="settings.velocityFixMode != defaults.velocityFixMode" (resetClick)="reset('velocityFixMode')"></app-reset-button>
     </div>
     <div class="control">
@@ -473,6 +585,7 @@
             <mat-option value="off">Off</mat-option>
             <mat-option value="classic">Classic (linear velocity only)</mat-option>
             <mat-option value="full">Full (angular + release timing)</mat-option>
+            <mat-option value="derive">Derive (always use pose-derived)</mat-option>
         </mat-select>
     </div>
 </div>
@@ -538,6 +651,17 @@
     <div class="section-title collapsible" (click)="sections.debug = !sections.debug"><span>Debug</span><span class="chevron" [class.closed]="!sections.debug">▾</span></div>
 </div>
 @if(sections.debug){
+<div class="field">
+    <div class="title">
+        <span>Direct Render Path</span>
+        <app-field-tip info="Performance: draws the processed frame directly into the layer texture instead of a scratch target plus copy-back (about a third less GPU memory traffic). Falls back automatically per texture if a layer refuses a render target view. Only turn off to A/B against the old path; the log line 'direct render path' / 'copy-back path' shows which is active per app." />
+        <app-reset-button [canReset]="settings.directRender != defaults.directRender" (resetClick)="reset('directRender')"></app-reset-button>
+    </div>
+    <div class="control">
+        <mat-slide-toggle [(ngModel)]="settings.directRender" (ngModelChange)="save()"></mat-slide-toggle>
+    </div>
+</div>
+
 <div class="field">
     <div class="title">
         <span>Skip Color While Dashboard Open</span>

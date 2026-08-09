@@ -1,5 +1,6 @@
 #include "FrameProcessor.h"
 #include "DriverLog.h"
+#include "ReconLogger.h"
 
 // shared head-direction -> per-eye viewport uv mapping. this is the exact
 // math the gaze debug ring uses (verified against the runtime's foveation
@@ -125,6 +126,8 @@ cbuffer Params : register(b0){
 	float3 hbx; float gridWorldLock;
 	float3 hby; float padD;
 	float3 hbz; float padE;
+	float alignShiftU; float alignShiftV; float segCount; float tuneSegIdx;
+	float tuneSegCount; float padH; float padI; float padJ;
 };
 Texture2D<float4> tex : register(t0);
 Texture2D<float4> lut : register(t1);
@@ -203,6 +206,16 @@ struct FrameProcessorConstants{
 	float headXx, headXy, headXz, gridWorldLock;
 	float headYx, headYy, headYz, padD;
 	float headZx, headZy, headZz, padE;
+	// per-eye whole-image alignment shift (prism correction), applied as a
+	// constant offset on the source sample uv after the distortion warp.
+	// cpu-resolved per eye from streamFrame.alignment.
+	// band segments: segCount > 0 switches lut sampling to N angular rows
+	// per eye (periodic interpolation); tuneSegIdx >= 0 restricts the
+	// tuner ring to that segment's sector (-1 = full ring)
+	float alignShiftU, alignShiftV, segCount, tuneSegIdx;
+	// per-band layouts: the CURRENT band's segment count for the sector
+	// highlight (the sampling row count above may be larger)
+	float tuneSegCount, padH, padI, padJ;
 };
 
 // map a layer texture format to the scratch format and shader mode used to
@@ -212,25 +225,47 @@ struct FrameProcessorConstants{
 // and re-encodes explicitly (manualSrgb) and dithers at the 10 bit lsb; the
 // only difference vs the 8 bit path is that bilinear filtering happens on
 // encoded values, which is visually negligible for near identity warps.
-static bool MapLayerFormat(DXGI_FORMAT layerFormat, DXGI_FORMAT &scratchFormat, bool &manualSrgb, float &ditherLsb){
+static bool MapLayerFormat(DXGI_FORMAT layerFormat, DXGI_FORMAT &scratchFormat, DXGI_FORMAT &rtvFormat, bool &manualSrgb, float &ditherLsb){
+	// rtvFormat is the view format for rendering DIRECTLY into the layer
+	// texture. a typeless layer accepts the srgb-typed cast (hardware
+	// encode); a TYPED non-srgb layer only accepts a view of its own typed
+	// format, so those switch to the manualSrgb path on BOTH ends: the
+	// scratch input drops to the unorm type (raw bits, shader decodes) and
+	// the shader encodes before the unorm RTV write. same tradeoff already
+	// accepted for 10 bit (bilinear on encoded values, negligible for near
+	// identity warps). field-observed game formats (29, 91) keep the
+	// hardware srgb path.
 	switch(layerFormat){
 		case DXGI_FORMAT_R8G8B8A8_TYPELESS:
-		case DXGI_FORMAT_R8G8B8A8_UNORM:
 		case DXGI_FORMAT_R8G8B8A8_UNORM_SRGB:
 			scratchFormat = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
+			rtvFormat = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
 			manualSrgb = false;
 			ditherLsb = 255.0f;
 			return true;
+		case DXGI_FORMAT_R8G8B8A8_UNORM:
+			scratchFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
+			rtvFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
+			manualSrgb = true;
+			ditherLsb = 255.0f;
+			return true;
 		case DXGI_FORMAT_B8G8R8A8_TYPELESS:
-		case DXGI_FORMAT_B8G8R8A8_UNORM:
 		case DXGI_FORMAT_B8G8R8A8_UNORM_SRGB:
 			scratchFormat = DXGI_FORMAT_B8G8R8A8_UNORM_SRGB;
+			rtvFormat = DXGI_FORMAT_B8G8R8A8_UNORM_SRGB;
 			manualSrgb = false;
+			ditherLsb = 255.0f;
+			return true;
+		case DXGI_FORMAT_B8G8R8A8_UNORM:
+			scratchFormat = DXGI_FORMAT_B8G8R8A8_UNORM;
+			rtvFormat = DXGI_FORMAT_B8G8R8A8_UNORM;
+			manualSrgb = true;
 			ditherLsb = 255.0f;
 			return true;
 		case DXGI_FORMAT_R10G10B10A2_TYPELESS:
 		case DXGI_FORMAT_R10G10B10A2_UNORM:
 			scratchFormat = DXGI_FORMAT_R10G10B10A2_UNORM;
+			rtvFormat = DXGI_FORMAT_R10G10B10A2_UNORM;
 			manualSrgb = true;
 			ditherLsb = 1023.0f;
 			return true;
@@ -304,6 +339,9 @@ bool FrameProcessor::EnsureDevice(){
 		return false;
 	}
 	DriverLog("FrameProcessor: created D3D11 device");
+	ReconLogger::Get().NoteProcessingDevice(device);
+	// recon (opt-in): shared-vtable context hooks are installed lazily from
+	// ProcessEye once the flag is known; nothing here unless enabled.
 	return true;
 }
 
@@ -424,11 +462,16 @@ bool FrameProcessor::EnsureShaders(){
 		bool hasWarpedOverlay = source.find("overlayWarped > 0.5") != std::string::npos;
 		bool hasTuneRing = source.find("tuneRingMode > 0.5") != std::string::npos;
 		bool hasWorldGrid = source.find("gridWorldLock > 0.5") != std::string::npos;
+		// token is the USAGE expression: the embedded fallback declares the
+		// cbuffer fields (layout identity) without applying them
+		bool hasAlignShift = source.find("float2(alignShiftU") != std::string::npos;
+		bool hasSegments = source.find("SampleLutSegmented(") != std::string::npos;
 		bool hasAuxMarkers = source.find("dotMode > 2.5") != std::string::npos;
-		DriverLog("FrameProcessor: pixel shader ready (%s, gaze ring support: %s, calib dot support: %s, warped overlays: %s, tuner ring: %s, world grid: %s)",
+		DriverLog("FrameProcessor: pixel shader ready (%s, gaze ring support: %s, calib dot support: %s, warped overlays: %s, tuner ring: %s, world grid: %s, align shift: %s, band segments: %s)",
 			fileTime ? "from file" : "embedded", hasGazeRing ? "yes" : "NO - stale hlsl?",
 			hasCalibDot ? "yes" : "NO - stale hlsl?", hasWarpedOverlay ? "yes" : "NO - stale hlsl?",
-			hasTuneRing ? "yes" : "NO - stale hlsl?", hasWorldGrid ? "yes" : "NO - stale hlsl?");
+			hasTuneRing ? "yes" : "NO - stale hlsl?", hasWorldGrid ? "yes" : "NO - stale hlsl?",
+			hasAlignShift ? "yes" : "NO - stale hlsl?", hasSegments ? "yes" : "NO - stale hlsl?");
 		if(!hasAuxMarkers){
 			DriverLog("FrameProcessor: aux markers (center cross / tip marker): NO - stale hlsl?");
 		}
@@ -443,11 +486,35 @@ void FrameProcessor::ReleaseScratchSet(ScratchSet &set){
 	if(set.out){ set.out->Release(); set.out = nullptr; }
 }
 
-bool FrameProcessor::EnsureScratch(uint32_t width, uint32_t height, DXGI_FORMAT format){
+bool FrameProcessor::EnsureScratch(uint32_t width, uint32_t height, DXGI_FORMAT format, bool needOut){
 	uint64_t key = ((uint64_t)format << 48) | ((uint64_t)width << 24) | (uint64_t)height;
 	uint64_t now = NowMs();
 	auto found = scratchSets.find(key);
 	if(found != scratchSets.end()){
+		// the out target is lazy (only the copy-back fallback needs it):
+		// upgrade a direct-path set in place when a texture falls back
+		if(needOut && !found->second.out){
+			D3D11_TEXTURE2D_DESC outDesc = {};
+			outDesc.Width = width;
+			outDesc.Height = height;
+			outDesc.MipLevels = 1;
+			outDesc.ArraySize = 1;
+			outDesc.Format = format;
+			outDesc.SampleDesc.Count = 1;
+			outDesc.Usage = D3D11_USAGE_DEFAULT;
+			outDesc.BindFlags = D3D11_BIND_RENDER_TARGET;
+			if(FAILED(device->CreateTexture2D(&outDesc, nullptr, &found->second.out))){
+				PROCESSOR_ERROR("FrameProcessor: failed to create scratchOut %ux%u", width, height);
+				return false;
+			}
+			if(FAILED(device->CreateRenderTargetView(found->second.out, nullptr, &found->second.outRTV))){
+				found->second.out->Release();
+				found->second.out = nullptr;
+				return false;
+			}
+			DriverLog("FrameProcessor: added scratchOut %ux%u format=%u (fallback path)",
+				width, height, (unsigned)format);
+		}
 		found->second.lastUsedMs = now;
 		scratchIn = found->second.in;
 		scratchInSRV = found->second.inSRV;
@@ -475,15 +542,17 @@ bool FrameProcessor::EnsureScratch(uint32_t width, uint32_t height, DXGI_FORMAT 
 		ReleaseScratchSet(set);
 		return false;
 	}
-	desc.BindFlags = D3D11_BIND_RENDER_TARGET;
-	if(FAILED(device->CreateTexture2D(&desc, nullptr, &set.out))){
-		PROCESSOR_ERROR("FrameProcessor: failed to create scratchOut %ux%u", width, height);
-		ReleaseScratchSet(set);
-		return false;
-	}
-	if(FAILED(device->CreateRenderTargetView(set.out, nullptr, &set.outRTV))){
-		ReleaseScratchSet(set);
-		return false;
+	if(needOut){
+		desc.BindFlags = D3D11_BIND_RENDER_TARGET;
+		if(FAILED(device->CreateTexture2D(&desc, nullptr, &set.out))){
+			PROCESSOR_ERROR("FrameProcessor: failed to create scratchOut %ux%u", width, height);
+			ReleaseScratchSet(set);
+			return false;
+		}
+		if(FAILED(device->CreateRenderTargetView(set.out, nullptr, &set.outRTV))){
+			ReleaseScratchSet(set);
+			return false;
+		}
 	}
 	set.lastUsedMs = now;
 
@@ -520,11 +589,29 @@ struct EffectiveCurve{
 	double k2 = 0;
 	const std::vector<StreamFrameDistortionPoint>* points = nullptr;
 };
-static EffectiveCurve ResolveCurve(const StreamFrameConfig &config, int eye, int axis){
+static EffectiveCurve ResolveCurve(const StreamFrameConfig &config, int eye, int axis, int seg = -1){
 	EffectiveCurve result;
 	result.k1 = config.k1;
 	result.k2 = config.k2;
 	result.points = &config.distortion.points;
+	auto tryKey = [&](const std::string &tryName){
+		auto found = config.distortion.curves.find(tryName);
+		if(found != config.distortion.curves.end()){
+			result.k1 = found->second.k1;
+			result.k2 = found->second.k2;
+			result.points = &found->second.points;
+			return true;
+		}
+		return false;
+	};
+	// segment curves ("left#0"..) fall back to the plain per-eye curve,
+	// which falls back to the base — a missing segment shows the radial
+	// curve there instead of identity
+	if(seg >= 0 && eye >= 0){
+		if(tryKey(std::string(eye == 0 ? "left" : "right") + "#" + std::to_string(seg))){
+			return result;
+		}
+	}
 	std::string key = "";
 	if(eye >= 0 && axis >= 0){
 		key = std::string(eye == 0 ? "left" : "right") + (axis == 0 ? "Horizontal" : "Vertical");
@@ -534,14 +621,19 @@ static EffectiveCurve ResolveCurve(const StreamFrameConfig &config, int eye, int
 		key = axis == 0 ? "horizontal" : "vertical";
 	}
 	if(!key.empty()){
-		auto found = config.distortion.curves.find(key);
-		if(found != config.distortion.curves.end()){
-			result.k1 = found->second.k1;
-			result.k2 = found->second.k2;
-			result.points = &found->second.points;
-		}
+		tryKey(key);
 	}
 	return result;
+}
+
+// clamp the configured segment count: any 2..32 row count is valid (per
+// band layouts flatten into arbitrary max counts); outside that = radial
+static int EffectiveSegments(const StreamFrameConfig &config){
+	int segs = config.distortion.segments;
+	if(segs < 2 || segs > 32){
+		return 1;
+	}
+	return segs;
 }
 
 // serialize everything the lut depends on, for change detection
@@ -560,11 +652,22 @@ static std::string BuildLutKey(const StreamFrameConfig &config){
 			key += buffer;
 		}
 	};
+	int segs = EffectiveSegments(config);
+	snprintf(buffer, sizeof(buffer), "|S%d", segs);
+	key += buffer;
 	int eyeCount = config.distortion.perEye ? 2 : 1;
-	int axisCount = config.distortion.perAxis ? 2 : 1;
-	for(int eye = 0; eye < eyeCount; eye++){
-		for(int axis = 0; axis < axisCount; axis++){
-			appendCurve(ResolveCurve(config, config.distortion.perEye ? eye : -1, config.distortion.perAxis ? axis : -1));
+	int axisCount = (config.distortion.perAxis && segs == 1) ? 2 : 1;
+	if(segs > 1){
+		for(int eye = 0; eye < eyeCount; eye++){
+			for(int seg = 0; seg < segs; seg++){
+				appendCurve(ResolveCurve(config, config.distortion.perEye ? eye : 0, -1, seg));
+			}
+		}
+	}else{
+		for(int eye = 0; eye < eyeCount; eye++){
+			for(int axis = 0; axis < axisCount; axis++){
+				appendCurve(ResolveCurve(config, config.distortion.perEye ? eye : -1, config.distortion.perAxis ? axis : -1));
+			}
 		}
 	}
 	return key;
@@ -576,9 +679,12 @@ bool FrameProcessor::BakeLutIfNeeded(const StreamFrameConfig &config){
 		return true;
 	}
 
+	// band segments replace the perAxis pair with N angular rows per eye;
+	// rows: eye major, segment (or axis) minor
+	int segs = EffectiveSegments(config);
 	int eyeCount = config.distortion.perEye ? 2 : 1;
-	int axisCount = config.distortion.perAxis ? 2 : 1;
-	int rowCount = eyeCount * axisCount;
+	int axisCount = (config.distortion.perAxis && segs == 1) ? 2 : 1;
+	int rowCount = eyeCount * (segs > 1 ? segs : axisCount);
 	// recreate the texture when the row count changes
 	if(lutTexture && rowCount != lutRowCount){
 		if(lutSRV){ lutSRV->Release(); lutSRV = nullptr; }
@@ -607,11 +713,14 @@ bool FrameProcessor::BakeLutIfNeeded(const StreamFrameConfig &config){
 
 	std::vector<float> data(lutSize * rowCount);
 	bool spline = config.distortion.mode == "spline";
-	// row order: eye major, axis minor: [L], [L,R], [H,V] or [LH,LV,RH,RV]
+	// row order: eye major, segment/axis minor
+	int minorCount = segs > 1 ? segs : axisCount;
 	for(int eye = 0; eye < eyeCount; eye++){
-		for(int axis = 0; axis < axisCount; axis++){
-			int row = eye * axisCount + axis;
-			EffectiveCurve curve = ResolveCurve(config, config.distortion.perEye ? eye : -1, config.distortion.perAxis ? axis : -1);
+		for(int minor = 0; minor < minorCount; minor++){
+			int axis = segs > 1 ? -1 : (config.distortion.perAxis ? minor : -1);
+			int seg = segs > 1 ? minor : -1;
+			int row = eye * minorCount + minor;
+			EffectiveCurve curve = ResolveCurve(config, config.distortion.perEye ? eye : (segs > 1 ? 0 : -1), axis, seg);
 			std::vector<StreamFrameDistortionPoint> sortedPoints = *curve.points;
 			std::sort(sortedPoints.begin(), sortedPoints.end(), [](const StreamFrameDistortionPoint &a, const StreamFrameDistortionPoint &b){
 				return a.r < b.r;
@@ -654,10 +763,44 @@ ID3D11Texture2D* FrameProcessor::OpenShared(vr::SharedTextureHandle_t handle){
 	return texture;
 }
 
+ID3D11RenderTargetView* FrameProcessor::GetLayerRTV(ID3D11Texture2D* texture, int slice, DXGI_FORMAT rtvFormat){
+	if(slice < 0 || slice > 1){
+		return nullptr;
+	}
+	auto found = layerRTVs.find(texture);
+	if(found != layerRTVs.end() && found->second[slice]){
+		return found->second[slice];
+	}
+	// the array dimension is legal for any Texture2D (a plain texture is an
+	// array of 1), so one view description covers both plain and
+	// single-pass-instanced layers
+	D3D11_RENDER_TARGET_VIEW_DESC desc = {};
+	desc.Format = rtvFormat;
+	desc.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2DARRAY;
+	desc.Texture2DArray.MipSlice = 0;
+	desc.Texture2DArray.FirstArraySlice = (UINT)slice;
+	desc.Texture2DArray.ArraySize = 1;
+	ID3D11RenderTargetView* rtv = nullptr;
+	if(FAILED(device->CreateRenderTargetView(texture, &desc, &rtv)) || !rtv){
+		return nullptr;
+	}
+	layerRTVs[texture][slice] = rtv;
+	return rtv;
+}
+
 void FrameProcessor::EvictTexture(vr::SharedTextureHandle_t handle){
 	std::lock_guard<std::mutex> guard(lock);
 	auto it = openedTextures.find((uint64_t)handle);
 	if(it != openedTextures.end()){
+		auto rtvIt = layerRTVs.find(it->second);
+		if(rtvIt != layerRTVs.end()){
+			for(auto *rtv : rtvIt->second){
+				if(rtv){ rtv->Release(); }
+			}
+			layerRTVs.erase(rtvIt);
+		}
+		layerRtvFailed.erase(it->second);
+		layerPathLogged.erase(it->second);
 		it->second->Release();
 		openedTextures.erase(it);
 	}
@@ -665,16 +808,24 @@ void FrameProcessor::EvictTexture(vr::SharedTextureHandle_t handle){
 
 void FrameProcessor::EvictAll(){
 	std::lock_guard<std::mutex> guard(lock);
+	for(auto &pair : layerRTVs){
+		for(auto *rtv : pair.second){
+			if(rtv){ rtv->Release(); }
+		}
+	}
+	layerRTVs.clear();
+	layerRtvFailed.clear();
+	layerPathLogged.clear();
 	for(auto &pair : openedTextures){
 		pair.second->Release();
 	}
 	openedTextures.clear();
-	// scratch sets are cheap to repopulate and app teardown is the natural
-	// moment to return the memory (sets are hundreds of MB at high supersample)
-	for(auto &pair : scratchSets){
-		ReleaseScratchSet(pair.second);
-	}
-	scratchSets.clear();
+	// scratch sets deliberately SURVIVE app teardown: this is called on
+	// DestroyAllSwapTextureSets (app switches, dashboard flips), and
+	// re-creating multi hundred MB sets seconds later was a visible load
+	// hitch (field log: 25 re-creations in a 21 minute session). the LRU
+	// cap still bounds the cache; the D3D device outlives app teardown so
+	// the sets stay valid.
 	scratchIn = nullptr;
 	scratchInSRV = nullptr;
 	scratchOut = nullptr;
@@ -684,10 +835,16 @@ void FrameProcessor::EvictAll(){
 bool FrameProcessor::ProcessEye(ID3D11Texture2D* texture, const vr::VRTextureBounds_t &bounds, int eye, int slice, const FrameProcessSettings &settings){
 	D3D11_TEXTURE2D_DESC desc = {};
 	texture->GetDesc(&desc);
+	if(settings.config.reconLogger){
+		ReconLogger::Get().SetEnabled(true);
+		ReconLogger::Get().NoteLayerDimensions(desc.Width, desc.Height);
+		ReconLogger::Get().InstallOnce(context);
+	}
 	DXGI_FORMAT mappedScratchFormat = DXGI_FORMAT_UNKNOWN;
+	DXGI_FORMAT layerRtvFormat = DXGI_FORMAT_UNKNOWN;
 	bool manualSrgb = false;
 	float ditherLsb = 255.0f;
-	if(!MapLayerFormat(desc.Format, mappedScratchFormat, manualSrgb, ditherLsb)){
+	if(!MapLayerFormat(desc.Format, mappedScratchFormat, layerRtvFormat, manualSrgb, ditherLsb)){
 		// log each unsupported format once per session, outside the error
 		// budget, so a game launched late still reports why it is untouched
 		if(skippedFormats.insert((unsigned)desc.Format).second){
@@ -695,7 +852,20 @@ bool FrameProcessor::ProcessEye(ID3D11Texture2D* texture, const vr::VRTextureBou
 		}
 		return false;
 	}
-	if(!EnsureScratch(desc.Width, desc.Height, mappedScratchFormat)){
+	// in-place tiers: direct render into the layer, else copy-back
+	ID3D11RenderTargetView* directRTV = nullptr;
+	if(settings.config.directRender && layerRtvFailed.find(texture) == layerRtvFailed.end()){
+		directRTV = GetLayerRTV(texture, slice, layerRtvFormat);
+		if(!directRTV){
+			layerRtvFailed.insert(texture);
+			DriverLog("FrameProcessor: layer texture refused an RTV (format=%u), falling back to copy-back path for this texture", (unsigned)desc.Format);
+		}
+	}
+	if(layerPathLogged.insert(texture).second){
+		DriverLog("FrameProcessor: %s path for %ux%u format=%u layer",
+			directRTV ? "direct render" : "copy-back", desc.Width, desc.Height, (unsigned)desc.Format);
+	}
+	if(!EnsureScratch(desc.Width, desc.Height, mappedScratchFormat, directRTV == nullptr)){
 		return false;
 	}
 
@@ -725,7 +895,11 @@ bool FrameProcessor::ProcessEye(ID3D11Texture2D* texture, const vr::VRTextureBou
 	constants.contrastOffset = (float)(-contrastMid * contrastMult + contrastMid);
 	constants.contrastLinear = config.contrastLinear ? 1.0f : 0.0f;
 	constants.outGamma = (float)config.gamma;
-	constants.casStrength = (float)config.cas.strength;
+	// per-eye override resolved here, so the shader always sees one value
+	double casStrengthEye = config.cas.perEye
+		? (eye == 0 ? config.cas.strengthLeft : config.cas.strengthRight)
+		: config.cas.strength;
+	constants.casStrength = (float)casStrengthEye;
 	constants.casEnable = config.cas.enable ? 1.0f : 0.0f;
 	constants.annulusEnable = config.distortion.annulus.enable ? 1.0f : 0.0f;
 	constants.annulusMin = (float)config.distortion.annulus.rMin;
@@ -735,9 +909,12 @@ bool FrameProcessor::ProcessEye(ID3D11Texture2D* texture, const vr::VRTextureBou
 	constants.lutMaxR = lutMaxRadius;
 	// row order is eye major, axis minor
 	int axisCount = config.distortion.perAxis ? 2 : 1;
-	constants.lutRowBase = config.distortion.perEye ? (float)(eye * axisCount) : 0.0f;
+	int activeSegs = EffectiveSegments(config);
+	int rowMinor = activeSegs > 1 ? activeSegs : axisCount;
+	constants.lutRowBase = config.distortion.perEye ? (float)(eye * rowMinor) : 0.0f;
 	constants.lutRowCountF = (float)lutRowCount;
-	constants.perAxisEnable = config.distortion.perAxis ? 1.0f : 0.0f;
+	constants.perAxisEnable = (config.distortion.perAxis && activeSegs == 1) ? 1.0f : 0.0f;
+	constants.segCount = activeSegs > 1 ? (float)activeSegs : 0.0f;
 	constants.dimAmount = (float)settings.dimAmount;
 	constants.manualSrgb = manualSrgb ? 1.0f : 0.0f;
 	constants.ditherLsb = ditherLsb;
@@ -809,6 +986,8 @@ bool FrameProcessor::ProcessEye(ID3D11Texture2D* texture, const vr::VRTextureBou
 		|| (settings.tuneEyeMode == 1 && eye == 0)
 		|| (settings.tuneEyeMode == 2 && eye == 1));
 	constants.tuneRingMode = ringThisEye ? 1.0f : 0.0f;
+	constants.tuneSegIdx = (float)settings.tuneSegIndex;
+	constants.tuneSegCount = (float)settings.tuneSegCount;
 	double ringOpacity = settings.config.distortion.tune.ringOpacity;
 	if(ringOpacity < 0.0){ ringOpacity = 0.0; }
 	if(ringOpacity > 1.0){ ringOpacity = 1.0; }
@@ -867,6 +1046,17 @@ bool FrameProcessor::ProcessEye(ID3D11Texture2D* texture, const vr::VRTextureBou
 	}
 	constants.center[0] = (float)centerU;
 	constants.center[1] = (float)centerV;
+	// alignment shift: config h is "image moves right", v is "image moves
+	// up". sampling offset is the negation of the image motion (content
+	// appears moved by minus the sampling displacement; v axis is down).
+	{
+		double alignH = eye == 0 ? config.alignment.leftH : config.alignment.rightH;
+		double alignV = eye == 0 ? config.alignment.leftV : config.alignment.rightV;
+		if(alignH > 0.05){ alignH = 0.05; } if(alignH < -0.05){ alignH = -0.05; }
+		if(alignV > 0.05){ alignV = 0.05; } if(alignV < -0.05){ alignV = -0.05; }
+		constants.alignShiftU = (float)(-alignH);
+		constants.alignShiftV = (float)(alignV);
+	}
 	float uMin = (float)bounds.uMin, vMin = (float)bounds.vMin;
 	float uSize = (float)(bounds.uMax - bounds.uMin), vSize = (float)(bounds.vMax - bounds.vMin);
 	if(uSize == 0){ uSize = 1; }
@@ -916,18 +1106,21 @@ bool FrameProcessor::ProcessEye(ID3D11Texture2D* texture, const vr::VRTextureBou
 	context->PSSetSamplers(0, 1, &sampler);
 	context->PSSetConstantBuffers(0, 1, &constantBuffer);
 	context->RSSetViewports(1, &viewport);
-	context->OMSetRenderTargets(1, &scratchOutRTV, nullptr);
+	ID3D11RenderTargetView* target = directRTV ? directRTV : scratchOutRTV;
+	context->OMSetRenderTargets(1, &target, nullptr);
 	context->Draw(3, 0);
 	context->ClearState();
 
-	// copy only the bounds region back into the layer texture
-	D3D11_BOX box = {};
-	box.left = (UINT)(uMin * desc.Width);
-	box.top = (UINT)(vMin * desc.Height);
-	box.right = (UINT)((uMin + uSize) * desc.Width);
-	box.bottom = (UINT)((vMin + vSize) * desc.Height);
-	box.back = 1;
-	context->CopySubresourceRegion(texture, layerSub, box.left, box.top, 0, scratchOut, 0, &box);
+	if(!directRTV){
+		// fallback path: copy only the bounds region back into the layer
+		D3D11_BOX box = {};
+		box.left = (UINT)(uMin * desc.Width);
+		box.top = (UINT)(vMin * desc.Height);
+		box.right = (UINT)((uMin + uSize) * desc.Width);
+		box.bottom = (UINT)((vMin + vSize) * desc.Height);
+		box.back = 1;
+		context->CopySubresourceRegion(texture, layerSub, box.left, box.top, 0, scratchOut, 0, &box);
+	}
 	return true;
 }
 

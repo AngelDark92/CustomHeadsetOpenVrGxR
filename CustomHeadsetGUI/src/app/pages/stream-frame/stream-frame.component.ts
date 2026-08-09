@@ -24,7 +24,7 @@ function defaultStreamFrame(): StreamFrameConfig {
     gamma: 2.2,
     colorMultiplier: { r: 1, g: 1, b: 1 },
     srgbMatrix: [],
-    cas: { enable: false, strength: 0.5 },
+    cas: { enable: false, strength: 0.5, perEye: false, strengthLeft: 0.5, strengthRight: 0.5 },
     dither: false,
     stationaryDimming: { enable: false, movementThreshold: 0.4, movementTime: 15, dimSeconds: 10, brightenSeconds: 1 },
     k1: 0,
@@ -35,16 +35,19 @@ function defaultStreamFrame(): StreamFrameConfig {
       perEye: false,
       perAxis: false,
       curves: {},
+      segments: 1,
       annulus: { enable: false, rMin: 0, rMax: 0.75, feather: 0.05 },
-      tune: { enable: false, rate: 0.08, bands: [0.15, 0.22, 0.3, 0.38, 0.46, 0.55, 0.65], stepSize: 0, ringOpacity: 0.55, forceGrid: true },
+      tune: { enable: false, rate: 0.08, bands: [0.15, 0.22, 0.3, 0.38, 0.46, 0.55, 0.65], stepSize: 0, ringOpacity: 0.55, forceGrid: true, segments: 1, segmentLayout: [] },
       centerTune: { enable: false, breatheAmp: 0.05 }
     },
     centerOffsetXLeft: 0,
     centerOffsetXRight: 0,
     centerOffsetY: 0,
+    alignment: { leftH: 0, leftV: 0, rightH: 0, rightV: 0 },
     skipColorWhileDashboardOpen: false,
     processAtSubmitLayer: false,
     syncTimeoutMs: 5,
+    directRender: true,
     velocityFix: false,
     velocityFixMode: 'off',
     eyeGaze: { debugRing: false, tanHalfFovX: 1.19, tanHalfFovY: 1.19, predictionMs: 30, debugGrid: false, gridMode: 'uv', gridAngularDeg: 2.5, calibDot: false, swimProbe: false, overlayWarped: false, probeCapture: false, gridWorldLocked: false },
@@ -107,6 +110,7 @@ export class StreamFrameComponent {
   // friendly band layout inputs; the driver consumes the raw bands array,
   // these three regenerate it evenly spaced on change
   tuneBandCount = 7;
+  segLayoutText = '';
   tuneBandFirst = 0.15;
   tuneBandLast = 0.65;
   matrixText = signal('');
@@ -127,6 +131,8 @@ export class StreamFrameComponent {
           this.tuneBandFirst = bands[0];
           this.tuneBandLast = bands[bands.length - 1];
         }
+        const segLayout = this.settings?.distortion?.tune?.segmentLayout;
+        this.segLayoutText = Array.isArray(segLayout) ? segLayout.join(', ') : '';
       }
       const infoDefaults = (this.dis.values()?.defaultSettings as any)?.streamFrame;
       this.defaults = fillDefaults(infoDefaults ? JSON.parse(JSON.stringify(infoDefaults)) : undefined, defaultStreamFrame());
@@ -153,6 +159,20 @@ export class StreamFrameComponent {
   }
 
   // regenerate the tuner band array evenly spaced from the three layout inputs
+  updateSegLayout() {
+    if (!this.settings) return;
+    const parts = this.segLayoutText.split(/[\s,;]+/).filter(x => x.length > 0);
+    const layout: number[] = [];
+    for (const part of parts) {
+      let v = Math.round(Number(part));
+      if (!(v >= 1)) v = 1;
+      if (v > 32) v = 32;
+      layout.push(v);
+    }
+    this.settings.distortion.tune.segmentLayout = layout;
+    this.save();
+  }
+
   updateBands() {
     if (!this.settings) return;
     let count = Math.round(this.tuneBandCount);
@@ -179,6 +199,12 @@ export class StreamFrameComponent {
       this.dss.save(this.rootSetting);
     }
     this.revision.update(x => x + 1);
+  }
+
+  alignmentDirty(): boolean {
+    if (!this.settings) return false;
+    const a = this.settings.alignment, d = this.defaults.alignment;
+    return a.leftH != d.leftH || a.leftV != d.leftV || a.rightH != d.rightH || a.rightV != d.rightV;
   }
 
   reset(key: keyof StreamFrameConfig) {
@@ -320,6 +346,12 @@ export class StreamFrameComponent {
     s.distortion.mode = d.mode === 'spline' ? 'spline' : 'k1k2';
     s.distortion.perEye = !!d.perEye;
     s.distortion.perAxis = !!d.perAxis;
+    s.distortion.segments = (Number.isInteger(d.segments) && d.segments >= 2 && d.segments <= 32) ? d.segments : 1;
+    if (Array.isArray(parsed.tuneSegmentLayout)) {
+      s.distortion.tune.segmentLayout = parsed.tuneSegmentLayout
+        .map((v: any) => Math.round(Number(v)))
+        .filter((v: number) => v >= 1 && v <= 32);
+    }
     const parsePoints = (arr: any) => Array.isArray(arr)
       ? arr.filter((p: any) => Number.isFinite(p?.r) && Number.isFinite(p?.scale)).map((p: any) => ({ r: p.r, scale: p.scale }))
       : [];

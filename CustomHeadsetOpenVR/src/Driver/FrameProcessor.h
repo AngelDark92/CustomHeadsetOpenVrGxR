@@ -2,6 +2,7 @@
 #include "openvr_driver.h"
 #include "../Config/Config.h"
 #include <cstdint>
+#include <array>
 
 // Phase 2: GPU processing of direct mode layer textures before the headset
 // driver (vrlink) consumes them.
@@ -64,6 +65,13 @@ struct FrameProcessSettings{
 	bool tuneActive = false;
 	double tuneRingR = 0;
 	int tuneEyeMode = 0;
+	// active band segment for the sector highlight: -1 = ALL (full ring),
+	// 0..N-1 dims the ring outside that angular sector. count comes from
+	// config.distortion.segments.
+	int tuneSegIndex = -1;
+	// the CURRENT band's segment count (sector span for the highlight);
+	// may differ from the row count when a per-band layout is active
+	int tuneSegCount = 0;
 	// head orientation basis (columns = head x/y/z axes in world) from the
 	// frame's submitted render pose, for the world-locked calibration grid
 	bool headBasisValid = false;
@@ -119,7 +127,7 @@ public:
 private:
 	bool EnsureDevice();
 	bool EnsureShaders();
-	bool EnsureScratch(uint32_t width, uint32_t height, DXGI_FORMAT format);
+	bool EnsureScratch(uint32_t width, uint32_t height, DXGI_FORMAT format, bool needOut);
 	ID3D11Texture2D* OpenShared(vr::SharedTextureHandle_t handle);
 	// process one eye region. slice selects the array slice for apps that
 	// submit a single Texture2DArray shared by both eyes (unity single-pass
@@ -173,6 +181,14 @@ private:
 	static constexpr size_t maxScratchSets = 4;
 	std::map<uint64_t, ScratchSet> scratchSets;
 	static void ReleaseScratchSet(ScratchSet &set);
+	// direct render path: per layer-texture RTVs (one per slice) so the
+	// warped output is drawn straight into the layer, eliminating the
+	// scratchOut target and the bounds copy-back. per-texture fallback if
+	// the shared texture refuses an RTV (bind flags out of our control).
+	std::map<ID3D11Texture2D*, std::array<ID3D11RenderTargetView*, 2>> layerRTVs;
+	std::set<ID3D11Texture2D*> layerRtvFailed;
+	std::set<ID3D11Texture2D*> layerPathLogged;
+	ID3D11RenderTargetView* GetLayerRTV(ID3D11Texture2D* texture, int slice, DXGI_FORMAT rtvFormat);
 	// layer formats already reported as unsupported (log each once, not
 	// against the errorCount budget, so per-game skips stay visible)
 	std::set<unsigned> skippedFormats;

@@ -332,6 +332,7 @@ static int TunerRoleForPath(const std::string &lower, bool isScalar){
 	if(endsWith("/input/b/click")){ return 3; }
 	if(endsWith("/input/x/click")){ return 4; }
 	if(endsWith("/input/y/click")){ return 5; }
+	if(endsWith("/input/joystick/click")){ return 9; }
 	return 0;
 }
 
@@ -711,8 +712,10 @@ bool CustomHeadsetDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 	// the hot path free when both features are disabled.
 	int velocityFixMode = driverConfig.streamFrame.velocityFixMode;
 	if(velocityFixMode > 0 && openVRID != vr::k_unTrackedDeviceIndex_Hmd
-			&& pose.poseIsValid && pose.result == vr::TrackingResult_Running_OK){
+			&& pose.poseIsValid && pose.result == vr::TrackingResult_Running_OK
+			&& IsStreamedController(openVRID)){
 		bool classicMode = velocityFixMode == 1;
+		bool deriveMode = velocityFixMode == 3;
 		double derivedVel[3], derivedAng[3];
 		double now = std::chrono::duration_cast<std::chrono::microseconds>(
 			std::chrono::steady_clock::now().time_since_epoch()).count() / 1000000.0;
@@ -735,7 +738,56 @@ bool CustomHeadsetDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 			if(classicMode){
 				sEff = linS; // classic: linear speeds only, as in v3
 			}
-			if(derivedSpeed < 20.0 && derivedAngSpeed < 60.0 && sEff > 1.0){
+			if(deriveMode){
+				// derive: the runtime's velocity is discarded outright and
+				// the pose-derived estimate is reported at all speeds — no
+				// engage gate, no blend. caps fall back to the report (the
+				// estimator flags a teleport, not a real motion, there).
+				if(derivedSpeed < 20.0 && derivedAngSpeed < 60.0){
+					// speed-adaptive smoothing: the endpoint-derivative
+					// estimator is low lag but noisy, and with no engage
+					// gate that noise trembles held objects. one alpha for
+					// both channels keeps v and w phase consistent.
+					double tauSlow = driverConfig.streamFrame.deriveSmoothTauSlowMs / 1000.0;
+					double tauFast = driverConfig.streamFrame.deriveSmoothTauFastMs / 1000.0;
+					double spLow = driverConfig.streamFrame.deriveSmoothSpeedLow;
+					double spHigh = driverConfig.streamFrame.deriveSmoothSpeedHigh;
+					if(tauSlow < 0.001){ tauSlow = 0.001; }
+					if(tauFast < 0.001){ tauFast = 0.001; }
+					if(spHigh <= spLow + 0.01){ spHigh = spLow + 0.01; }
+					double sAdapt = derivedSpeed + 0.15 * derivedAngSpeed;
+					double m = (sAdapt - spLow) / (spHigh - spLow);
+					if(m < 0){ m = 0; }
+					if(m > 1){ m = 1; }
+					m = m * m * (3.0 - 2.0 * m);
+					double tau = tauSlow + (tauFast - tauSlow) * m;
+					{
+						std::lock_guard<std::mutex> filterGuard(deriveFilterLock);
+						DeriveFilterState &fs = deriveFilterStates[openVRID];
+						double fdt = now - fs.time;
+						if(!fs.have || fdt <= 0 || fdt > 0.1){
+							for(int a = 0; a < 3; a++){
+								fs.vel[a] = derivedVel[a];
+								fs.ang[a] = derivedAng[a];
+							}
+						}else{
+							double alpha = 1.0 - exp(-fdt / tau);
+							for(int a = 0; a < 3; a++){
+								fs.vel[a] += alpha * (derivedVel[a] - fs.vel[a]);
+								fs.ang[a] += alpha * (derivedAng[a] - fs.ang[a]);
+							}
+						}
+						fs.time = now;
+						fs.have = true;
+						pose.vecVelocity[0] = fs.vel[0];
+						pose.vecVelocity[1] = fs.vel[1];
+						pose.vecVelocity[2] = fs.vel[2];
+						pose.vecAngularVelocity[0] = fs.ang[0];
+						pose.vecAngularVelocity[1] = fs.ang[1];
+						pose.vecAngularVelocity[2] = fs.ang[2];
+					}
+				}
+			}else if(derivedSpeed < 20.0 && derivedAngSpeed < 60.0 && sEff > 1.0){
 				double w = (sEff - 1.0) / 1.5;
 				if(w > 1.0){ w = 1.0; }
 				w = w * w * (3.0 - 2.0 * w); // smoothstep
@@ -752,8 +804,10 @@ bool CustomHeadsetDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 			// what the peak hold decides below
 			// (filled in after the hold logic so it reflects the final output)
 			// full mode only from here: classic (v3) is estimator + blend
-			// and nothing else, matching the best-rated field iteration
-			if(!classicMode)
+			// and nothing else; derive is pure replacement (no peak hold —
+			// the estimate IS the signal, latching would re-introduce a
+			// hybrid)
+			if(!classicMode && !deriveMode)
 			// joint peak hold: right after release the hand snaps back and
 			// a low lag estimate faithfully reports that reversal, so games
 			// sampling a frame or two late read a backward/down vector.
@@ -926,7 +980,8 @@ bool CustomHeadsetDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 				snap.result = (int)pose.result;
 			}
 		}
-	}else if(velocityFixMode == 2 && openVRID != vr::k_unTrackedDeviceIndex_Hmd){
+	}else if(velocityFixMode == 2 && openVRID != vr::k_unTrackedDeviceIndex_Hmd
+			&& IsStreamedController(openVRID)){
 		// tracking dropped mid motion (camera based tracking loses the
 		// controller exactly at throw windup). bridge VELOCITY only: if a
 		// peak is fresh, keep replaying its decay so a release read during
@@ -960,10 +1015,80 @@ bool CustomHeadsetDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 			snap.result = (int)pose.result;
 		}
 	}
+	// mixed-space velocity frame fix (playspace-override setups): the
+	// openvr header leaves vecVelocity's frame unspecified while positions
+	// are driver-space + WorldFromDriver. an overrider aligning lighthouse
+	// space into the vrlink space carries a large WorldFromDriver yaw, and
+	// with mismatched conventions thrown objects fly at the right speed in
+	// the wrong direction. "world" (1) rotates the reported velocity by
+	// qWorldFromDriverRotation, "driver" (2) applies the inverse; the
+	// field test decides which matches vrserver's real convention. only
+	// devices whose WorldFromDriver rotation deviates >2 deg from identity
+	// are touched (and logged once either way, so a log alone shows the
+	// alignment angle and whether this fix is even relevant).
+	if(openVRID != vr::k_unTrackedDeviceIndex_Hmd && openVRID < 64 && pose.poseIsValid){
+		const vr::HmdQuaternion_t &qwd = pose.qWorldFromDriverRotation;
+		double wClamped = qwd.w > 1.0 ? 1.0 : (qwd.w < -1.0 ? -1.0 : qwd.w);
+		double angleDeg = 2.0 * acos(fabs(wClamped)) * 180.0 / 3.14159265358979323846;
+		if(angleDeg > 2.0){
+			int spaceFixMode = driverConfig.controllers.spaceVelocityFixMode;
+			uint64_t bit = 1ull << openVRID;
+			if(!(spaceFixLoggedMask.load(std::memory_order_relaxed) & bit)){
+				spaceFixLoggedMask.fetch_or(bit, std::memory_order_relaxed);
+				DriverLog("SpaceVelFix: id=%u WorldFromDriver angle=%.1f deg, mode=%s",
+					openVRID, angleDeg,
+					spaceFixMode == 1 ? "world" : (spaceFixMode == 2 ? "driver" : "off (candidate)"));
+			}
+			if(spaceFixMode > 0){
+				vr::HmdQuaternion_t q = qwd;
+				if(spaceFixMode == 2){
+					q.x = -q.x; q.y = -q.y; q.z = -q.z;
+				}
+				double vIn[3] = { pose.vecVelocity[0], pose.vecVelocity[1], pose.vecVelocity[2] };
+				double wIn[3] = { pose.vecAngularVelocity[0], pose.vecAngularVelocity[1], pose.vecAngularVelocity[2] };
+				double vOut[3], wOut[3];
+				QuatRotateVector(q, vIn, vOut);
+				QuatRotateVector(q, wIn, wOut);
+				pose.vecVelocity[0] = vOut[0]; pose.vecVelocity[1] = vOut[1]; pose.vecVelocity[2] = vOut[2];
+				pose.vecAngularVelocity[0] = wOut[0]; pose.vecAngularVelocity[1] = wOut[1]; pose.vecAngularVelocity[2] = wOut[2];
+			}
+		}
+	}
+
 	if(driverConfig.streamFrame.poseLogging && openVRID != vr::k_unTrackedDeviceIndex_Hmd){
 		LogDevicePose(openVRID, pose);
 	}
 	return true;
+}
+
+bool CustomHeadsetDeviceProvider::IsStreamedController(uint32_t openVRID){
+	{
+		std::lock_guard<std::mutex> guard(streamedIdentityLock);
+		auto found = streamedControllerCache.find(openVRID);
+		if(found != streamedControllerCache.end()){
+			return found->second != 0;
+		}
+	}
+	// property query with NO lock held (concurrency law: never call out
+	// while holding a lock — ResolveContainerId taught us that one)
+	vr::PropertyContainerHandle_t container = vr::VRProperties()->TrackedDeviceToPropertyContainer(openVRID);
+	vr::ETrackedPropertyError propError = vr::TrackedProp_Success;
+	char serial[128] = {};
+	vr::VRProperties()->GetStringProperty(container, vr::Prop_SerialNumber_String, serial, sizeof(serial), &propError);
+	bool streamed = false;
+	if(propError == vr::TrackedProp_Success){
+		streamed = strncmp(serial, "VRLINK", 6) == 0 || strncmp(serial, "SamsungVST", 10) == 0;
+	}else{
+		// property not readable yet: do not cache, do not touch
+		return false;
+	}
+	{
+		std::lock_guard<std::mutex> guard(streamedIdentityLock);
+		streamedControllerCache[openVRID] = streamed ? 1 : 0;
+	}
+	DriverLog("VelocityFix: id=%u serial=%s streamed=%d%s", openVRID, serial, streamed ? 1 : 0,
+		streamed ? "" : " (native velocity, never touched)");
+	return streamed;
 }
 
 bool CustomHeadsetDeviceProvider::DeriveMotion(uint32_t openVRID, const vr::DriverPose_t &pose, double derivedVel[3], double derivedAng[3]){
@@ -1150,7 +1275,12 @@ void CustomHeadsetDeviceProvider::LogDevicePose(uint32_t openVRID, const vr::Dri
 	double fdSpeed = 0;
 	double fdAngSpeed = 0;
 	{
-		std::lock_guard<std::mutex> guard(poseLogLock);
+		// resolve streamed identity BEFORE taking poseLogLock: on a cache miss
+	// IsStreamedController queries VRProperties, which must never happen
+	// under this lock (the ResolveContainerId self-deadlock class)
+	bool streamedForSnapshot = driverConfig.streamFrame.velocityFixMode == 2
+		? IsStreamedController(openVRID) : false;
+	std::lock_guard<std::mutex> guard(poseLogLock);
 		PoseLogState &state = poseLogStates[openVRID];
 		if(!state.announced){
 			state.announced = true;
@@ -1206,7 +1336,7 @@ void CustomHeadsetDeviceProvider::LogDevicePose(uint32_t openVRID, const vr::Dri
 		// full mode records snapshots in the fix path; off and classic
 		// record here (classic's post-blend velocities are what this pose
 		// carries by the time logging runs)
-		if(driverConfig.streamFrame.velocityFixMode != 2){
+		if(driverConfig.streamFrame.velocityFixMode != 2 || !streamedForSnapshot){
 			MotionSnapshot &snap = motionSnapshots[openVRID];
 			snap.time = now;
 			snap.outVel[0] = pose.vecVelocity[0];
@@ -1346,6 +1476,7 @@ void CustomHeadsetDeviceProvider::GetTunerInput(TunerInputState &out){
 				if(fabsf(info.tunerScalar) > fabsf(out.stickX)){ out.stickX = info.tunerScalar; }
 				break;
 			case 8: if(info.tunerScalar > out.trigger){ out.trigger = info.tunerScalar; } break;
+			case 9: out.segToggle = out.segToggle || info.tunerBool; break;
 		}
 	}
 }

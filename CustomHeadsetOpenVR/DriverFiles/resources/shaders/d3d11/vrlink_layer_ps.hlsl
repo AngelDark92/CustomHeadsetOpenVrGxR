@@ -78,6 +78,20 @@ cbuffer Params : register(b0){
 	float3 hbx; float gridWorldLock;
 	float3 hby; float padD;
 	float3 hbz; float padE;
+	// per-eye whole-image alignment shift (prism correction), cpu-resolved
+	// for THIS eye: constant offset on the source sample uv after the
+	// distortion warp, so the eye's entire image translates. corrects
+	// binocular misalignment when an eye sits off its lens axis; the CAS
+	// neighborhood, edge blanking and warped overlays all follow the
+	// shifted content automatically.
+	// band segments: segCount > 0 = N angular lut rows per eye, sampled
+	// with periodic (wrap) interpolation between segment centers. the
+	// tuner's active segment (tuneSegIdx >= 0) restricts the band ring
+	// to that sector so what you see is exactly what you edit.
+	float alignShiftU; float alignShiftV; float segCount; float tuneSegIdx;
+	// per-band layouts: the CURRENT band's segment count for the sector
+	// highlight (segCount above stays the lut ROW count for sampling)
+	float tuneSegCount; float padH; float padI; float padJ;
 };
 Texture2D<float4> tex : register(t0);
 Texture2D<float4> lut : register(t1);
@@ -112,9 +126,30 @@ float4 SampleWarped(float2 uvSrcNorm){
 	return c;
 }
 
+// angular coordinate for band segments, shared by lut sampling and the
+// sector highlight so they can never disagree: 0 at screen right (+x),
+// increasing towards screen down (+y in uv), in turns (0..1).
+float SegmentTurns(float2 p){
+	return frac(atan2(p.y, p.x) / 6.28318530718 + 1.0);
+}
+
 // sample one curve row of the lut. row centers avoid bleed between curves.
 float SampleLutRow(float u, float row){
 	return lut.SampleLevel(samp, float2(u, (row + 0.5) / lutRowCount), 0).x;
+}
+
+// band segments: N angular rows per eye, values authored at segment
+// CENTERS, cosine-interpolated periodically between adjacent centers —
+// smooth around the ring with no seam at the wrap.
+float SampleLutSegmented(float u, float turns){
+	float n = segCount;
+	float f = turns * n - 0.5;
+	float s0 = floor(f);
+	float w = f - s0;
+	w = 0.5 - 0.5 * cos(w * 3.14159265359);
+	float rowA = lutRowBase + frac((s0 + n) / n) * n;
+	float rowB = lutRowBase + frac((s0 + 1.0 + n) / n) * n;
+	return lerp(SampleLutRow(u, rowA), SampleLutRow(u, rowB), w);
 }
 
 float4 main(float4 pos : SV_Position, float2 uv : TEXCOORD0) : SV_Target0{
@@ -123,12 +158,17 @@ float4 main(float4 pos : SV_Position, float2 uv : TEXCOORD0) : SV_Target0{
 	float2 p = uv - center;
 	p.y *= aspect;
 	float r = length(p);
+	// segment angle from the PRE-scale aspect-corrected offset, computed
+	// once and shared with the ring sector (p is reassigned by the warp)
+	float segTurns = SegmentTurns(p);
 	// radial scale from the baked curve rows (k1k2 polynomial or spline).
 	// per axis blends the horizontal and vertical curves by the squared cosine
 	// of the ring angle, giving an elliptic correction.
 	float u = r / lutMaxR;
 	float s;
-	if(perAxisEnable > 0.5){
+	if(segCount > 0.5){
+		s = SampleLutSegmented(u, segTurns);
+	}else if(perAxisEnable > 0.5){
 		float wH = (p.x * p.x) / max(dot(p, p), 1e-9);
 		s = SampleLutRow(u, lutRowBase) * wH + SampleLutRow(u, lutRowBase + 1) * (1.0 - wH);
 	}else{
@@ -143,7 +183,7 @@ float4 main(float4 pos : SV_Position, float2 uv : TEXCOORD0) : SV_Target0{
 	}
 	p *= s;
 	p.y /= aspect;
-	float2 nSrc = p + center;
+	float2 nSrc = p + center + float2(alignShiftU, alignShiftV);
 	// overlay coordinate: output space normally; content space when warped
 	// overlays are on (overlays then displace exactly like sampled content)
 	float2 ovUv = (overlayWarped > 0.5) ? nSrc : uv;
@@ -291,7 +331,16 @@ float4 main(float4 pos : SV_Position, float2 uv : TEXCOORD0) : SV_Target0{
 	if(tuneRingMode > 0.5){
 		float ringDist = abs(r - tuneRingR);
 		float ringMask = 1.0 - smoothstep(0.003, 0.007, ringDist);
-		color.rgb = lerp(color.rgb, float3(1.0, 0.65, 0.1), ringMask * tuneRingAlpha);
+		float ringA = tuneRingAlpha;
+		// segment editing: full brightness only inside the active sector,
+		// strongly dimmed elsewhere (the ring stays visible for context)
+		if(tuneSegCount > 0.5 && tuneSegIdx > -0.5){
+			float seg = floor(segTurns * tuneSegCount);
+			if(abs(seg - tuneSegIdx) > 0.5){
+				ringA *= 0.12;
+			}
+		}
+		color.rgb = lerp(color.rgb, float3(1.0, 0.65, 0.1), ringMask * ringA);
 	}
 
 	// ---- stationary dimming (uniform fade to black, no uneven oled wear) ----

@@ -100,10 +100,21 @@ private:
 		std::vector<double> bandR;
 		std::vector<double> scaleL, scaleR;
 		std::vector<double> initL, initR;   // activation snapshot (Y resets to these)
+		// band segments: additive deltas on top of the base band value,
+		// [band][segment], plus their activation snapshot. seg = -1 is the
+		// ALL position (base band editing, exactly the classic behavior).
+		std::vector<std::vector<double>> segDeltaL, segDeltaR;
+		std::vector<std::vector<double>> initSegL, initSegR;
+		// per-band segment counts (inner to outer); segCount = max of them
+		// = the uniform row count the working curves flatten into
+		std::vector<int> segCounts;
+		int segCount = 1;
+		int seg = -1;
 		int band = 0;
 		int eyeMode = 0;                    // 0 linked, 1 left, 2 right
 		bool prevBandOut = false, prevBandIn = false;
 		bool prevEyeToggle = false, prevReset = false;
+		bool prevSegToggle = false;
 		double lastTime = 0;
 		bool gripWasHigh = false;
 		double gripHoldStart = 0;

@@ -371,6 +371,15 @@ void ConfigLoader::ParseConfig(){
 				if(casData["strength"].is_number()){
 					newConfig.streamFrame.cas.strength = casData["strength"].get<double>();
 				}
+				if(casData["perEye"].is_boolean()){
+					newConfig.streamFrame.cas.perEye = casData["perEye"].get<bool>();
+				}
+				if(casData["strengthLeft"].is_number()){
+					newConfig.streamFrame.cas.strengthLeft = casData["strengthLeft"].get<double>();
+				}
+				if(casData["strengthRight"].is_number()){
+					newConfig.streamFrame.cas.strengthRight = casData["strengthRight"].get<double>();
+				}
 			}
 			if(streamFrameData["dither"].is_boolean()){
 				newConfig.streamFrame.dither = streamFrameData["dither"].get<bool>();
@@ -438,6 +447,20 @@ void ConfigLoader::ParseConfig(){
 					if(tuneData["forceGrid"].is_boolean()){
 						newConfig.streamFrame.distortion.tune.forceGrid = tuneData["forceGrid"].get<bool>();
 					}
+					if(tuneData["segments"].is_number_integer()){
+						newConfig.streamFrame.distortion.tune.segments = tuneData["segments"].get<int>();
+					}
+					if(tuneData["segmentLayout"].is_array()){
+						newConfig.streamFrame.distortion.tune.segmentLayout.clear();
+						for(auto &v : tuneData["segmentLayout"]){
+							if(v.is_number()){
+								int c = v.get<int>();
+								if(c < 1){ c = 1; }
+								if(c > 32){ c = 32; }
+								newConfig.streamFrame.distortion.tune.segmentLayout.push_back(c);
+							}
+						}
+					}
 					if(tuneData["bands"].is_array()){
 						std::vector<double> bands;
 						for(auto &band : tuneData["bands"]){
@@ -455,6 +478,9 @@ void ConfigLoader::ParseConfig(){
 				}
 				if(distortionData["perAxis"].is_boolean()){
 					newConfig.streamFrame.distortion.perAxis = distortionData["perAxis"].get<bool>();
+				}
+				if(distortionData["segments"].is_number_integer()){
+					newConfig.streamFrame.distortion.segments = distortionData["segments"].get<int>();
 				}
 				if(distortionData["curves"].is_object()){
 					newConfig.streamFrame.distortion.curves.clear();
@@ -513,6 +539,21 @@ void ConfigLoader::ParseConfig(){
 			if(streamFrameData["centerOffsetY"].is_number()){
 				newConfig.streamFrame.centerOffsetY = streamFrameData["centerOffsetY"].get<double>();
 			}
+			if(streamFrameData["alignment"].is_object()){
+				json alignData = streamFrameData["alignment"];
+				if(alignData["leftH"].is_number()){
+					newConfig.streamFrame.alignment.leftH = alignData["leftH"].get<double>();
+				}
+				if(alignData["leftV"].is_number()){
+					newConfig.streamFrame.alignment.leftV = alignData["leftV"].get<double>();
+				}
+				if(alignData["rightH"].is_number()){
+					newConfig.streamFrame.alignment.rightH = alignData["rightH"].get<double>();
+				}
+				if(alignData["rightV"].is_number()){
+					newConfig.streamFrame.alignment.rightV = alignData["rightV"].get<double>();
+				}
+			}
 			if(streamFrameData["skipColorWhileDashboardOpen"].is_boolean()){
 				newConfig.streamFrame.skipColorWhileDashboardOpen = streamFrameData["skipColorWhileDashboardOpen"].get<bool>();
 			}
@@ -529,7 +570,19 @@ void ConfigLoader::ParseConfig(){
 			}
 			if(streamFrameData["velocityFixMode"].is_string()){
 				std::string mode = streamFrameData["velocityFixMode"].get<std::string>();
-				newConfig.streamFrame.velocityFixMode = mode == "full" ? 2 : (mode == "classic" ? 1 : 0);
+				newConfig.streamFrame.velocityFixMode = mode == "derive" ? 3 : (mode == "full" ? 2 : (mode == "classic" ? 1 : 0));
+			}
+			if(streamFrameData["deriveSmoothTauSlowMs"].is_number()){
+				newConfig.streamFrame.deriveSmoothTauSlowMs = streamFrameData["deriveSmoothTauSlowMs"].get<double>();
+			}
+			if(streamFrameData["deriveSmoothTauFastMs"].is_number()){
+				newConfig.streamFrame.deriveSmoothTauFastMs = streamFrameData["deriveSmoothTauFastMs"].get<double>();
+			}
+			if(streamFrameData["deriveSmoothSpeedLow"].is_number()){
+				newConfig.streamFrame.deriveSmoothSpeedLow = streamFrameData["deriveSmoothSpeedLow"].get<double>();
+			}
+			if(streamFrameData["deriveSmoothSpeedHigh"].is_number()){
+				newConfig.streamFrame.deriveSmoothSpeedHigh = streamFrameData["deriveSmoothSpeedHigh"].get<double>();
 			}
 			if(streamFrameData["eyeGaze"].is_object()){
 				json eyeGazeData = streamFrameData["eyeGaze"];
@@ -582,10 +635,23 @@ void ConfigLoader::ParseConfig(){
 			if(streamFrameData["syncTimeoutMs"].is_number()){
 				newConfig.streamFrame.syncTimeoutMs = streamFrameData["syncTimeoutMs"].get<int>();
 			}
+			if(streamFrameData["reconLogger"].is_boolean()){
+				newConfig.streamFrame.reconLogger = streamFrameData["reconLogger"].get<bool>();
+			}
+			if(streamFrameData["directRender"].is_boolean()){
+				newConfig.streamFrame.directRender = streamFrameData["directRender"].get<bool>();
+			}
+			if(streamFrameData["zeroCopy"].is_boolean()){
+				newConfig.streamFrame.zeroCopy = streamFrameData["zeroCopy"].get<bool>();
+			}
 		}
 		if(data["controllers"].is_object()){
 			json controllersData = data["controllers"];
 			const char* axes[3] = {"x", "y", "z"};
+			if(controllersData["spaceVelocityFix"].is_string()){
+				std::string svMode = controllersData["spaceVelocityFix"].get<std::string>();
+				newConfig.controllers.spaceVelocityFixMode = svMode == "world" ? 1 : (svMode == "driver" ? 2 : 0);
+			}
 			if(controllersData["rotationOffsetDeg"].is_object()){
 				for(int i = 0; i < 3; i++){
 					if(controllersData["rotationOffsetDeg"][axes[i]].is_number()){
@@ -809,6 +875,7 @@ void ConfigLoader::WriteInfo(){
 			}},
 			{"forceTracking", defaultSettings.forceTracking},
 			{"controllers", {
+				{"spaceVelocityFix", defaultSettings.controllers.spaceVelocityFixMode == 1 ? "world" : (defaultSettings.controllers.spaceVelocityFixMode == 2 ? "driver" : "off")},
 				{"rotationOffsetDeg", {
 					{"x", defaultSettings.controllers.rotationOffsetDeg[0]},
 					{"y", defaultSettings.controllers.rotationOffsetDeg[1]},
@@ -837,6 +904,9 @@ void ConfigLoader::WriteInfo(){
 				{"cas", {
 					{"enable", defaultSettings.streamFrame.cas.enable},
 					{"strength", defaultSettings.streamFrame.cas.strength},
+					{"perEye", defaultSettings.streamFrame.cas.perEye},
+					{"strengthLeft", defaultSettings.streamFrame.cas.strengthLeft},
+					{"strengthRight", defaultSettings.streamFrame.cas.strengthRight},
 				}},
 				{"dither", defaultSettings.streamFrame.dither},
 				{"stationaryDimming", {
@@ -862,11 +932,14 @@ void ConfigLoader::WriteInfo(){
 						{"stepSize", defaultSettings.streamFrame.distortion.tune.stepSize},
 						{"ringOpacity", defaultSettings.streamFrame.distortion.tune.ringOpacity},
 						{"forceGrid", defaultSettings.streamFrame.distortion.tune.forceGrid},
+						{"segments", defaultSettings.streamFrame.distortion.tune.segments},
+						{"segmentLayout", defaultSettings.streamFrame.distortion.tune.segmentLayout},
 						{"bands", defaultSettings.streamFrame.distortion.tune.bands},
 					}},
 					{"perEye", defaultSettings.streamFrame.distortion.perEye},
 					{"perAxis", defaultSettings.streamFrame.distortion.perAxis},
 					{"curves", json::object()},
+					{"segments", defaultSettings.streamFrame.distortion.segments},
 					{"annulus", {
 						{"enable", defaultSettings.streamFrame.distortion.annulus.enable},
 						{"rMin", defaultSettings.streamFrame.distortion.annulus.rMin},
@@ -877,10 +950,19 @@ void ConfigLoader::WriteInfo(){
 				{"centerOffsetXLeft", defaultSettings.streamFrame.centerOffsetXLeft},
 				{"centerOffsetXRight", defaultSettings.streamFrame.centerOffsetXRight},
 				{"centerOffsetY", defaultSettings.streamFrame.centerOffsetY},
+				{"alignment", {
+					{"leftH", defaultSettings.streamFrame.alignment.leftH},
+					{"leftV", defaultSettings.streamFrame.alignment.leftV},
+					{"rightH", defaultSettings.streamFrame.alignment.rightH},
+					{"rightV", defaultSettings.streamFrame.alignment.rightV},
+				}},
 				{"skipColorWhileDashboardOpen", defaultSettings.streamFrame.skipColorWhileDashboardOpen},
 				{"processAtSubmitLayer", defaultSettings.streamFrame.processAtSubmitLayer},
 				{"poseLogging", defaultSettings.streamFrame.poseLogging},
 				{"syncTimeoutMs", defaultSettings.streamFrame.syncTimeoutMs},
+				{"reconLogger", defaultSettings.streamFrame.reconLogger},
+				{"directRender", defaultSettings.streamFrame.directRender},
+				{"zeroCopy", defaultSettings.streamFrame.zeroCopy},
 				{"eyeGaze", {
 					{"debugRing", defaultSettings.streamFrame.eyeGaze.debugRing},
 					{"tanHalfFovX", defaultSettings.streamFrame.eyeGaze.tanHalfFovX},
@@ -900,7 +982,11 @@ void ConfigLoader::WriteInfo(){
 					{"centerStrengthY", defaultSettings.streamFrame.pupilSwim.centerStrengthY},
 				}},
 				{"velocityFix", defaultSettings.streamFrame.velocityFix},
-				{"velocityFixMode", defaultSettings.streamFrame.velocityFixMode == 2 ? "full" : (defaultSettings.streamFrame.velocityFixMode == 1 ? "classic" : "off")},
+				{"velocityFixMode", defaultSettings.streamFrame.velocityFixMode == 3 ? "derive" : (defaultSettings.streamFrame.velocityFixMode == 2 ? "full" : (defaultSettings.streamFrame.velocityFixMode == 1 ? "classic" : "off"))},
+				{"deriveSmoothTauSlowMs", defaultSettings.streamFrame.deriveSmoothTauSlowMs},
+				{"deriveSmoothTauFastMs", defaultSettings.streamFrame.deriveSmoothTauFastMs},
+				{"deriveSmoothSpeedLow", defaultSettings.streamFrame.deriveSmoothSpeedLow},
+				{"deriveSmoothSpeedHigh", defaultSettings.streamFrame.deriveSmoothSpeedHigh},
 			}},
 			{"takeCompositorScreenshots", defaultSettings.takeCompositorScreenshots},
 			{"onlyHandlePrivateFunctionality", defaultSettings.onlyHandlePrivateFunctionality},

@@ -89,6 +89,9 @@ private:
 	};
 	std::map<uint32_t, PoseLogState> poseLogStates = {};
 	std::mutex poseLogLock = {};
+	// one-shot per-device announcement of a non-identity WorldFromDriver
+	// (mixed-space setups); lock free for the pose hot path
+	std::atomic<uint64_t> spaceFixLoggedMask{0};
 	void LogDevicePose(uint32_t openVRID, const vr::DriverPose_t &pose);
 	
 	// throw/velocity fix state: short ring of recent positions per device,
@@ -153,6 +156,24 @@ private:
 	bool DeriveMotion(uint32_t openVRID, const vr::DriverPose_t &pose, double derivedVel[3], double derivedAng[3]);
 	// cached device classes (Prop_DeviceClass_Int32), resolved on first pose
 	std::map<uint32_t, int> deviceClasses = {};
+	// streamed-controller identity cache (serial prefix VRLINK*/SamsungVST*
+	// = vrlink device). the velocity fix must never touch lighthouse
+	// devices: their native velocity is correct and mixed sessions
+	// (knuckles + playspace override) are a supported setup. queried once
+	// per id OUTSIDE any lock, then cached.
+	std::map<uint32_t, int> streamedControllerCache = {};
+	std::mutex streamedIdentityLock;
+	bool IsStreamedController(uint32_t openVRID);
+	// derive-mode adaptive smoothing state (pure math under its own lock;
+	// never calls out — lock discipline)
+	struct DeriveFilterState {
+		double vel[3] = {};
+		double ang[3] = {};
+		double time = 0;
+		bool have = false;
+	};
+	std::map<uint32_t, DeriveFilterState> deriveFilterStates = {};
+	std::mutex deriveFilterLock;
 	int GetDeviceClass(uint32_t openVRID);
 	
 	// ---- release ground truth tap ----
@@ -224,6 +245,9 @@ public:
 		bool bandIn = false;    // b click
 		bool eyeToggle = false; // x click
 		bool resetBand = false; // y click
+		bool segToggle = false; // joystick click (either stick). band tuner with
+		                        // segments > 1 uses it for the EYE cycle (X walks
+		                        // segments there); unused in classic sessions
 		float grip = 0;
 		float trigger = 0;
 	};

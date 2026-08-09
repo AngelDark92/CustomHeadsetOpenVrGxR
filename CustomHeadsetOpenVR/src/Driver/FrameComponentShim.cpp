@@ -74,12 +74,13 @@ void DirectModeComponentShim::SubmitLayer(const SubmitLayerPerEye_t (&perEye)[2]
 		sceneRight = perEye[1].hTexture;
 		sceneLeftBounds = perEye[0].bounds;
 		sceneRightBounds = perEye[1].bounds;
+		FrameProcessSettings settings;
+		bool processAtSubmit = false;
+		bool active = GetActiveSettings(settings, processAtSubmit);
 		// optional submit time processing, in case the driver already consumes the
 		// layer during SubmitLayer. uses the previous frame's sync texture, which
 		// stays constant across frames.
-		FrameProcessSettings settings;
-		bool processAtSubmit = false;
-		if(GetActiveSettings(settings, processAtSubmit) && processAtSubmit && lastSyncTexture != 0){
+		if(active && processAtSubmit && lastSyncTexture != 0){
 			MaybeLogSwimProbe(settings);
 			processor.ProcessSceneLayer(sceneLeft, sceneRight, sceneLeftBounds, sceneRightBounds, lastSyncTexture, settings);
 			haveSceneLayer = false;
@@ -854,6 +855,23 @@ bool DirectModeComponentShim::SolvePivot(const std::vector<double> &sampleQ, con
 // draws in the eyes being edited), Y resets the band to its activation
 // value, holding either grip ~1.5s saves an importable profile json.
 
+// cosine periodic interpolation of per-segment values (authored at segment
+// centers) evaluated at `turns` in [0,1). same math as the shader's
+// SampleLutSegmented, kept in lockstep so flattening is exact at row centers.
+static double InterpSegmented(const std::vector<double> &vals, double turns){
+	int n = (int)vals.size();
+	if(n <= 1){
+		return vals.empty() ? 0.0 : vals[0];
+	}
+	double f = turns * n - 0.5;
+	double s0 = floor(f);
+	double w = f - s0;
+	w = 0.5 - 0.5 * cos(w * 3.14159265358979323846);
+	int a = ((int)s0 % n + n) % n;
+	int b = (a + 1) % n;
+	return vals[a] * (1.0 - w) + vals[b] * w;
+}
+
 void DirectModeComponentShim::UpdateTuner(FrameProcessSettings &settings){
 	bool enable = settings.config.distortion.tune.enable;
 	deviceProvider.SetTunerInputActive(enable);
@@ -916,17 +934,110 @@ void DirectModeComponentShim::UpdateTuner(FrameProcessSettings &settings){
 		}
 		tuner.initL = tuner.scaleL;
 		tuner.initR = tuner.scaleR;
+		// band segments: deltas on top of the base band values, initialized
+		// from any existing segment curves ("left#s") so a segmented
+		// profile can be refined instead of restarted. missing keys = 0.
+		// per-band segment layout: explicit list wins; empty = uniform
+		// `segments` (legacy select). counts clamp 1..32; a shorter list
+		// repeats its last entry across the remaining (outer) bands.
+		{
+			const auto &layout = settings.config.distortion.tune.segmentLayout;
+			int uniform = settings.config.distortion.tune.segments;
+			if(uniform < 1){ uniform = 1; }
+			if(uniform > 32){ uniform = 32; }
+			tuner.segCounts.assign(n, uniform);
+			if(!layout.empty()){
+				for(int i = 0; i < n; i++){
+					int c = layout[i < (int)layout.size() ? i : (int)layout.size() - 1];
+					if(c < 1){ c = 1; }
+					if(c > 32){ c = 32; }
+					tuner.segCounts[i] = c;
+				}
+			}
+			tuner.segCount = 1;
+			for(int c : tuner.segCounts){
+				if(c > tuner.segCount){ tuner.segCount = c; }
+			}
+		}
+		tuner.seg = -1;
+		tuner.segDeltaL.assign(n, std::vector<double>());
+		tuner.segDeltaR.assign(n, std::vector<double>());
+		for(int i = 0; i < n; i++){
+			tuner.segDeltaL[i].assign(tuner.segCounts[i], 0.0);
+			tuner.segDeltaR[i].assign(tuner.segCounts[i], 0.0);
+		}
+		if(tuner.segCount > 1){
+			// re-tune continuation: recover per-band deltas by evaluating
+			// the existing (uniform-count) segment curves angularly at THIS
+			// band's own segment centers. exact when the counts match,
+			// gently smoothed when the layout changed between sessions.
+			const StreamFrameDistortionConfig &dd = settings.config.distortion;
+			int prevRows = dd.segments;
+			if(prevRows > 1){
+				for(int eye = 0; eye < 2; eye++){
+					std::vector<std::vector<StreamFrameDistortionPoint>> rowPts(prevRows);
+					bool any = false;
+					for(int sg = 0; sg < prevRows; sg++){
+						auto found = dd.curves.find(std::string(eye == 0 ? "left" : "right") + "#" + std::to_string(sg));
+						if(found == dd.curves.end() || found->second.points.empty()){
+							continue;
+						}
+						rowPts[sg] = found->second.points;
+						std::sort(rowPts[sg].begin(), rowPts[sg].end(),
+							[](const StreamFrameDistortionPoint &a, const StreamFrameDistortionPoint &b){ return a.r < b.r; });
+						any = true;
+					}
+					if(!any){
+						continue;
+					}
+					for(int i = 0; i < n; i++){
+						std::vector<double> rowVals(prevRows);
+						for(int sg = 0; sg < prevRows; sg++){
+							if(rowPts[sg].empty()){
+								rowVals[sg] = (eye == 0 ? tuner.scaleL : tuner.scaleR)[i];
+							}else{
+								double v = EvaluateDistortionCurve(rowPts[sg], tuner.bandR[i]);
+								rowVals[sg] = 1.0 + dd.gain * (v - 1.0);
+							}
+						}
+						for(int k = 0; k < tuner.segCounts[i]; k++){
+							double turns = (k + 0.5) / tuner.segCounts[i];
+							double delta = InterpSegmented(rowVals, turns)
+								- (eye == 0 ? tuner.scaleL : tuner.scaleR)[i];
+							if(delta < -0.3){ delta = -0.3; }
+							if(delta > 0.3){ delta = 0.3; }
+							(eye == 0 ? tuner.segDeltaL : tuner.segDeltaR)[i][k] = delta;
+						}
+					}
+				}
+			}
+		}
+		tuner.initSegL = tuner.segDeltaL;
+		tuner.initSegR = tuner.segDeltaR;
 		tuner.band = 0;
 		tuner.eyeMode = 0;
 		tuner.prevBandOut = tuner.prevBandIn = tuner.prevEyeToggle = tuner.prevReset = false;
+		tuner.prevSegToggle = false;
 		tuner.lastTime = now;
 		tuner.gripWasHigh = false;
 		tuner.savedThisHold = false;
 		tuner.lastNudgeLogTime = 0;
 		tuner.active = true;
-		DriverLog("Tuner: ACTIVE bands=%d (r %.2f..%.2f), initialized from the current curve. "
-			"Controls: stick Y = adjust band, A/B = band out/in, X = eye linked/L/R, Y = reset band, hold grip 1.5s = save profile",
-			n, tuner.bandR.front(), tuner.bandR.back());
+		if(tuner.segCount > 1){
+			std::string layoutStr;
+			for(int i = 0; i < n; i++){
+				layoutStr += (i ? "," : "") + std::to_string(tuner.segCounts[i]);
+			}
+			DriverLog("Tuner: ACTIVE bands=%d (r %.2f..%.2f) SEGMENTS per band: %s, initialized from the current curve. "
+				"Controls: stick Y = adjust, A/B = band out/in, X = walk ALL -> segments of the current band "
+				"(0 deg = screen right, increasing toward screen down), stick CLICK = eye linked/L/R, "
+				"Y = reset, hold grip 1.5s = save",
+				n, tuner.bandR.front(), tuner.bandR.back(), layoutStr.c_str());
+		}else{
+			DriverLog("Tuner: ACTIVE bands=%d (r %.2f..%.2f), initialized from the current curve. "
+				"Controls: stick Y = adjust band, A/B = band out/in, X = eye linked/L/R, Y = reset band, hold grip 1.5s = save profile",
+				n, tuner.bandR.front(), tuner.bandR.back());
+		}
 	}
 	int n = (int)tuner.bandR.size();
 	double dt = now - tuner.lastTime;
@@ -942,23 +1053,62 @@ void DirectModeComponentShim::UpdateTuner(FrameProcessSettings &settings){
 	};
 	if(edge(in.bandOut, tuner.prevBandOut) && tuner.band < n - 1){
 		tuner.band++;
-		DriverLog("Tuner: band %d/%d r=%.2f (L=%.4f R=%.4f)", tuner.band + 1, n,
-			tuner.bandR[tuner.band], tuner.scaleL[tuner.band], tuner.scaleR[tuner.band]);
+		tuner.seg = -1; // counts differ per band: the walk restarts at ALL
+		DriverLog("Tuner: band %d/%d r=%.2f (L=%.4f R=%.4f)%s", tuner.band + 1, n,
+			tuner.bandR[tuner.band], tuner.scaleL[tuner.band], tuner.scaleR[tuner.band],
+			tuner.segCount > 1 ? (" segments=" + std::to_string(tuner.segCounts[tuner.band])).c_str() : "");
 	}
 	if(edge(in.bandIn, tuner.prevBandIn) && tuner.band > 0){
 		tuner.band--;
-		DriverLog("Tuner: band %d/%d r=%.2f (L=%.4f R=%.4f)", tuner.band + 1, n,
-			tuner.bandR[tuner.band], tuner.scaleL[tuner.band], tuner.scaleR[tuner.band]);
+		tuner.seg = -1;
+		DriverLog("Tuner: band %d/%d r=%.2f (L=%.4f R=%.4f)%s", tuner.band + 1, n,
+			tuner.bandR[tuner.band], tuner.scaleL[tuner.band], tuner.scaleR[tuner.band],
+			tuner.segCount > 1 ? (" segments=" + std::to_string(tuner.segCounts[tuner.band])).c_str() : "");
 	}
-	if(edge(in.eyeToggle, tuner.prevEyeToggle)){
+	// control map: classic sessions keep X = eye cycle. segmented sessions
+	// SWAP the pair — segment walking is the frequent action, so it gets
+	// the easy button: X walks segments, stick click cycles eyes.
+	bool xEdge = edge(in.eyeToggle, tuner.prevEyeToggle);
+	bool stickEdge = edge(in.segToggle, tuner.prevSegToggle);
+	bool eyeCyclePressed = tuner.segCount > 1 ? stickEdge : xEdge;
+	bool segWalkPressed = tuner.segCount > 1 ? xEdge : false;
+	if(eyeCyclePressed){
 		tuner.eyeMode = (tuner.eyeMode + 1) % 3;
 		DriverLog("Tuner: editing %s", tuner.eyeMode == 0 ? "BOTH eyes (linked)" : (tuner.eyeMode == 1 ? "LEFT eye" : "RIGHT eye"));
 	}
+	if(segWalkPressed){
+		// walk ALL(-1) -> 0 -> .. -> count-1 -> ALL within the CURRENT band
+		int bandCount = tuner.segCounts[tuner.band];
+		if(bandCount <= 1){
+			tuner.seg = -1;
+			DriverLog("Tuner: band %d has 1 segment (radial only here)", tuner.band + 1);
+		}else{
+			tuner.seg = tuner.seg + 1 >= bandCount ? -1 : tuner.seg + 1;
+			if(tuner.seg < 0){
+				DriverLog("Tuner: segment ALL (base band editing, deltas stay)");
+			}else{
+				double a0 = 360.0 * tuner.seg / bandCount;
+				double a1 = 360.0 * (tuner.seg + 1) / bandCount;
+				DriverLog("Tuner: segment %d/%d (%.0f-%.0f deg; 0 = screen right, increasing toward screen down) "
+					"band %d delta L=%+.4f R=%+.4f",
+					tuner.seg + 1, bandCount, a0, a1, tuner.band + 1,
+					tuner.segDeltaL[tuner.band][tuner.seg], tuner.segDeltaR[tuner.band][tuner.seg]);
+			}
+		}
+	}
 	if(edge(in.resetBand, tuner.prevReset)){
-		if(tuner.eyeMode != 2){ tuner.scaleL[tuner.band] = tuner.initL[tuner.band]; }
-		if(tuner.eyeMode != 1){ tuner.scaleR[tuner.band] = tuner.initR[tuner.band]; }
-		DriverLog("Tuner: band %d reset to activation value (L=%.4f R=%.4f)",
-			tuner.band + 1, tuner.scaleL[tuner.band], tuner.scaleR[tuner.band]);
+		if(tuner.seg < 0){
+			if(tuner.eyeMode != 2){ tuner.scaleL[tuner.band] = tuner.initL[tuner.band]; }
+			if(tuner.eyeMode != 1){ tuner.scaleR[tuner.band] = tuner.initR[tuner.band]; }
+			DriverLog("Tuner: band %d reset to activation value (L=%.4f R=%.4f)",
+				tuner.band + 1, tuner.scaleL[tuner.band], tuner.scaleR[tuner.band]);
+		}else{
+			if(tuner.eyeMode != 2){ tuner.segDeltaL[tuner.band][tuner.seg] = tuner.initSegL[tuner.band][tuner.seg]; }
+			if(tuner.eyeMode != 1){ tuner.segDeltaR[tuner.band][tuner.seg] = tuner.initSegR[tuner.band][tuner.seg]; }
+			DriverLog("Tuner: band %d segment %d reset to activation delta (L=%+.4f R=%+.4f)",
+				tuner.band + 1, tuner.seg + 1,
+				tuner.segDeltaL[tuner.band][tuner.seg], tuner.segDeltaR[tuner.band][tuner.seg]);
+		}
 	}
 	// stick nudge. analog by default (deadzone + squared response); when
 	// stepSize > 0, deterministic fixed steps every 100ms while deflected
@@ -990,17 +1140,38 @@ void DirectModeComponentShim::UpdateTuner(FrameProcessSettings &settings){
 		}
 	}
 	if(delta != 0){
-		auto apply = [&](std::vector<double> &scales){
-			scales[tuner.band] += delta;
-			if(scales[tuner.band] < 0.85){ scales[tuner.band] = 0.85; }
-			if(scales[tuner.band] > 1.15){ scales[tuner.band] = 1.15; }
-		};
-		if(tuner.eyeMode != 2){ apply(tuner.scaleL); }
-		if(tuner.eyeMode != 1){ apply(tuner.scaleR); }
-		if(stepSize > 0 || now - tuner.lastNudgeLogTime > 0.3){
-			tuner.lastNudgeLogTime = now;
-			DriverLog("Tuner: band %d/%d r=%.2f L=%.4f R=%.4f", tuner.band + 1, n,
-				tuner.bandR[tuner.band], tuner.scaleL[tuner.band], tuner.scaleR[tuner.band]);
+		if(tuner.seg < 0){
+			auto apply = [&](std::vector<double> &scales){
+				scales[tuner.band] += delta;
+				if(scales[tuner.band] < 0.85){ scales[tuner.band] = 0.85; }
+				if(scales[tuner.band] > 1.15){ scales[tuner.band] = 1.15; }
+			};
+			if(tuner.eyeMode != 2){ apply(tuner.scaleL); }
+			if(tuner.eyeMode != 1){ apply(tuner.scaleR); }
+			if(stepSize > 0 || now - tuner.lastNudgeLogTime > 0.3){
+				tuner.lastNudgeLogTime = now;
+				DriverLog("Tuner: band %d/%d r=%.2f L=%.4f R=%.4f", tuner.band + 1, n,
+					tuner.bandR[tuner.band], tuner.scaleL[tuner.band], tuner.scaleR[tuner.band]);
+			}
+		}else{
+			// segment delta editing: the combined value (base + delta) obeys
+			// the same [0.85, 1.15] clamp as base editing
+			auto applySeg = [&](std::vector<double> &scales, std::vector<std::vector<double>> &deltas){
+				double &dref = deltas[tuner.band][tuner.seg];
+				dref += delta;
+				double lo = 0.85 - scales[tuner.band];
+				double hi = 1.15 - scales[tuner.band];
+				if(dref < lo){ dref = lo; }
+				if(dref > hi){ dref = hi; }
+			};
+			if(tuner.eyeMode != 2){ applySeg(tuner.scaleL, tuner.segDeltaL); }
+			if(tuner.eyeMode != 1){ applySeg(tuner.scaleR, tuner.segDeltaR); }
+			if(stepSize > 0 || now - tuner.lastNudgeLogTime > 0.3){
+				tuner.lastNudgeLogTime = now;
+				DriverLog("Tuner: band %d/%d seg %d/%d r=%.2f delta L=%+.4f R=%+.4f", tuner.band + 1, n,
+					tuner.seg + 1, tuner.segCount, tuner.bandR[tuner.band],
+					tuner.segDeltaL[tuner.band][tuner.seg], tuner.segDeltaR[tuner.band][tuner.seg]);
+			}
 		}
 	}
 	// hold either grip to save; latch so one hold saves exactly once
@@ -1065,6 +1236,29 @@ void DirectModeComponentShim::UpdateTuner(FrameProcessSettings &settings){
 	d.curves["right"].k1 = 0;
 	d.curves["right"].k2 = 0;
 	d.curves["right"].points = buildPoints(tuner.scaleR);
+	// band segments: one working curve per angular segment (base + delta),
+	// same guard/taper law as the base curve
+	d.segments = tuner.segCount;
+	if(tuner.segCount > 1){
+		// flatten the per-band layout into uniform max-count rows: each
+		// row's band-i knot is the band's OWN angular function evaluated
+		// at the row center. exact for bands whose count == the row count.
+		std::vector<double> combined(n);
+		for(int eye = 0; eye < 2; eye++){
+			for(int sg = 0; sg < tuner.segCount; sg++){
+				double turns = (sg + 0.5) / tuner.segCount;
+				const auto &base = eye == 0 ? tuner.scaleL : tuner.scaleR;
+				const auto &deltas = eye == 0 ? tuner.segDeltaL : tuner.segDeltaR;
+				for(int i = 0; i < n; i++){
+					combined[i] = base[i] + InterpSegmented(deltas[i], turns);
+				}
+				std::string segKey = std::string(eye == 0 ? "left" : "right") + "#" + std::to_string(sg);
+				d.curves[segKey].k1 = 0;
+				d.curves[segKey].k2 = 0;
+				d.curves[segKey].points = buildPoints(combined);
+			}
+		}
+	}
 	// force the calibration view on (warped angular grid + warped overlays)
 	// unless the user opted to bring their own overlays (forceGrid off:
 	// tune against game content, or the world-locked grid variant)
@@ -1080,6 +1274,8 @@ void DirectModeComponentShim::UpdateTuner(FrameProcessSettings &settings){
 	settings.tuneActive = true;
 	settings.tuneRingR = tuner.bandR[tuner.band];
 	settings.tuneEyeMode = tuner.eyeMode;
+	settings.tuneSegIndex = tuner.segCount > 1 ? tuner.seg : -1;
+	settings.tuneSegCount = tuner.segCount > 1 ? tuner.segCounts[tuner.band] : 0;
 }
 
 void DirectModeComponentShim::SaveTunedProfile(const FrameProcessSettings &settings){
@@ -1117,6 +1313,21 @@ void DirectModeComponentShim::SaveTunedProfile(const FrameProcessSettings &setti
 		{"left", {{"k1", 0}, {"k2", 0}, {"points", pointsJson(tuner.scaleL)}}},
 		{"right", {{"k1", 0}, {"k2", 0}, {"points", pointsJson(tuner.scaleR)}}},
 	};
+	if(tuner.segCount > 1){
+		std::vector<double> combined(n);
+		for(int eye = 0; eye < 2; eye++){
+			for(int sg = 0; sg < tuner.segCount; sg++){
+				double turns = (sg + 0.5) / tuner.segCount;
+				const auto &base = eye == 0 ? tuner.scaleL : tuner.scaleR;
+				const auto &deltas = eye == 0 ? tuner.segDeltaL : tuner.segDeltaR;
+				for(int i = 0; i < n; i++){
+					combined[i] = base[i] + InterpSegmented(deltas[i], turns);
+				}
+				curves[std::string(eye == 0 ? "left" : "right") + "#" + std::to_string(sg)] =
+					{{"k1", 0}, {"k2", 0}, {"points", pointsJson(combined)}};
+			}
+		}
+	}
 	json profile = {
 		{"type", "streamFrameDistortionProfile"},
 		{"version", 1},
@@ -1126,8 +1337,10 @@ void DirectModeComponentShim::SaveTunedProfile(const FrameProcessSettings &setti
 			{"points", json::array()},
 			{"perEye", true},
 			{"perAxis", false},
+			{"segments", tuner.segCount},
 			{"curves", curves},
 		}},
+		{"tuneSegmentLayout", tuner.segCounts},
 		{"k1", 0},
 		{"k2", 0},
 		{"centerOffsetXLeft", settings.config.centerOffsetXLeft},
@@ -1150,7 +1363,7 @@ void DirectModeComponentShim::SaveTunedProfile(const FrameProcessSettings &setti
 		DriverLog("Tuner: FAILED to write %s, paste block below instead", path.c_str());
 	}
 	// paste-ready single-line block so a lost file never loses a tune
-	json paste = {{"distortion", {{"mode", "spline"}, {"perEye", true}, {"gain", 1.0}, {"curves", curves}}}};
+	json paste = {{"distortion", {{"mode", "spline"}, {"perEye", true}, {"gain", 1.0}, {"segments", tuner.segCount}, {"curves", curves}}}};
 	DriverLog("Tuner: settings block: %s", paste.dump().c_str());
 }
 
