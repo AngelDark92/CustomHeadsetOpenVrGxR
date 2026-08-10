@@ -568,9 +568,15 @@ void ConfigLoader::ParseConfig(){
 				newConfig.streamFrame.velocityFix = streamFrameData["velocityFix"].get<bool>();
 				newConfig.streamFrame.velocityFixMode = newConfig.streamFrame.velocityFix ? 2 : 0;
 			}
+			if(streamFrameData["zeroCopyV3"].is_boolean()){
+				newConfig.streamFrame.zeroCopyV3 = streamFrameData["zeroCopyV3"].get<bool>();
+			}
+			if(streamFrameData["nvencTap"].is_boolean()){
+				newConfig.streamFrame.nvencTap = streamFrameData["nvencTap"].get<bool>();
+			}
 			if(streamFrameData["velocityFixMode"].is_string()){
 				std::string mode = streamFrameData["velocityFixMode"].get<std::string>();
-				newConfig.streamFrame.velocityFixMode = mode == "derive" ? 3 : (mode == "full" ? 2 : (mode == "classic" ? 1 : 0));
+				newConfig.streamFrame.velocityFixMode = mode == "kalman" ? 4 : (mode == "derive" ? 3 : (mode == "full" ? 2 : (mode == "classic" ? 1 : 0)));
 			}
 			if(streamFrameData["deriveSmoothTauSlowMs"].is_number()){
 				newConfig.streamFrame.deriveSmoothTauSlowMs = streamFrameData["deriveSmoothTauSlowMs"].get<double>();
@@ -584,6 +590,21 @@ void ConfigLoader::ParseConfig(){
 			if(streamFrameData["deriveSmoothSpeedHigh"].is_number()){
 				newConfig.streamFrame.deriveSmoothSpeedHigh = streamFrameData["deriveSmoothSpeedHigh"].get<double>();
 			}
+			if(streamFrameData["deriveSmoothAngSeparate"].is_boolean()){
+				newConfig.streamFrame.deriveSmoothAngSeparate = streamFrameData["deriveSmoothAngSeparate"].get<bool>();
+			}
+			if(streamFrameData["deriveSmoothAngTauSlowMs"].is_number()){
+				newConfig.streamFrame.deriveSmoothAngTauSlowMs = streamFrameData["deriveSmoothAngTauSlowMs"].get<double>();
+			}
+			if(streamFrameData["deriveSmoothAngTauFastMs"].is_number()){
+				newConfig.streamFrame.deriveSmoothAngTauFastMs = streamFrameData["deriveSmoothAngTauFastMs"].get<double>();
+			}
+			if(streamFrameData["deriveSmoothAngSpeedLow"].is_number()){
+				newConfig.streamFrame.deriveSmoothAngSpeedLow = streamFrameData["deriveSmoothAngSpeedLow"].get<double>();
+			}
+			if(streamFrameData["deriveSmoothAngSpeedHigh"].is_number()){
+				newConfig.streamFrame.deriveSmoothAngSpeedHigh = streamFrameData["deriveSmoothAngSpeedHigh"].get<double>();
+			}
 			if(streamFrameData["deriveSplitDirLinear"].is_boolean()){
 				newConfig.streamFrame.deriveSplitDirLinear = streamFrameData["deriveSplitDirLinear"].get<bool>();
 			}
@@ -595,6 +616,97 @@ void ConfigLoader::ParseConfig(){
 			}
 			if(streamFrameData["deriveDirWeightPow"].is_number()){
 				newConfig.streamFrame.deriveDirWeightPow = streamFrameData["deriveDirWeightPow"].get<double>();
+			}
+			if(streamFrameData["deriveDirSource"].is_string()){
+				std::string dirSrc = streamFrameData["deriveDirSource"].get<std::string>();
+				newConfig.streamFrame.deriveDirSource = dirSrc == "runtime" ? 2 : (dirSrc == "window" ? 0 : 1);
+			}
+			if(streamFrameData["deriveMagSource"].is_string()){
+				newConfig.streamFrame.deriveMagSource = streamFrameData["deriveMagSource"].get<std::string>() == "scalar" ? 1 : 0;
+			}
+			if(streamFrameData["deriveReleaseLatch"].is_boolean()){
+				newConfig.streamFrame.deriveReleaseLatch = streamFrameData["deriveReleaseLatch"].get<bool>();
+			}
+			if(streamFrameData["deriveLatchWindowMs"].is_number()){
+				newConfig.streamFrame.deriveLatchWindowMs = streamFrameData["deriveLatchWindowMs"].get<double>();
+			}
+			if(streamFrameData["deriveLatchHoldMs"].is_number()){
+				newConfig.streamFrame.deriveLatchHoldMs = streamFrameData["deriveLatchHoldMs"].get<double>();
+			}
+			if(streamFrameData["deriveLatchMinSpeed"].is_number()){
+				newConfig.streamFrame.deriveLatchMinSpeed = streamFrameData["deriveLatchMinSpeed"].get<double>();
+			}
+			if(streamFrameData["deriveLatchAngMinSpeed"].is_number()){
+				newConfig.streamFrame.deriveLatchAngMinSpeed = streamFrameData["deriveLatchAngMinSpeed"].get<double>();
+			}
+			if(streamFrameData["derivePreFilter"].is_string()){
+				newConfig.streamFrame.derivePreFilter = streamFrameData["derivePreFilter"].get<std::string>() == "median3" ? 1 : 0;
+			}
+			if(streamFrameData["derivePreSmoothMs"].is_number()){
+				newConfig.streamFrame.derivePreSmoothMs = streamFrameData["derivePreSmoothMs"].get<double>();
+			}
+			if(streamFrameData["derivePreSmoothScope"].is_string()){
+				newConfig.streamFrame.derivePreSmoothScope = streamFrameData["derivePreSmoothScope"].get<std::string>() == "both" ? 1 : 0;
+			}
+			if(streamFrameData["deriveDiagVelocity"].is_string()){
+				newConfig.streamFrame.deriveDiagVelocity = streamFrameData["deriveDiagVelocity"].get<std::string>() == "zero" ? 1 : 0;
+			}
+			if(streamFrameData["deriveLatchPoseAssist"].is_boolean()){
+				newConfig.streamFrame.deriveLatchPoseAssist = streamFrameData["deriveLatchPoseAssist"].get<bool>();
+			}
+			if(streamFrameData["kalmanProcessAccel"].is_number()){
+				newConfig.streamFrame.kalmanProcessAccel = streamFrameData["kalmanProcessAccel"].get<double>();
+			}
+			if(streamFrameData["kalmanPosNoiseMm"].is_number()){
+				newConfig.streamFrame.kalmanPosNoiseMm = streamFrameData["kalmanPosNoiseMm"].get<double>();
+			}
+			if(streamFrameData["kalmanProcessAngAccel"].is_number()){
+				newConfig.streamFrame.kalmanProcessAngAccel = streamFrameData["kalmanProcessAngAccel"].get<double>();
+			}
+			if(streamFrameData["kalmanOriNoiseDeg"].is_number()){
+				newConfig.streamFrame.kalmanOriNoiseDeg = streamFrameData["kalmanOriNoiseDeg"].get<double>();
+			}
+			if(streamFrameData["kalmanLeadMs"].is_number()){
+				newConfig.streamFrame.kalmanLeadMs = streamFrameData["kalmanLeadMs"].get<double>();
+			}
+			if(streamFrameData["kalmanReleaseRewindMs"].is_number()){
+				newConfig.streamFrame.kalmanReleaseRewindMs = streamFrameData["kalmanReleaseRewindMs"].get<double>();
+			}
+			if(streamFrameData["kalmanRewindHoldMs"].is_number()){
+				newConfig.streamFrame.kalmanRewindHoldMs = streamFrameData["kalmanRewindHoldMs"].get<double>();
+			}
+			if(streamFrameData["kalmanDirSmoothMs"].is_number()){
+				newConfig.streamFrame.kalmanDirSmoothMs = streamFrameData["kalmanDirSmoothMs"].get<double>();
+			}
+			if(streamFrameData["kalmanAngDirSmoothMs"].is_number()){
+				newConfig.streamFrame.kalmanAngDirSmoothMs = streamFrameData["kalmanAngDirSmoothMs"].get<double>();
+			}
+			if(streamFrameData["kalmanMagSource"].is_string()){
+				newConfig.streamFrame.kalmanMagSource = streamFrameData["kalmanMagSource"].get<std::string>() == "fast" ? 1 : 0;
+			}
+			if(streamFrameData["kalmanMagAccel"].is_number()){
+				newConfig.streamFrame.kalmanMagAccel = streamFrameData["kalmanMagAccel"].get<double>();
+			}
+			if(streamFrameData["kalmanMagScale"].is_number()){
+				newConfig.streamFrame.kalmanMagScale = streamFrameData["kalmanMagScale"].get<double>();
+			}
+			if(streamFrameData["kalmanAngMagScale"].is_number()){
+				newConfig.streamFrame.kalmanAngMagScale = streamFrameData["kalmanAngMagScale"].get<double>();
+			}
+			if(streamFrameData["kalmanDupSkip"].is_boolean()){
+				newConfig.streamFrame.kalmanDupSkip = streamFrameData["kalmanDupSkip"].get<bool>();
+			}
+			if(streamFrameData["kalmanGazeAssist"].is_number()){
+				newConfig.streamFrame.kalmanGazeAssist = streamFrameData["kalmanGazeAssist"].get<double>();
+			}
+			if(streamFrameData["kalmanGazeMaxDeg"].is_number()){
+				newConfig.streamFrame.kalmanGazeMaxDeg = streamFrameData["kalmanGazeMaxDeg"].get<double>();
+			}
+			if(streamFrameData["kalmanGazeMinSpeed"].is_number()){
+				newConfig.streamFrame.kalmanGazeMinSpeed = streamFrameData["kalmanGazeMinSpeed"].get<double>();
+			}
+			if(streamFrameData["kalmanSmoothLagMs"].is_number()){
+				newConfig.streamFrame.kalmanSmoothLagMs = streamFrameData["kalmanSmoothLagMs"].get<double>();
 			}
 			if(streamFrameData["eyeGaze"].is_object()){
 				json eyeGazeData = streamFrameData["eyeGaze"];
@@ -994,15 +1106,52 @@ void ConfigLoader::WriteInfo(){
 					{"centerStrengthY", defaultSettings.streamFrame.pupilSwim.centerStrengthY},
 				}},
 				{"velocityFix", defaultSettings.streamFrame.velocityFix},
-				{"velocityFixMode", defaultSettings.streamFrame.velocityFixMode == 3 ? "derive" : (defaultSettings.streamFrame.velocityFixMode == 2 ? "full" : (defaultSettings.streamFrame.velocityFixMode == 1 ? "classic" : "off"))},
+				{"zeroCopyV3", defaultSettings.streamFrame.zeroCopyV3},
+				{"nvencTap", defaultSettings.streamFrame.nvencTap},
+				{"velocityFixMode", defaultSettings.streamFrame.velocityFixMode == 4 ? "kalman" : (defaultSettings.streamFrame.velocityFixMode == 3 ? "derive" : (defaultSettings.streamFrame.velocityFixMode == 2 ? "full" : (defaultSettings.streamFrame.velocityFixMode == 1 ? "classic" : "off")))},
 				{"deriveSmoothTauSlowMs", defaultSettings.streamFrame.deriveSmoothTauSlowMs},
 				{"deriveSmoothTauFastMs", defaultSettings.streamFrame.deriveSmoothTauFastMs},
 				{"deriveSmoothSpeedLow", defaultSettings.streamFrame.deriveSmoothSpeedLow},
 				{"deriveSmoothSpeedHigh", defaultSettings.streamFrame.deriveSmoothSpeedHigh},
+				{"deriveSmoothAngSeparate", defaultSettings.streamFrame.deriveSmoothAngSeparate},
+				{"deriveSmoothAngTauSlowMs", defaultSettings.streamFrame.deriveSmoothAngTauSlowMs},
+				{"deriveSmoothAngTauFastMs", defaultSettings.streamFrame.deriveSmoothAngTauFastMs},
+				{"deriveSmoothAngSpeedLow", defaultSettings.streamFrame.deriveSmoothAngSpeedLow},
+				{"deriveSmoothAngSpeedHigh", defaultSettings.streamFrame.deriveSmoothAngSpeedHigh},
 				{"deriveSplitDirLinear", defaultSettings.streamFrame.deriveSplitDirLinear},
 				{"deriveSplitDirAngular", defaultSettings.streamFrame.deriveSplitDirAngular},
 				{"deriveDirWindowMs", defaultSettings.streamFrame.deriveDirWindowMs},
 				{"deriveDirWeightPow", defaultSettings.streamFrame.deriveDirWeightPow},
+				{"deriveDirSource", defaultSettings.streamFrame.deriveDirSource == 2 ? "runtime" : (defaultSettings.streamFrame.deriveDirSource == 0 ? "window" : "secant")},
+				{"deriveMagSource", defaultSettings.streamFrame.deriveMagSource == 1 ? "scalar" : "vector"},
+				{"deriveReleaseLatch", defaultSettings.streamFrame.deriveReleaseLatch},
+				{"deriveLatchWindowMs", defaultSettings.streamFrame.deriveLatchWindowMs},
+				{"deriveLatchHoldMs", defaultSettings.streamFrame.deriveLatchHoldMs},
+				{"deriveLatchMinSpeed", defaultSettings.streamFrame.deriveLatchMinSpeed},
+				{"deriveLatchAngMinSpeed", defaultSettings.streamFrame.deriveLatchAngMinSpeed},
+				{"derivePreFilter", defaultSettings.streamFrame.derivePreFilter == 1 ? "median3" : "off"},
+				{"derivePreSmoothMs", defaultSettings.streamFrame.derivePreSmoothMs},
+				{"derivePreSmoothScope", defaultSettings.streamFrame.derivePreSmoothScope == 1 ? "both" : "direction"},
+				{"deriveDiagVelocity", defaultSettings.streamFrame.deriveDiagVelocity == 1 ? "zero" : "off"},
+				{"deriveLatchPoseAssist", defaultSettings.streamFrame.deriveLatchPoseAssist},
+				{"kalmanProcessAccel", defaultSettings.streamFrame.kalmanProcessAccel},
+				{"kalmanPosNoiseMm", defaultSettings.streamFrame.kalmanPosNoiseMm},
+				{"kalmanProcessAngAccel", defaultSettings.streamFrame.kalmanProcessAngAccel},
+				{"kalmanOriNoiseDeg", defaultSettings.streamFrame.kalmanOriNoiseDeg},
+				{"kalmanLeadMs", defaultSettings.streamFrame.kalmanLeadMs},
+				{"kalmanReleaseRewindMs", defaultSettings.streamFrame.kalmanReleaseRewindMs},
+				{"kalmanRewindHoldMs", defaultSettings.streamFrame.kalmanRewindHoldMs},
+				{"kalmanDirSmoothMs", defaultSettings.streamFrame.kalmanDirSmoothMs},
+				{"kalmanAngDirSmoothMs", defaultSettings.streamFrame.kalmanAngDirSmoothMs},
+				{"kalmanMagSource", defaultSettings.streamFrame.kalmanMagSource == 1 ? "fast" : "state"},
+				{"kalmanMagAccel", defaultSettings.streamFrame.kalmanMagAccel},
+				{"kalmanMagScale", defaultSettings.streamFrame.kalmanMagScale},
+				{"kalmanAngMagScale", defaultSettings.streamFrame.kalmanAngMagScale},
+				{"kalmanDupSkip", defaultSettings.streamFrame.kalmanDupSkip},
+				{"kalmanGazeAssist", defaultSettings.streamFrame.kalmanGazeAssist},
+				{"kalmanGazeMaxDeg", defaultSettings.streamFrame.kalmanGazeMaxDeg},
+				{"kalmanGazeMinSpeed", defaultSettings.streamFrame.kalmanGazeMinSpeed},
+				{"kalmanSmoothLagMs", defaultSettings.streamFrame.kalmanSmoothLagMs},
 			}},
 			{"takeCompositorScreenshots", defaultSettings.takeCompositorScreenshots},
 			{"onlyHandlePrivateFunctionality", defaultSettings.onlyHandlePrivateFunctionality},

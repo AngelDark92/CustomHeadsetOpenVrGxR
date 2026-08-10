@@ -101,6 +101,19 @@ private:
 	struct VelFixState {
 		static constexpr int ringSize = 8;
 		double pos[ringSize][3] = {};
+		// input prefilter history: last raw positions for the per-axis
+		// median-of-3 that feeds the ring when derivePreFilter is on
+		// (kills single-sample network spikes before the fit AND secant)
+		double rawPos[3][3] = {};
+		int rawCount = 0;
+		// pre-smoothed parallel streams (EMA, derivePreSmoothMs): the
+		// secant reads these when smoothing is on; the fit also reads the
+		// smoothed positions when scope=both
+		double smPos[ringSize][3] = {};
+		vr::HmdQuaternion_t smQuat[ringSize] = {};
+		double smPosEma[3] = {};
+		vr::HmdQuaternion_t smQuatEma = {1, 0, 0, 0};
+		bool haveSm = false;
 		double time[ringSize] = {};
 		int count = 0;   // valid entries
 		int head = 0;    // next write slot
@@ -153,7 +166,8 @@ public:
 private:
 	std::map<uint32_t, VelFixState> velFixStates = {};
 	// returns true and writes the derived velocity when the window is usable
-	bool DeriveMotion(uint32_t openVRID, const vr::DriverPose_t &pose, double derivedVel[3], double derivedAng[3]);
+	bool DeriveMotion(uint32_t openVRID, const vr::DriverPose_t &pose, double derivedVel[3], double derivedAng[3], double secantVel[3], double secantAng[3]);
+	static void ComputeRingSecant(const VelFixState &state, bool useSmoothed, double secantVel[3], double secantAng[3]);
 	// cached device classes (Prop_DeviceClass_Int32), resolved on first pose
 	std::map<uint32_t, int> deviceClasses = {};
 	// streamed-controller identity cache (serial prefix VRLINK*/SamsungVST*
@@ -166,6 +180,70 @@ private:
 	bool IsStreamedController(uint32_t openVRID);
 	// derive-mode adaptive smoothing state (pure math under its own lock;
 	// never calls out — lock discipline)
+	// one coherent estimated kinematic state per controller (kalman mode):
+	// per-axis constant-velocity Kalman for position/velocity, quaternion
+	// state integrated by the filtered angular velocity and corrected by
+	// measurements (MEKF-lite: residual rotation vector drives per-axis
+	// CV Kalman filters for the angular channel). guarded by
+	// deriveFilterLock; pure math only under the lock.
+	struct KalState {
+		bool have = false;
+		double time = 0;
+		double p[3] = {};
+		double v[3] = {};
+		// per-axis covariance [Ppp, Ppv, Pvv]
+		double P[3][3] = {};
+		vr::HmdQuaternion_t q = {1, 0, 0, 0};
+		double w[3] = {};
+		double Pa[3][3] = {}; // angular per-axis covariance
+		bool announced = false;
+		// telemetry only: EMA of normalized innovation squared (NIS ~ 1
+		// when the noise models match reality) + diag log throttle
+		double nisEma = 1.0;
+		double lastDiagLog = 0;
+		// raw input-step telemetry (FOV / tracking artifact watch): max
+		// single-step measurement distance and count of near-zero steps
+		// while the state was moving, since the last KALDIAG line
+		double lastMeas[3] = {};
+		bool haveMeas = false;
+		double stepMax = 0;
+		int stepFrozen = 0;
+		int dupSkipped = 0;
+		int gazeBends = 0;
+		double gazeBendSum = 0;
+		double gazeBendMax = 0;
+		// velocity history ring for the release-rewind experiment: ~260ms
+		// of (t, v, w) at stream cadence, plus the rewind window armed by
+		// the input tap when the experiment is enabled
+		static constexpr int histSize = 24;
+		double histT[histSize] = {};
+		double histV[histSize][3] = {};
+		double histW[histSize][3] = {};
+		double histP[histSize][3] = {};
+		vr::HmdQuaternion_t histQ[histSize] = {};
+		int histHead = 0;
+		int histCount = 0;
+		double rewindUntil = 0;
+		double rewindTarget = 0;
+		// slow-direction EMA copies for split reporting
+		double vSlow[3] = {};
+		double wSlow[3] = {};
+		bool haveSlow = false;
+		// knob echo, so live tuning re-announces in the log
+		double lastQa = -1;
+		// parallel fast velocity estimator (magnitude channel): per-axis
+		// CV kalman over the same measurements with its own accel
+		double pF[3] = {};
+		double vF[3] = {};
+		double PF[3][3] = {};
+		bool haveFast = false;
+	};
+	std::map<uint32_t, KalState> kalStates;
+	// latest HMD orientation, for rotating the head-space gaze ray into
+	// driver space (guarded by deriveFilterLock)
+	vr::HmdQuaternion_t hmdQuatForGaze = {1, 0, 0, 0};
+	bool haveHmdQuat = false;
+	bool gazeAssistAnnounced = false;
 	struct DeriveFilterState {
 		double vel[3] = {};
 		double ang[3] = {};
@@ -187,6 +265,29 @@ private:
 		int dirHead = 0;
 		int dirCount = 0;
 		bool splitLogged = false;
+		// scalar magnitude channel: EMA of |raw| directly. the vector EMA's
+		// magnitude CANCELS during direction changes (opposing components
+		// average toward zero), which both jitters and under-reads; the
+		// scalar EMA smooths the speed itself (field data 2026-08-10: the
+		// vector-EMA output still jittered 8-15%/sample at 10ms cadence)
+		double magEma = 0;
+		double angMagEma = 0;
+		// release latch: per-channel rolling peaks of the OUTPUT over the
+		// latch window. v replays from the linear-peak moment, w from the
+		// angular-peak moment (a single combined key poisoned arm throws
+		// with the windup vector — field 2026-08-10)
+		double linPeakMag = 0;
+		double linPeakVel[3] = {};
+		double linPeakTime = 0;
+		double angPeakMag = 0;
+		double angPeakVel[3] = {};
+		double angPeakTime = 0;
+		double latchUntil = 0;
+		// last direction source, so a mid-session source switch re-logs
+		int lastSource = -1;
+		// throttle for the BURSTDIR diagnostic line (direction-source
+		// comparison data; written from the fix block outside all locks)
+		double lastDirLogTime = 0;
 	};
 	std::map<uint32_t, DeriveFilterState> deriveFilterStates = {};
 	std::mutex deriveFilterLock;

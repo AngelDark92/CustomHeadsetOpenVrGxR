@@ -1,6 +1,8 @@
 #include "FrameProcessor.h"
 #include "DriverLog.h"
 #include "ReconLogger.h"
+#include "ZeroCopy.h"
+#include "NvencTap.h"
 
 // shared head-direction -> per-eye viewport uv mapping. this is the exact
 // math the gaze debug ring uses (verified against the runtime's foveation
@@ -340,6 +342,7 @@ bool FrameProcessor::EnsureDevice(){
 	}
 	DriverLog("FrameProcessor: created D3D11 device");
 	ReconLogger::Get().NoteProcessingDevice(device);
+	ZeroCopyV3::Get().SetProcessingDevice(device);
 	// recon (opt-in): shared-vtable context hooks are installed lazily from
 	// ProcessEye once the flag is known; nothing here unless enabled.
 	return true;
@@ -788,6 +791,104 @@ ID3D11RenderTargetView* FrameProcessor::GetLayerRTV(ID3D11Texture2D* texture, in
 	return rtv;
 }
 
+ID3D11ShaderResourceView* FrameProcessor::GetLayerSRV(ID3D11Texture2D* texture, int slice, DXGI_FORMAT srvFormat){
+	if(slice < 0 || slice > 1){
+		return nullptr;
+	}
+	auto found = layerSRVs.find(texture);
+	if(found != layerSRVs.end() && found->second[slice]){
+		return found->second[slice];
+	}
+	// array dimension covers plain and single-pass-instanced layers, same
+	// as the RTV analog
+	D3D11_SHADER_RESOURCE_VIEW_DESC desc = {};
+	desc.Format = srvFormat;
+	desc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2DARRAY;
+	desc.Texture2DArray.MostDetailedMip = 0;
+	desc.Texture2DArray.MipLevels = 1;
+	desc.Texture2DArray.FirstArraySlice = (UINT)slice;
+	desc.Texture2DArray.ArraySize = 1;
+	ID3D11ShaderResourceView* srv = nullptr;
+	if(FAILED(device->CreateShaderResourceView(texture, &desc, &srv)) || !srv){
+		return nullptr;
+	}
+	layerSRVs[texture][slice] = srv;
+	return srv;
+}
+
+void FrameProcessor::ReleaseShadowSet(ShadowSet &set){
+	for(int i = 0; i < ShadowSet::slots; i++){
+		if(set.tex[i]){
+			set.tex[i]->Release();
+			set.tex[i] = nullptr;
+		}
+		set.handle[i] = nullptr;
+	}
+}
+
+bool FrameProcessor::EnsureShadow(uint32_t width, uint32_t height, DXGI_FORMAT format, uint32_t arraySize, ShadowSet*& outSet){
+	uint64_t key = ((uint64_t)width << 32) | height;
+	auto found = shadowSets.find(key);
+	if(found != shadowSets.end() && found->second.arraySize != arraySize){
+		// layer shape changed under the same size key: rebuild
+		ReleaseShadowSet(found->second);
+		shadowSets.erase(found);
+		found = shadowSets.end();
+	}
+	if(found == shadowSets.end()){
+		ShadowSet set;
+		set.arraySize = arraySize;
+		D3D11_TEXTURE2D_DESC desc = {};
+		desc.Width = width;
+		desc.Height = height;
+		desc.MipLevels = 1;
+		desc.ArraySize = arraySize;
+		desc.Format = format;
+		desc.SampleDesc.Count = 1;
+		desc.Usage = D3D11_USAGE_DEFAULT;
+		desc.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+		// legacy-shared, matching the layer's own sharing mode (misc=0x2):
+		// vrlink's device opens the handle in the copy detour
+		desc.MiscFlags = D3D11_RESOURCE_MISC_SHARED;
+		bool ok = true;
+		for(int i = 0; i < ShadowSet::slots && ok; i++){
+			if(FAILED(device->CreateTexture2D(&desc, nullptr, &set.tex[i])) || !set.tex[i]){
+				ok = false;
+				break;
+			}
+			IDXGIResource* dxgi = nullptr;
+			if(FAILED(set.tex[i]->QueryInterface(__uuidof(IDXGIResource), (void**)&dxgi)) || !dxgi){
+				ok = false;
+				break;
+			}
+			HRESULT hr = dxgi->GetSharedHandle(&set.handle[i]);
+			dxgi->Release();
+			if(FAILED(hr) || !set.handle[i]){
+				ok = false;
+				break;
+			}
+		}
+		if(!ok){
+			ReleaseShadowSet(set);
+			PROCESSOR_ERROR("zero-copy v3: shadow set creation failed for %ux%u", width, height);
+			return false;
+		}
+		for(int i = 0; i < ShadowSet::slots; i++){
+			ZeroCopyV3::Get().PublishShadow(width, height, i, set.handle[i]);
+		}
+		found = shadowSets.emplace(key, set).first;
+	}
+	ShadowSet &set = found->second;
+	// rotate once per frame; both eyes / slices of a frame share the slot
+	if(set.lastFrame != frameCounter){
+		set.lastFrame = frameCounter;
+		set.index = (set.index + 1) % ShadowSet::slots;
+	}
+	set.usedThisFrame = true;
+	outSet = &set;
+	return true;
+}
+
 void FrameProcessor::EvictTexture(vr::SharedTextureHandle_t handle){
 	std::lock_guard<std::mutex> guard(lock);
 	auto it = openedTextures.find((uint64_t)handle);
@@ -799,8 +900,17 @@ void FrameProcessor::EvictTexture(vr::SharedTextureHandle_t handle){
 			}
 			layerRTVs.erase(rtvIt);
 		}
+		auto srvIt = layerSRVs.find(it->second);
+		if(srvIt != layerSRVs.end()){
+			for(auto *srv : srvIt->second){
+				if(srv){ srv->Release(); }
+			}
+			layerSRVs.erase(srvIt);
+		}
 		layerRtvFailed.erase(it->second);
 		layerPathLogged.erase(it->second);
+		layerCopyFrame.erase(it->second);
+		v3Failed.erase(it->second);
 		it->second->Release();
 		openedTextures.erase(it);
 	}
@@ -814,8 +924,16 @@ void FrameProcessor::EvictAll(){
 		}
 	}
 	layerRTVs.clear();
+	for(auto &pair : layerSRVs){
+		for(auto *srv : pair.second){
+			if(srv){ srv->Release(); }
+		}
+	}
+	layerSRVs.clear();
 	layerRtvFailed.clear();
 	layerPathLogged.clear();
+	layerCopyFrame.clear();
+	v3Failed.clear();
 	for(auto &pair : openedTextures){
 		pair.second->Release();
 	}
@@ -852,9 +970,32 @@ bool FrameProcessor::ProcessEye(ID3D11Texture2D* texture, const vr::VRTextureBou
 		}
 		return false;
 	}
+	// zero-copy v3 tier (above direct render): sample the layer directly
+	// and draw into the rotating shared shadow; vrlink's staging copy is
+	// redirected to the shadow (ZeroCopy.cpp) so the layer is never
+	// written and scratchIn is never copied — 4x -> 2x traffic. sticky
+	// per-texture fallback to the normal tiers on any setup failure.
+	bool v3Active = false;
+	ShadowSet* shadow = nullptr;
+	ID3D11ShaderResourceView* layerSRV = nullptr;
+	ID3D11RenderTargetView* shadowRTV = nullptr;
+	if(settings.config.zeroCopyV3 && v3Failed.find(texture) == v3Failed.end()){
+		ReconLogger::Get().InstallOnce(context);
+		layerSRV = GetLayerSRV(texture, slice, mappedScratchFormat);
+		if(layerSRV && EnsureShadow(desc.Width, desc.Height, desc.Format, desc.ArraySize, shadow)){
+			shadowRTV = GetLayerRTV(shadow->tex[shadow->index], slice, layerRtvFormat);
+		}
+		if(shadowRTV){
+			v3Active = true;
+		}else{
+			v3Failed.insert(texture);
+			DriverLog("zero-copy v3: setup failed for %ux%u layer (SRV/shadow/RTV) — normal path for this texture",
+				desc.Width, desc.Height);
+		}
+	}
 	// in-place tiers: direct render into the layer, else copy-back
 	ID3D11RenderTargetView* directRTV = nullptr;
-	if(settings.config.directRender && layerRtvFailed.find(texture) == layerRtvFailed.end()){
+	if(!v3Active && settings.config.directRender && layerRtvFailed.find(texture) == layerRtvFailed.end()){
 		directRTV = GetLayerRTV(texture, slice, layerRtvFormat);
 		if(!directRTV){
 			layerRtvFailed.insert(texture);
@@ -863,9 +1004,9 @@ bool FrameProcessor::ProcessEye(ID3D11Texture2D* texture, const vr::VRTextureBou
 	}
 	if(layerPathLogged.insert(texture).second){
 		DriverLog("FrameProcessor: %s path for %ux%u format=%u layer",
-			directRTV ? "direct render" : "copy-back", desc.Width, desc.Height, (unsigned)desc.Format);
+			v3Active ? "zero-copy v3" : (directRTV ? "direct render" : "copy-back"), desc.Width, desc.Height, (unsigned)desc.Format);
 	}
-	if(!EnsureScratch(desc.Width, desc.Height, mappedScratchFormat, directRTV == nullptr)){
+	if(!v3Active && !EnsureScratch(desc.Width, desc.Height, mappedScratchFormat, directRTV == nullptr)){
 		return false;
 	}
 
@@ -876,8 +1017,18 @@ bool FrameProcessor::ProcessEye(ID3D11Texture2D* texture, const vr::VRTextureBou
 	// then samples a blank scratch and the copy-back blacks out slice 0
 	// (the left eye) while slice 1 renders untouched (the Demeo one-eye
 	// bug). the subresource form is legal for both plain and array layers.
+	// v3 samples the layer directly: no copy at all.
 	UINT layerSub = D3D11CalcSubresource(0, (UINT)slice, desc.MipLevels);
-	context->CopySubresourceRegion(scratchIn, 0, 0, 0, 0, texture, layerSub, nullptr);
+	if(!v3Active){
+		// skip the copy if this exact subresource was already copied into
+		// this scratch THIS frame (side-by-side layouts process the same
+		// slice twice; nothing else writes scratchIn in between)
+		uint64_t &lastFrame = layerCopyFrame[texture][slice];
+		if(lastFrame != frameCounter){
+			context->CopySubresourceRegion(scratchIn, 0, 0, 0, 0, texture, layerSub, nullptr);
+			lastFrame = frameCounter;
+		}
+	}
 
 	// constants
 	const StreamFrameConfig &config = settings.config;
@@ -1101,17 +1252,17 @@ bool FrameProcessor::ProcessEye(ID3D11Texture2D* texture, const vr::VRTextureBou
 	context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 	context->VSSetShader(vertexShader, nullptr, 0);
 	context->PSSetShader(pixelShader, nullptr, 0);
-	ID3D11ShaderResourceView* srvs[2] = { scratchInSRV, lutSRV };
+	ID3D11ShaderResourceView* srvs[2] = { v3Active ? layerSRV : scratchInSRV, lutSRV };
 	context->PSSetShaderResources(0, 2, srvs);
 	context->PSSetSamplers(0, 1, &sampler);
 	context->PSSetConstantBuffers(0, 1, &constantBuffer);
 	context->RSSetViewports(1, &viewport);
-	ID3D11RenderTargetView* target = directRTV ? directRTV : scratchOutRTV;
+	ID3D11RenderTargetView* target = v3Active ? shadowRTV : (directRTV ? directRTV : scratchOutRTV);
 	context->OMSetRenderTargets(1, &target, nullptr);
 	context->Draw(3, 0);
 	context->ClearState();
 
-	if(!directRTV){
+	if(!directRTV && !v3Active){
 		// fallback path: copy only the bounds region back into the layer
 		D3D11_BOX box = {};
 		box.left = (UINT)(uMin * desc.Width);
@@ -1128,6 +1279,25 @@ bool FrameProcessor::ProcessSceneLayer(vr::SharedTextureHandle_t leftEye, vr::Sh
 	const vr::VRTextureBounds_t &leftBounds, const vr::VRTextureBounds_t &rightBounds,
 	vr::SharedTextureHandle_t syncTexture, const FrameProcessSettings &settings){
 	std::lock_guard<std::mutex> guard(lock);
+
+	// zero-copy v3 arming follows the live-reloaded flag; frameCounter
+	// drives the shadow slot rotation (one advance per scene frame)
+	{
+		static bool prevArmed = false;
+		bool nowArmed = settings.config.zeroCopyV3;
+		if(nowArmed && !prevArmed){
+			// fresh observation phase: un-suppress the recon copy lines so
+			// the post-arming copies are visible in the log
+			ReconLogger::Get().ResetSuppression();
+		}
+		prevArmed = nowArmed;
+	}
+	ZeroCopyV3::Get().SetArmed(settings.config.zeroCopyV3);
+	ZeroCopyV3::Get().MaybeHeartbeat();
+	if(settings.config.nvencTap){
+		NvencTap::Get().TryInstall();
+	}
+	frameCounter++;
 
 	// re-arm the diagnostic budget every 5 minutes so problems in apps
 	// launched later in the session are not silenced by earlier errors
@@ -1213,6 +1383,14 @@ bool FrameProcessor::ProcessSceneLayer(vr::SharedTextureHandle_t leftEye, vr::Sh
 	// almost never kicks on its own), ReleaseSync signals before any of our work,
 	// and the driver encodes the untouched texture.
 	context->Flush();
+	// publish this frame's shadows only AFTER the producing Flush, so the
+	// redirect can never hand vrlink an unflushed image
+	for(auto &pair : shadowSets){
+		if(pair.second.usedThisFrame){
+			pair.second.usedThisFrame = false;
+			ZeroCopyV3::Get().MarkFresh((uint32_t)(pair.first >> 32), (uint32_t)(pair.first & 0xFFFFFFFFu), pair.second.index);
+		}
+	}
 
 	mutex->ReleaseSync(0);
 	mutex->Release();

@@ -65,6 +65,10 @@ public:
 	// also log any copy/bind involving a texture of the scene layer's size.
 	void NoteLayerDimensions(uint32_t width, uint32_t height);
 
+	// clear the bounded-log suppression counters, so a new observation
+	// phase (e.g. zero-copy v3 arming) sees fresh copy lines instead of
+	// silence inherited from earlier in the session
+	void ResetSuppression();
 	bool Enabled() const { return enabled; }
 	void SetEnabled(bool on){ enabled = on; }
 

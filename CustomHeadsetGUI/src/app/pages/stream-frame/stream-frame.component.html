@@ -586,6 +586,7 @@
             <mat-option value="classic">Classic (linear velocity only)</mat-option>
             <mat-option value="full">Full (angular + release timing)</mat-option>
             <mat-option value="derive">Derive (always use pose-derived)</mat-option>
+            <mat-option value="kalman">Kalman (coherent state, new)</mat-option>
         </mat-select>
     </div>
 </div>
@@ -659,6 +660,28 @@
     </div>
     <div class="control">
         <mat-slide-toggle [(ngModel)]="settings.directRender" (ngModelChange)="save()"></mat-slide-toggle>
+    </div>
+</div>
+
+<div class="field">
+    <div class="title">
+        <span>Zero-Copy v3 (experimental)</span>
+        <app-field-tip info="Performance: instead of writing the processed frame back into the layer, it is drawn into a shared shadow texture and the streamer's own per-frame staging copy is redirected to read it - roughly halving this driver's GPU memory traffic on top of Direct Render. Failure mode is benign: any miss ships one unprocessed frame (a brief ungraded flash), the same as a sync timeout skip. Test in a disposable session first: grep the log for 'zero-copy v3: redirect active' to confirm engagement, and 'passthrough' lines to see misses. Turn off if you see persistent unprocessed frames or flicker." />
+        <app-reset-button [canReset]="settings.zeroCopyV3 != defaults.zeroCopyV3" (resetClick)="reset('zeroCopyV3')"></app-reset-button>
+    </div>
+    <div class="control">
+        <mat-slide-toggle [(ngModel)]="settings.zeroCopyV3" (ngModelChange)="save()"></mat-slide-toggle>
+    </div>
+</div>
+
+<div class="field">
+    <div class="title">
+        <span>NVENC Tap (observe only)</span>
+        <app-field-tip info="Diagnostic that watches how the streamer sets up its video encoder: resolution, frame rate, rate-control parameters, and which GPU textures it feeds the encoder directly. Changes NOTHING - it only writes log lines. Turn it on BEFORE launching SteamVR (the encoder is created early and would otherwise be missed); changing the stream resolution mid-session also forces the encoder to be recreated and observed. One disposable session with this on gives the data for both the direct-encode zero-copy variant and the black-floor/banding encoder work." />
+        <app-reset-button [canReset]="settings.nvencTap != defaults.nvencTap" (resetClick)="reset('nvencTap')"></app-reset-button>
+    </div>
+    <div class="control">
+        <mat-slide-toggle [(ngModel)]="settings.nvencTap" (ngModelChange)="save()"></mat-slide-toggle>
     </div>
 </div>
 
@@ -739,6 +762,97 @@
 
 <div class="field">
     <div class="title">
+        <span>Kalman Tuning (accel m/s&#178;, pos mm, ang accel, ori deg, lead ms)</span>
+        <app-field-tip info="For the Kalman velocity mode: a single estimator produces position, rotation, velocity and spin together, the same architecture native lighthouse controllers use - so the rendered hands and throw physics always agree. Accel is THE responsiveness knob: higher trusts your motion more (snappier throws, a bit noisier), lower trusts smoothness (calmer hands, slight lag); try 20-120. Pos mm and ori deg describe how noisy the incoming tracking is (raise them on a bad network to smooth more). Lead predicts the reported state slightly ahead to counter streaming latency (0-30ms). All live." />
+        <app-reset-button [canReset]="settings.kalmanProcessAccel != defaults.kalmanProcessAccel || settings.kalmanPosNoiseMm != defaults.kalmanPosNoiseMm || settings.kalmanProcessAngAccel != defaults.kalmanProcessAngAccel || settings.kalmanOriNoiseDeg != defaults.kalmanOriNoiseDeg || settings.kalmanLeadMs != defaults.kalmanLeadMs" (resetClick)="reset('kalmanProcessAccel'); reset('kalmanPosNoiseMm'); reset('kalmanProcessAngAccel'); reset('kalmanOriNoiseDeg'); reset('kalmanLeadMs')"></app-reset-button>
+    </div>
+    <div class="control">
+        <span>A</span><input matInput [(ngModel)]="settings.kalmanProcessAccel" step="10" min="1" max="2000" (ngModelChange)="save()" type="number">
+        <span>P</span><input matInput [(ngModel)]="settings.kalmanPosNoiseMm" step="0.5" min="0.2" max="20" (ngModelChange)="save()" type="number">
+        <span>W</span><input matInput [(ngModel)]="settings.kalmanProcessAngAccel" step="50" min="10" max="20000" (ngModelChange)="save()" type="number">
+        <span>O</span><input matInput [(ngModel)]="settings.kalmanOriNoiseDeg" step="0.1" min="0.05" max="10" (ngModelChange)="save()" type="number">
+        <span>L</span><input matInput [(ngModel)]="settings.kalmanLeadMs" step="5" min="0" max="50" (ngModelChange)="save()" type="number">
+    </div>
+</div>
+
+<div class="field">
+    <div class="title">
+        <span>Kalman Smoothed Reporting Lag (ms)</span>
+        <app-field-tip info="The one remaining pure-estimator upgrade, aimed at what this game actually reads (your hand's position history): instead of estimating the present from the past only, the reported hand state is estimated a few ms in the past using tracking samples from BOTH sides of that moment - as calm as your A=1 tuning AND amplitude-accurate like a fast filter, a combination plain filtering cannot achieve. The whole reported state (position, rotation, velocity, spin) shifts together, staying coherent. The single honest cost: this many ms of added hand latency. Try 20-35; 0 = off. If even 35 doesn't restore throw strength at your calm settings, the tracking data itself is the ceiling." />
+        <app-reset-button [canReset]="settings.kalmanSmoothLagMs != defaults.kalmanSmoothLagMs" (resetClick)="reset('kalmanSmoothLagMs')"></app-reset-button>
+    </div>
+    <div class="control">
+        <input matInput [(ngModel)]="settings.kalmanSmoothLagMs" step="5" min="0" max="100" (ngModelChange)="save()" type="number">
+    </div>
+</div>
+
+<div class="field">
+    <div class="title">
+        <span>Gaze Aim Assist (strength 0-1 / max bend deg / min speed m/s)</span>
+        <app-field-tip info="Uses your eye tracking to fix the last class of bad throws: you look at the target before your hand lets go, so your gaze knows the intended direction even when the release samples the hand's snap-back. Above the minimum speed, the reported throw direction is bent toward where you're looking - by strength fraction of the angle, never more than the max bend cap. Direction only: throw power and spin are untouched, the rendered hand is untouched, and if eye data is missing or stale for even 100ms it silently does nothing. Start at 0.4-0.6; the 'gaze aim assist ENGAGED' log line confirms it's live. 0 = off. TEST MODE: values above 1 shrink the disagreement needed for full gaze takeover - G=10 with max bend 180 locks every throw straight onto your gaze, for verifying the whole pipeline." />
+        <app-reset-button [canReset]="settings.kalmanGazeAssist != defaults.kalmanGazeAssist || settings.kalmanGazeMaxDeg != defaults.kalmanGazeMaxDeg || settings.kalmanGazeMinSpeed != defaults.kalmanGazeMinSpeed" (resetClick)="reset('kalmanGazeAssist'); reset('kalmanGazeMaxDeg'); reset('kalmanGazeMinSpeed')"></app-reset-button>
+    </div>
+    <div class="control">
+        <span>G</span><input matInput [(ngModel)]="settings.kalmanGazeAssist" step="0.1" min="0" max="20" (ngModelChange)="save()" type="number">
+        <span>°</span><input matInput [(ngModel)]="settings.kalmanGazeMaxDeg" step="5" min="5" max="180" (ngModelChange)="save()" type="number">
+        <span>S</span><input matInput [(ngModel)]="settings.kalmanGazeMinSpeed" step="0.1" min="0.3" max="4" (ngModelChange)="save()" type="number">
+    </div>
+</div>
+
+<div class="field">
+    <div class="title">
+        <span>Kalman Duplicate-Sample Skip</span>
+        <app-field-tip info="Major data-quality fix: telemetry caught the streamer repeating the last hand position thousands of times per session whenever fresh tracking hadn't arrived - and every repeat told the filter your hand STOPPED, sapping throw strength and destabilizing fast estimators. With this on, repeated positions while your hand is moving are treated as missing data: the filter coasts through them instead of braking. Genuine stillness is unaffected. Leave on; the toggle exists for A/B. After enabling, your tuned A may deserve revisiting upward (some of what forced A=1 was this pollution, not real noise)." />
+        <app-reset-button [canReset]="settings.kalmanDupSkip != defaults.kalmanDupSkip" (resetClick)="reset('kalmanDupSkip')"></app-reset-button>
+    </div>
+    <div class="control">
+        <mat-slide-toggle [(ngModel)]="settings.kalmanDupSkip" (ngModelChange)="save()"></mat-slide-toggle>
+    </div>
+</div>
+
+<div class="field">
+    <div class="title">
+        <span>Kalman Throw Strength (source / fast accel / scale / spin scale)</span>
+        <app-field-tip info="Fixes weak throws at low Accel without giving up the calm direction you tuned: with source Fast, throw STRENGTH is measured by a second, snappier estimator running in parallel (its own accel below, 60 default - higher = punchier peaks), while the throw DIRECTION still comes from your calm A=1 state. Always on, no gates, no thresholds. The two Scale numbers are plain multipliers applied last (1 = neutral, 1.15 = +15% oomph) for final taste and per-game feel. Only the reported velocity is shaped; the rendered hand never changes." />
+        <app-reset-button [canReset]="settings.kalmanMagSource != defaults.kalmanMagSource || settings.kalmanMagAccel != defaults.kalmanMagAccel || settings.kalmanMagScale != defaults.kalmanMagScale || settings.kalmanAngMagScale != defaults.kalmanAngMagScale" (resetClick)="reset('kalmanMagSource'); reset('kalmanMagAccel'); reset('kalmanMagScale'); reset('kalmanAngMagScale')"></app-reset-button>
+    </div>
+    <div class="control">
+        <mat-select [(ngModel)]="settings.kalmanMagSource" (ngModelChange)="save()">
+            <mat-option value="state">Calm state (default)</mat-option>
+            <mat-option value="fast">Fast estimator (recommended at low A)</mat-option>
+        </mat-select>
+        <span>FA</span><input matInput [(ngModel)]="settings.kalmanMagAccel" step="10" min="1" max="2000" (ngModelChange)="save()" type="number">
+        <span>S</span><input matInput [(ngModel)]="settings.kalmanMagScale" step="0.05" min="0.25" max="4" (ngModelChange)="save()" type="number">
+        <span>Sa</span><input matInput [(ngModel)]="settings.kalmanAngMagScale" step="0.05" min="0.25" max="4" (ngModelChange)="save()" type="number">
+    </div>
+</div>
+
+<div class="field">
+    <div class="title">
+        <span>Kalman Direction Smoothing (linear ms / angular ms)</span>
+        <app-field-tip info="What your A=1 tuning discovered, made into its own knob: throw DIRECTION gets heavy smoothing (the calm you liked) while throw STRENGTH stays live (no weak throws, nothing slipping out of your hand). Set Accel back to 40-60 and put 60-90 here; direction takes on the A=1 steadiness while magnitude keeps full snap. Angular ditto for spin. 0 = off. Only the reported velocity is shaped; the rendered hand is untouched." />
+        <app-reset-button [canReset]="settings.kalmanDirSmoothMs != defaults.kalmanDirSmoothMs || settings.kalmanAngDirSmoothMs != defaults.kalmanAngDirSmoothMs" (resetClick)="reset('kalmanDirSmoothMs'); reset('kalmanAngDirSmoothMs')"></app-reset-button>
+    </div>
+    <div class="control">
+        <span>Dir</span><input matInput [(ngModel)]="settings.kalmanDirSmoothMs" step="10" min="0" max="300" (ngModelChange)="save()" type="number">
+        <span>DirA</span><input matInput [(ngModel)]="settings.kalmanAngDirSmoothMs" step="10" min="0" max="300" (ngModelChange)="save()" type="number">
+    </div>
+</div>
+
+<div class="field">
+    <div class="title">
+        <span>Kalman Release Rewind (ms) / Hold (ms) - EXPERIMENT</span>
+        <app-field-tip info="Single-session experiment, off at 0. Hypothesis: your trigger release reaches the PC 40-60ms later than your hand motion does, so games read the hand AFTER it already snapped back - that is where reverse throws come from. When set, the moment your release arrives, the reported velocity is taken from Rewind ms earlier in the motion history (then blends back to live over Hold ms). This is pure time re-alignment by one constant - if a value around 45 makes reverse throws vanish, the hypothesis is proven and the value IS your network's input lag; if no value in 30-60 helps, the hypothesis is dead and this stays off forever. The rendered hand is never touched." />
+        <app-reset-button [canReset]="settings.kalmanReleaseRewindMs != defaults.kalmanReleaseRewindMs || settings.kalmanRewindHoldMs != defaults.kalmanRewindHoldMs" (resetClick)="reset('kalmanReleaseRewindMs'); reset('kalmanRewindHoldMs')"></app-reset-button>
+    </div>
+    <div class="control">
+        <span>R</span><input matInput [(ngModel)]="settings.kalmanReleaseRewindMs" step="5" min="0" max="150" (ngModelChange)="save()" type="number">
+        <span>H</span><input matInput [(ngModel)]="settings.kalmanRewindHoldMs" step="10" min="20" max="300" (ngModelChange)="save()" type="number">
+    </div>
+</div>
+
+<div class="field">
+    <div class="title">
         <span>Derive Smoothing (tau slow/fast ms, speed low/high)</span>
         <app-field-tip info="Speed-adaptive smoothing for the Derive velocity mode, live reloaded. The filter time constant slides from tau slow (held still: kills trembling) to tau fast (throw speeds: near raw so the peak survives) as effective speed crosses low..high. Lower tau fast raises the reported peak but passes more raw noise at release; if throw directions misbehave, prefer the Split Direction toggles below over pushing tau fast toward zero." />
         <app-reset-button [canReset]="settings.deriveSmoothTauSlowMs != defaults.deriveSmoothTauSlowMs || settings.deriveSmoothTauFastMs != defaults.deriveSmoothTauFastMs || settings.deriveSmoothSpeedLow != defaults.deriveSmoothSpeedLow || settings.deriveSmoothSpeedHigh != defaults.deriveSmoothSpeedHigh" (resetClick)="reset('deriveSmoothTauSlowMs'); reset('deriveSmoothTauFastMs'); reset('deriveSmoothSpeedLow'); reset('deriveSmoothSpeedHigh')"></app-reset-button>
@@ -748,6 +862,21 @@
         <span>τF</span><input matInput [(ngModel)]="settings.deriveSmoothTauFastMs" step="1" min="1" max="60" (ngModelChange)="save()" type="number">
         <span>sL</span><input matInput [(ngModel)]="settings.deriveSmoothSpeedLow" step="0.05" min="0" max="3" (ngModelChange)="save()" type="number">
         <span>sH</span><input matInput [(ngModel)]="settings.deriveSmoothSpeedHigh" step="0.05" min="0.1" max="5" (ngModelChange)="save()" type="number">
+    </div>
+</div>
+
+<div class="field">
+    <div class="title">
+        <span>Angular Smoothing: Separate (tau slow/fast ms, speed low/high rad/s)</span>
+        <app-field-tip info="Gives the angular (spin) channel its own speed-adaptive smoothing instead of sharing the linear channel's filter. Field data shows the shared filter under-serves spin: reported angular speed swings about +-40% around raw. Defaults are chosen to be nearly behavior neutral on enable, so tune from there: raise tau fast to calm spin jitter, lower speed high if wrist-flick throws lose their snap. Angular speeds are in rad/s (a firm wrist flick peaks around 10-20)." />
+        <app-reset-button [canReset]="settings.deriveSmoothAngSeparate != defaults.deriveSmoothAngSeparate || settings.deriveSmoothAngTauSlowMs != defaults.deriveSmoothAngTauSlowMs || settings.deriveSmoothAngTauFastMs != defaults.deriveSmoothAngTauFastMs || settings.deriveSmoothAngSpeedLow != defaults.deriveSmoothAngSpeedLow || settings.deriveSmoothAngSpeedHigh != defaults.deriveSmoothAngSpeedHigh" (resetClick)="reset('deriveSmoothAngSeparate'); reset('deriveSmoothAngTauSlowMs'); reset('deriveSmoothAngTauFastMs'); reset('deriveSmoothAngSpeedLow'); reset('deriveSmoothAngSpeedHigh')"></app-reset-button>
+    </div>
+    <div class="control">
+        <mat-slide-toggle [(ngModel)]="settings.deriveSmoothAngSeparate" (ngModelChange)="save()"></mat-slide-toggle>
+        <span>τS</span><input matInput [(ngModel)]="settings.deriveSmoothAngTauSlowMs" step="5" min="1" max="300" (ngModelChange)="save()" type="number">
+        <span>τF</span><input matInput [(ngModel)]="settings.deriveSmoothAngTauFastMs" step="1" min="1" max="60" (ngModelChange)="save()" type="number">
+        <span>sL</span><input matInput [(ngModel)]="settings.deriveSmoothAngSpeedLow" step="0.1" min="0" max="30" (ngModelChange)="save()" type="number">
+        <span>sH</span><input matInput [(ngModel)]="settings.deriveSmoothAngSpeedHigh" step="0.5" min="0.5" max="60" (ngModelChange)="save()" type="number">
     </div>
 </div>
 
@@ -770,6 +899,94 @@
     </div>
     <div class="control">
         <mat-slide-toggle [(ngModel)]="settings.deriveSplitDirAngular" (ngModelChange)="save()"></mat-slide-toggle>
+    </div>
+</div>
+
+<div class="field">
+    <div class="title">
+        <span>Latch Angular Min Speed (rad/s) / Input Prefilter</span>
+        <app-field-tip info="Angular min speed: the spin channel's own latch gate - wrist snaps above this replay their peak spin at release, gentler rotation stays live (6 is a deliberate flick; casual regrabs sit far below). Input prefilter median3: cleans single-frame network position spikes BEFORE velocity is derived, at one sample of lag - the recommended fix for jitter tails and twitchy held objects. Off restores raw input for A/B." />
+        <app-reset-button [canReset]="settings.deriveLatchAngMinSpeed != defaults.deriveLatchAngMinSpeed || settings.derivePreFilter != defaults.derivePreFilter" (resetClick)="reset('deriveLatchAngMinSpeed'); reset('derivePreFilter')"></app-reset-button>
+    </div>
+    <div class="control">
+        <input matInput [(ngModel)]="settings.deriveLatchAngMinSpeed" step="0.5" min="0" max="30" (ngModelChange)="save()" type="number">
+        <mat-select [(ngModel)]="settings.derivePreFilter" (ngModelChange)="save()">
+            <mat-option value="off">Off (raw input)</mat-option>
+            <mat-option value="median3">Median of 3 (recommended)</mat-option>
+        </mat-select>
+    </div>
+</div>
+
+<div class="field">
+    <div class="title">
+        <span>Input Pre-Smoothing (ms) / Scope</span>
+        <app-field-tip info="Smooths the raw tracking stream BEFORE anything is derived from it, with adjustable strength (0 = off; try 10-25; capped at 100). Scope 'Direction only' cleans what the throw direction and rendered-hand prediction see while speed is still derived from the exact positions - the recommended way to calm jittery hands without losing throw power. 'Both' also feeds the smoothed stream to the speed derivation: maximum calm, slight peak lag. Works alongside the median-of-3 spike filter." />
+        <app-reset-button [canReset]="settings.derivePreSmoothMs != defaults.derivePreSmoothMs || settings.derivePreSmoothScope != defaults.derivePreSmoothScope" (resetClick)="reset('derivePreSmoothMs'); reset('derivePreSmoothScope')"></app-reset-button>
+    </div>
+    <div class="control">
+        <input matInput [(ngModel)]="settings.derivePreSmoothMs" step="5" min="0" max="100" (ngModelChange)="save()" type="number">
+        <mat-select [(ngModel)]="settings.derivePreSmoothScope" (ngModelChange)="save()">
+            <mat-option value="direction">Direction only (recommended)</mat-option>
+            <mat-option value="both">Both direction and speed</mat-option>
+        </mat-select>
+    </div>
+</div>
+
+<div class="field">
+    <div class="title">
+        <span>Velocity Consumer Test / Pose Assist</span>
+        <app-field-tip info="Consumer test 'Report zero': a 2-minute diagnostic that reports ZERO controller velocity. Try a few throws - if objects still fly, this game computes throws from hand pose history and ignores reported velocity entirely, which redirects all further tuning to the pose stream. Turn back off after testing. Pose assist: for games that DO derive throws from pose history, the reported hand position briefly continues along the latched throw arc at release, so their estimators read the clean throw instead of the hand's snap-back. Costs a short visual hand overshoot on release; test in-game." />
+        <app-reset-button [canReset]="settings.deriveDiagVelocity != defaults.deriveDiagVelocity || settings.deriveLatchPoseAssist != defaults.deriveLatchPoseAssist" (resetClick)="reset('deriveDiagVelocity'); reset('deriveLatchPoseAssist')"></app-reset-button>
+    </div>
+    <div class="control">
+        <mat-select [(ngModel)]="settings.deriveDiagVelocity" (ngModelChange)="save()">
+            <mat-option value="off">Normal velocity</mat-option>
+            <mat-option value="zero">Report zero (test)</mat-option>
+        </mat-select>
+        <mat-slide-toggle [(ngModel)]="settings.deriveLatchPoseAssist" (ngModelChange)="save()"></mat-slide-toggle>
+    </div>
+</div>
+
+<div class="field">
+    <div class="title">
+        <span>Split Direction Source</span>
+        <app-field-tip info="Where the throw DIRECTION comes from when a Split Direction toggle is on (magnitude always comes from the smoothed estimate). Position secant: direction of the raw hand displacement over the last ~25-70ms - very noise resistant, small fixed lag; the recommended default. Runtime report: direction of the driver's own (heavily smoothed) velocity - device-side sensor fusion, smooth but more lagged. Window average: the original weighted average of recent estimates - kept for A/B, weakest against correlated noise. After changing this, flip a Split toggle off and on to get a fresh confirmation log line." />
+        <app-reset-button [canReset]="settings.deriveDirSource != defaults.deriveDirSource" (resetClick)="reset('deriveDirSource')"></app-reset-button>
+    </div>
+    <div class="control">
+        <mat-select [(ngModel)]="settings.deriveDirSource" (ngModelChange)="save()">
+            <mat-option value="secant">Position secant (recommended)</mat-option>
+            <mat-option value="runtime">Runtime report direction</mat-option>
+            <mat-option value="window">Window average (original)</mat-option>
+        </mat-select>
+    </div>
+</div>
+
+<div class="field">
+    <div class="title">
+        <span>Split Magnitude Source</span>
+        <app-field-tip info="Where the throw SPEED comes from when a Split Direction toggle is on. Vector: length of the smoothed velocity vector (original; components pointing in changing directions partially cancel inside the average, which both jitters and under-reads mid-swing). Scalar: the speed itself is smoothed with the same adaptive time constant - no cancellation, less jitter for the same responsiveness. Recommended test: Scalar, combined with Tau Fast raised to ~15-20 (direction no longer pays for a slower magnitude filter since it comes from the secant)." />
+        <app-reset-button [canReset]="settings.deriveMagSource != defaults.deriveMagSource" (resetClick)="reset('deriveMagSource')"></app-reset-button>
+    </div>
+    <div class="control">
+        <mat-select [(ngModel)]="settings.deriveMagSource" (ngModelChange)="save()">
+            <mat-option value="vector">Vector length (original)</mat-option>
+            <mat-option value="scalar">Scalar speed (recommended test)</mat-option>
+        </mat-select>
+    </div>
+</div>
+
+<div class="field">
+    <div class="title">
+        <span>Release Latch (derive)</span>
+        <app-field-tip info="Fixes throws that come out weak or die mid-air: field data shows the input release event often trails the hand motion, so about a quarter of throws sample the velocity AFTER the hand already slowed. When on, the moment your trigger/grip release arrives, the output replays the strongest recent motion (window below) for the hold duration - full strength for the first half, fading after. Normal throws that release at the peak are unaffected. The three numbers: peak window ms / hold ms / minimum speed to engage (m/s)." />
+        <app-reset-button [canReset]="settings.deriveReleaseLatch != defaults.deriveReleaseLatch" (resetClick)="reset('deriveReleaseLatch')"></app-reset-button>
+    </div>
+    <div class="control">
+        <mat-slide-toggle [(ngModel)]="settings.deriveReleaseLatch" (ngModelChange)="save()"></mat-slide-toggle>
+        <span>W</span><input matInput [(ngModel)]="settings.deriveLatchWindowMs" step="10" min="40" max="400" (ngModelChange)="save()" type="number">
+        <span>H</span><input matInput [(ngModel)]="settings.deriveLatchHoldMs" step="10" min="40" max="400" (ngModelChange)="save()" type="number">
+        <span>S</span><input matInput [(ngModel)]="settings.deriveLatchMinSpeed" step="0.1" min="0" max="3" (ngModelChange)="save()" type="number">
     </div>
 </div>
 

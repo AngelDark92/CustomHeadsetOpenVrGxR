@@ -189,6 +189,33 @@ private:
 	std::set<ID3D11Texture2D*> layerRtvFailed;
 	std::set<ID3D11Texture2D*> layerPathLogged;
 	ID3D11RenderTargetView* GetLayerRTV(ID3D11Texture2D* texture, int slice, DXGI_FORMAT rtvFormat);
+	// zero-copy v3: per-layer SRVs (the shader samples the layer DIRECTLY,
+	// no scratchIn copy) and rotating shared shadow sets the warped output
+	// is drawn into. vrlink's staging copy is redirected to read the fresh
+	// shadow (ZeroCopy.cpp); the layer itself keeps the app's unprocessed
+	// frame so every failure degrades to a passthrough flash. per-texture
+	// sticky fallback mirrors the RTV fallback precedent.
+	std::map<ID3D11Texture2D*, std::array<ID3D11ShaderResourceView*, 2>> layerSRVs;
+	std::set<ID3D11Texture2D*> v3Failed;
+	ID3D11ShaderResourceView* GetLayerSRV(ID3D11Texture2D* texture, int slice, DXGI_FORMAT srvFormat);
+	struct ShadowSet{
+		static constexpr int slots = 3;
+		ID3D11Texture2D* tex[slots] = {};
+		HANDLE handle[slots] = {};
+		uint32_t arraySize = 0;
+		uint64_t lastFrame = 0;
+		int index = 0;
+		bool usedThisFrame = false;
+	};
+	std::map<uint64_t, ShadowSet> shadowSets; // key = (w << 32) | h
+	// per-frame dedup of the layer->scratchIn copy: for layouts where both
+	// eyes process the same subresource, the second eye reuses the copy
+	// already made this frame (a full-slice copy of a 5-8K texture, saved
+	// once per frame)
+	std::map<ID3D11Texture2D*, std::array<uint64_t, 2>> layerCopyFrame;
+	bool EnsureShadow(uint32_t width, uint32_t height, DXGI_FORMAT format, uint32_t arraySize, ShadowSet*& outSet);
+	static void ReleaseShadowSet(ShadowSet &set);
+	uint64_t frameCounter = 0;
 	// layer formats already reported as unsupported (log each once, not
 	// against the errorCount budget, so per-game skips stay visible)
 	std::set<unsigned> skippedFormats;

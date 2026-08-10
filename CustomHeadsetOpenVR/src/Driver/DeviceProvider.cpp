@@ -1,6 +1,7 @@
 #include "DeviceProvider.h"
 #include "DriverLog.h"
 #include "DeviceShim.h"
+#include "EyeTrackingTap.h"
 #include "CompositorPlugin.h"
 #include "HidModifier.h"
 
@@ -516,6 +517,42 @@ void CustomHeadsetDeviceProvider::LogReleaseSnapshot(vr::PropertyContainerHandle
 		lastReleaseLogTime = now;
 	}
 	uint32_t id = ResolveContainerId(container);
+	// release latch trigger: arm the peak replay for this device the moment
+	// the input tap reports the release. identity resolved ABOVE, outside
+	// any lock; deriveFilterLock taken alone here (leaf, never nested)
+	// EXPERIMENT B trigger: on release, arm the kalman rewind window
+	if(driverConfig.streamFrame.velocityFixMode == 4
+			&& driverConfig.streamFrame.kalmanReleaseRewindMs > 0.5
+			&& IsStreamedController(id)){
+		double nowRw = std::chrono::duration_cast<std::chrono::microseconds>(
+			std::chrono::steady_clock::now().time_since_epoch()).count() / 1000000.0;
+		double holdS = driverConfig.streamFrame.kalmanRewindHoldMs / 1000.0;
+		if(holdS < 0.02){ holdS = 0.02; }
+		{
+			std::lock_guard<std::mutex> rwGuard(deriveFilterLock);
+			KalState &ksr = kalStates[id];
+			ksr.rewindUntil = nowRw + holdS;
+			ksr.rewindTarget = nowRw - driverConfig.streamFrame.kalmanReleaseRewindMs / 1000.0;
+		}
+		// outside the lock; bounded by the caller's release throttle
+		DriverLog("VelocityFix: kalman rewind armed id=%u rewind=%.0fms hold=%.0fms",
+			id, driverConfig.streamFrame.kalmanReleaseRewindMs, driverConfig.streamFrame.kalmanRewindHoldMs);
+	}
+	if(driverConfig.streamFrame.velocityFixMode == 3
+			&& driverConfig.streamFrame.deriveReleaseLatch
+			&& IsStreamedController(id)){
+		double nowLatch = std::chrono::duration_cast<std::chrono::microseconds>(
+			std::chrono::steady_clock::now().time_since_epoch()).count() / 1000000.0;
+		double holdS = driverConfig.streamFrame.deriveLatchHoldMs / 1000.0;
+		if(holdS < 0.02){ holdS = 0.02; }
+		{
+			std::lock_guard<std::mutex> latchGuard(deriveFilterLock);
+			deriveFilterStates[id].latchUntil = nowLatch + holdS;
+		}
+		// engagement confirmation, rate-limited by the caller's 20Hz release
+		// throttle above; outside all locks
+		DriverLog("VelocityFix: latch armed id=%u hold=%.0fms", id, holdS * 1000.0);
+	}
 	MotionSnapshot snap;
 	bool haveSnap = false;
 	double snapAge = -1;
@@ -692,6 +729,12 @@ bool CustomHeadsetDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 	}
 	// capture the post-offset pose per hand for the controller aligner (the
 	// drawn tip marker must reflect the live working offsets)
+	if(openVRID == vr::k_unTrackedDeviceIndex_Hmd && pose.poseIsValid){
+		// cache head orientation for the gaze aim assist (leaf lock)
+		std::lock_guard<std::mutex> hmdGuard(deriveFilterLock);
+		hmdQuatForGaze = pose.qRotation;
+		haveHmdQuat = true;
+	}
 	if(openVRID != vr::k_unTrackedDeviceIndex_Hmd && pose.poseIsValid){
 		std::lock_guard<std::mutex> alignGuard(poseLogLock);
 		auto handFound = openVRIDHand.find(openVRID);
@@ -717,9 +760,492 @@ bool CustomHeadsetDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 		bool classicMode = velocityFixMode == 1;
 		bool deriveMode = velocityFixMode == 3;
 		double derivedVel[3], derivedAng[3];
+		double secantVel[3] = {0, 0, 0}, secantAng[3] = {0, 0, 0};
+		// runtime's own report, captured before any substitution: its
+		// magnitude is heavily smoothed but its DIRECTION comes from
+		// device-side sensor fusion and is a candidate direction source
+		double runtimeVel[3] = { pose.vecVelocity[0], pose.vecVelocity[1], pose.vecVelocity[2] };
+		double runtimeAng[3] = { pose.vecAngularVelocity[0], pose.vecAngularVelocity[1], pose.vecAngularVelocity[2] };
 		double now = std::chrono::duration_cast<std::chrono::microseconds>(
 			std::chrono::steady_clock::now().time_since_epoch()).count() / 1000000.0;
-		if(DeriveMotion(openVRID, pose, derivedVel, derivedAng)){
+		// ==== KALMAN mode: one coherent estimated state, reported whole.
+		// replicates the native lighthouse ARCHITECTURE: pose, velocity and
+		// angular velocity all come from a single causal estimator, so the
+		// runtime's forward prediction and game-side pose-history throw
+		// estimators agree by construction. per-axis constant-velocity
+		// Kalman for p/v; orientation integrated by the filtered w and
+		// corrected by the measurement residual (MEKF-lite). ====
+		if(velocityFixMode == 4){
+			// gaze fetched BEFORE the filter lock (never call out under a
+			// lock); freshness guarded 100ms like the frame consumer
+			bool gazeFresh = false;
+			double gazeHead[3] = {0, 0, -1};
+			if(driverConfig.streamFrame.kalmanGazeAssist > 0.001){
+				EyeTrackingTap::Sample gs;
+				if(eyeTrackingTap.GetLatestSample(gs, 0.1) && gs.valid){
+					double gx = gs.targetX - gs.originX;
+					double gy = gs.targetY - gs.originY;
+					double gz = gs.targetZ - gs.originZ;
+					double gn = sqrt(gx * gx + gy * gy + gz * gz);
+					if(gn > 1e-6){
+						gazeHead[0] = gx / gn; gazeHead[1] = gy / gn; gazeHead[2] = gz / gn;
+						gazeFresh = true;
+					}
+				}
+			}
+			double qa = driverConfig.streamFrame.kalmanProcessAccel;
+			if(qa < 1.0){ qa = 1.0; }
+			if(qa > 2000.0){ qa = 2000.0; }
+			double rp = driverConfig.streamFrame.kalmanPosNoiseMm / 1000.0;
+			if(rp < 0.0002){ rp = 0.0002; }
+			double R = rp * rp;
+			double qaA = driverConfig.streamFrame.kalmanProcessAngAccel;
+			if(qaA < 10.0){ qaA = 10.0; }
+			if(qaA > 20000.0){ qaA = 20000.0; }
+			double ro = driverConfig.streamFrame.kalmanOriNoiseDeg * 3.14159265358979323846 / 180.0;
+			if(ro < 0.0005){ ro = 0.0005; }
+			double Ra = ro * ro;
+			double lead = driverConfig.streamFrame.kalmanLeadMs / 1000.0;
+			if(lead < 0){ lead = 0; }
+			if(lead > 0.05){ lead = 0.05; }
+			bool announceKalman = false;
+			bool announceGaze = false;
+			bool logKalDiag = false;
+			double diagNis = 0;
+			double diagStepMax = 0;
+			int diagFrozen = 0;
+			int diagDup = 0;
+			int diagBends = 0;
+			double diagBendMean = 0;
+			double diagBendMax = 0;
+			{
+			std::lock_guard<std::mutex> kalGuard(deriveFilterLock);
+			KalState &ks = kalStates[openVRID];
+			double dt = now - ks.time;
+			if(!ks.have || dt <= 0 || dt > 0.2){
+				ks.have = true;
+				ks.time = now;
+				for(int a2 = 0; a2 < 3; a2++){
+					ks.p[a2] = pose.vecPosition[a2];
+					ks.v[a2] = 0;
+					ks.P[a2][0] = 0.01; ks.P[a2][1] = 0; ks.P[a2][2] = 1.0;
+					ks.w[a2] = 0;
+					ks.Pa[a2][0] = 0.05; ks.Pa[a2][1] = 0; ks.Pa[a2][2] = 10.0;
+				}
+				ks.q = pose.qRotation;
+			}else{
+				ks.time = now;
+				double dt2 = dt * dt;
+				// duplicate detection: measurement step vs previous raw
+				// sample, while the STATE says we are moving
+				bool dupCoast = false;
+				if(driverConfig.streamFrame.kalmanDupSkip && ks.haveMeas){
+					double ddx = pose.vecPosition[0] - ks.lastMeas[0];
+					double ddy = pose.vecPosition[1] - ks.lastMeas[1];
+					double ddz = pose.vecPosition[2] - ks.lastMeas[2];
+					double stepD = sqrt(ddx * ddx + ddy * ddy + ddz * ddz);
+					double stSpd = sqrt(ks.v[0] * ks.v[0] + ks.v[1] * ks.v[1] + ks.v[2] * ks.v[2]);
+					if(stepD < 0.0003 && stSpd > 0.5){
+						dupCoast = true;
+						ks.dupSkipped++;
+					}
+				}
+				if(dupCoast){
+					// coast: advance both estimators along their velocity,
+					// inflate covariance, NO measurement update (a repeat
+					// is missing data, not evidence of stillness)
+					for(int a2 = 0; a2 < 3; a2++){
+						ks.p[a2] += ks.v[a2] * dt;
+						ks.P[a2][0] += 2.0 * ks.P[a2][1] * dt + ks.P[a2][2] * dt2 + qa * qa * dt2 * dt2 / 4.0;
+						ks.P[a2][1] += ks.P[a2][2] * dt + qa * qa * dt2 * dt / 2.0;
+						ks.P[a2][2] += qa * qa * dt2;
+						if(ks.haveFast){
+							ks.pF[a2] += ks.vF[a2] * dt;
+							double qaF = driverConfig.streamFrame.kalmanMagAccel;
+							if(qaF < 1.0){ qaF = 1.0; }
+							if(qaF > 2000.0){ qaF = 2000.0; }
+							ks.PF[a2][0] += 2.0 * ks.PF[a2][1] * dt + ks.PF[a2][2] * dt2 + qaF * qaF * dt2 * dt2 / 4.0;
+							ks.PF[a2][1] += ks.PF[a2][2] * dt + qaF * qaF * dt2 * dt / 2.0;
+							ks.PF[a2][2] += qaF * qaF * dt2;
+						}
+					}
+					// orientation coasts by the current angular velocity
+					double halfDtC = 0.5 * dt;
+					vr::HmdQuaternion_t dqc = {1.0, ks.w[0] * halfDtC, ks.w[1] * halfDtC, ks.w[2] * halfDtC};
+					ks.q = QuatMultiply(dqc, ks.q);
+					double qnc = sqrt(ks.q.w * ks.q.w + ks.q.x * ks.q.x + ks.q.y * ks.q.y + ks.q.z * ks.q.z);
+					if(qnc > 1e-9){ ks.q.w /= qnc; ks.q.x /= qnc; ks.q.y /= qnc; ks.q.z /= qnc; }
+				}else{
+				// linear channel: per-axis constant-velocity Kalman
+				double nisAccum = 0;
+				for(int a2 = 0; a2 < 3; a2++){
+					ks.p[a2] += ks.v[a2] * dt;
+					double Ppp = ks.P[a2][0] + 2.0 * ks.P[a2][1] * dt + ks.P[a2][2] * dt2 + qa * qa * dt2 * dt2 / 4.0;
+					double Ppv = ks.P[a2][1] + ks.P[a2][2] * dt + qa * qa * dt2 * dt / 2.0;
+					double Pvv = ks.P[a2][2] + qa * qa * dt2;
+					double y = pose.vecPosition[a2] - ks.p[a2];
+					double S = Ppp + R;
+					nisAccum += y * y / S;
+					double Kp = Ppp / S;
+					double Kv = Ppv / S;
+					ks.p[a2] += Kp * y;
+					ks.v[a2] += Kv * y;
+					ks.P[a2][0] = (1.0 - Kp) * Ppp;
+					ks.P[a2][1] = (1.0 - Kp) * Ppv;
+					ks.P[a2][2] = Pvv - Kv * Ppv;
+				}
+				ks.nisEma += 0.1 * (nisAccum / 3.0 - ks.nisEma);
+				// raw-step telemetry (EMA-free, so single-frame freezes or
+				// teleports cannot hide): settles the FOV question
+				{
+					if(ks.haveMeas){
+						double dx = pose.vecPosition[0] - ks.lastMeas[0];
+						double dy = pose.vecPosition[1] - ks.lastMeas[1];
+						double dz = pose.vecPosition[2] - ks.lastMeas[2];
+						double step = sqrt(dx * dx + dy * dy + dz * dz);
+						if(step > ks.stepMax){ ks.stepMax = step; }
+						double stSpeed = sqrt(ks.v[0] * ks.v[0] + ks.v[1] * ks.v[1] + ks.v[2] * ks.v[2]);
+						if(step < 0.0003 && stSpeed > 0.7){ ks.stepFrozen++; }
+					}
+					ks.haveMeas = true;
+					ks.lastMeas[0] = pose.vecPosition[0];
+					ks.lastMeas[1] = pose.vecPosition[1];
+					ks.lastMeas[2] = pose.vecPosition[2];
+				}
+				// parallel FAST velocity estimator for the magnitude channel
+				{
+					double qaF = driverConfig.streamFrame.kalmanMagAccel;
+					if(qaF < 1.0){ qaF = 1.0; }
+					if(qaF > 2000.0){ qaF = 2000.0; }
+					if(!ks.haveFast){
+						ks.haveFast = true;
+						for(int a2 = 0; a2 < 3; a2++){
+							ks.pF[a2] = pose.vecPosition[a2];
+							ks.vF[a2] = 0;
+							ks.PF[a2][0] = 0.01; ks.PF[a2][1] = 0; ks.PF[a2][2] = 1.0;
+						}
+					}else{
+						for(int a2 = 0; a2 < 3; a2++){
+							ks.pF[a2] += ks.vF[a2] * dt;
+							double Ppp = ks.PF[a2][0] + 2.0 * ks.PF[a2][1] * dt + ks.PF[a2][2] * dt2 + qaF * qaF * dt2 * dt2 / 4.0;
+							double Ppv = ks.PF[a2][1] + ks.PF[a2][2] * dt + qaF * qaF * dt2 * dt / 2.0;
+							double Pvv = ks.PF[a2][2] + qaF * qaF * dt2;
+							double y = pose.vecPosition[a2] - ks.pF[a2];
+							double S = Ppp + R;
+							double Kp = Ppp / S;
+							double Kv = Ppv / S;
+							ks.pF[a2] += Kp * y;
+							ks.vF[a2] += Kv * y;
+							ks.PF[a2][0] = (1.0 - Kp) * Ppp;
+							ks.PF[a2][1] = (1.0 - Kp) * Ppv;
+							ks.PF[a2][2] = Pvv - Kv * Ppv;
+						}
+					}
+				}
+				// angular channel: predict q by w, correct by residual
+				double halfDt = 0.5 * dt;
+				vr::HmdQuaternion_t dq = {1.0, ks.w[0] * halfDt, ks.w[1] * halfDt, ks.w[2] * halfDt};
+				vr::HmdQuaternion_t qPred = QuatMultiply(dq, ks.q);
+				double qn = sqrt(qPred.w * qPred.w + qPred.x * qPred.x + qPred.y * qPred.y + qPred.z * qPred.z);
+				if(qn > 1e-9){ qPred.w /= qn; qPred.x /= qn; qPred.y /= qn; qPred.z /= qn; }
+				vr::HmdQuaternion_t qc = {qPred.w, -qPred.x, -qPred.y, -qPred.z};
+				vr::HmdQuaternion_t qe = QuatMultiply(pose.qRotation, qc);
+				double sgn = qe.w < 0 ? -1.0 : 1.0;
+				double res[3] = { 2.0 * sgn * qe.x, 2.0 * sgn * qe.y, 2.0 * sgn * qe.z };
+				double corr[3];
+				for(int a2 = 0; a2 < 3; a2++){
+					double Ppp = ks.Pa[a2][0] + 2.0 * ks.Pa[a2][1] * dt + ks.Pa[a2][2] * dt2 + qaA * qaA * dt2 * dt2 / 4.0;
+					double Ppv = ks.Pa[a2][1] + ks.Pa[a2][2] * dt + qaA * qaA * dt2 * dt / 2.0;
+					double Pvv = ks.Pa[a2][2] + qaA * qaA * dt2;
+					double S = Ppp + Ra;
+					double Kp = Ppp / S;
+					double Kv = Ppv / S;
+					corr[a2] = Kp * res[a2];
+					ks.w[a2] += Kv * res[a2];
+					ks.Pa[a2][0] = (1.0 - Kp) * Ppp;
+					ks.Pa[a2][1] = (1.0 - Kp) * Ppv;
+					ks.Pa[a2][2] = Pvv - Kv * Ppv;
+				}
+				vr::HmdQuaternion_t qCorr = {1.0, corr[0] * 0.5, corr[1] * 0.5, corr[2] * 0.5};
+				ks.q = QuatMultiply(qCorr, qPred);
+				double qn2 = sqrt(ks.q.w * ks.q.w + ks.q.x * ks.q.x + ks.q.y * ks.q.y + ks.q.z * ks.q.z);
+				if(qn2 > 1e-9){ ks.q.w /= qn2; ks.q.x /= qn2; ks.q.y /= qn2; ks.q.z /= qn2; }
+				}
+			}
+			// report THE STATE, whole and self consistent (optional fixed
+			// forward lead, as native drivers use against transport lag)
+			// history push (cheap, always on: keeps the rewind warm so
+			// enabling the experiment mid-session works immediately)
+			ks.histT[ks.histHead] = now;
+			for(int a2 = 0; a2 < 3; a2++){
+				ks.histV[ks.histHead][a2] = ks.v[a2];
+				ks.histW[ks.histHead][a2] = ks.w[a2];
+				ks.histP[ks.histHead][a2] = ks.p[a2];
+			}
+			ks.histQ[ks.histHead] = ks.q;
+			ks.histHead = (ks.histHead + 1) % KalState::histSize;
+			if(ks.histCount < KalState::histSize){ ks.histCount++; }
+			double vRep[3] = { ks.v[0], ks.v[1], ks.v[2] };
+			double wRep[3] = { ks.w[0], ks.w[1], ks.w[2] };
+			double ksOutP[3] = {0, 0, 0};
+			vr::HmdQuaternion_t ksOutQ = {1, 0, 0, 0};
+			bool useSmoothOut = false;
+			if(driverConfig.streamFrame.kalmanReleaseRewindMs > 0.5 && now < ks.rewindUntil && ks.histCount > 2){
+				// find the history sample closest to the rewind target and
+				// report it, blending back to live over the hold window
+				int best = -1;
+				double bestD = 1e9;
+				for(int i = 0; i < ks.histCount; i++){
+					double d = fabs(ks.histT[i] - ks.rewindTarget);
+					if(d < bestD){ bestD = d; best = i; }
+				}
+				if(best >= 0 && bestD < 0.1){
+					double holdS = driverConfig.streamFrame.kalmanRewindHoldMs / 1000.0;
+					if(holdS < 0.02){ holdS = 0.02; }
+					double frac = (ks.rewindUntil - now) / holdS; // 1 -> 0
+					if(frac > 1){ frac = 1; }
+					if(frac < 0){ frac = 0; }
+					for(int a2 = 0; a2 < 3; a2++){
+						vRep[a2] = ks.histV[best][a2] * frac + vRep[a2] * (1.0 - frac);
+						wRep[a2] = ks.histW[best][a2] * frac + wRep[a2] * (1.0 - frac);
+					}
+				}
+			}
+			// direction/magnitude split: direction from the slow EMA,
+			// magnitude live. slow copies always maintained (cheap) so the
+			// knob engages instantly; gated at low speed where direction
+			// is meaningless.
+			{
+				double dMs = driverConfig.streamFrame.kalmanDirSmoothMs;
+				double aMs = driverConfig.streamFrame.kalmanAngDirSmoothMs;
+				double sdt = dt;
+				if(sdt <= 0 || sdt > 0.05){ sdt = 0.011; }
+				if(!ks.haveSlow){
+					ks.haveSlow = true;
+					for(int a2 = 0; a2 < 3; a2++){ ks.vSlow[a2] = vRep[a2]; ks.wSlow[a2] = wRep[a2]; }
+				}else{
+					double aV = dMs > 0.5 ? 1.0 - exp(-sdt / (dMs / 1000.0)) : 1.0;
+					double aW = aMs > 0.5 ? 1.0 - exp(-sdt / (aMs / 1000.0)) : 1.0;
+					for(int a2 = 0; a2 < 3; a2++){
+						ks.vSlow[a2] += aV * (vRep[a2] - ks.vSlow[a2]);
+						ks.wSlow[a2] += aW * (wRep[a2] - ks.wSlow[a2]);
+					}
+				}
+				if(dMs > 0.5){
+					double mLive = sqrt(vRep[0] * vRep[0] + vRep[1] * vRep[1] + vRep[2] * vRep[2]);
+					double mSlow = sqrt(ks.vSlow[0] * ks.vSlow[0] + ks.vSlow[1] * ks.vSlow[1] + ks.vSlow[2] * ks.vSlow[2]);
+					if(mLive > 0.3 && mSlow > 0.15){
+						for(int a2 = 0; a2 < 3; a2++){ vRep[a2] = ks.vSlow[a2] / mSlow * mLive; }
+					}
+				}
+				if(aMs > 0.5){
+					double mLiveW = sqrt(wRep[0] * wRep[0] + wRep[1] * wRep[1] + wRep[2] * wRep[2]);
+					double mSlowW = sqrt(ks.wSlow[0] * ks.wSlow[0] + ks.wSlow[1] * ks.wSlow[1] + ks.wSlow[2] * ks.wSlow[2]);
+					if(mLiveW > 1.0 && mSlowW > 0.5){
+						for(int a2 = 0; a2 < 3; a2++){ wRep[a2] = ks.wSlow[a2] / mSlowW * mLiveW; }
+					}
+				}
+			}
+			// magnitude channel: |v| from the fast estimator on the calm
+			// state's direction, then the always-on trim multipliers
+			{
+				if(driverConfig.streamFrame.kalmanMagSource == 1 && ks.haveFast){
+					// STRICT channel separation (field 2026-08-10: every 180
+					// flip traced to the fast estimator's DIRECTION leaking
+					// into the output — via the raw-vector fallback in the
+					// first version, via disagreement handoffs in the blend
+					// version. the fast channel's direction is noise; it is
+					// NEVER reported. direction comes from the calm state
+					// only; fast contributes MAGNITUDE, and only once the
+					// calm direction is established. otherwise the output
+					// is pure calm: occasionally weak, never flipped.)
+					double mDir = sqrt(vRep[0] * vRep[0] + vRep[1] * vRep[1] + vRep[2] * vRep[2]);
+					double mFast = sqrt(ks.vF[0] * ks.vF[0] + ks.vF[1] * ks.vF[1] + ks.vF[2] * ks.vF[2]);
+					if(mDir > 0.3 && mFast > mDir){
+						for(int a2 = 0; a2 < 3; a2++){ vRep[a2] = vRep[a2] / mDir * mFast; }
+					}
+					// otherwise: pure calm output stands
+				}
+				double mS = driverConfig.streamFrame.kalmanMagScale;
+				if(mS < 0.25){ mS = 0.25; }
+				if(mS > 4.0){ mS = 4.0; }
+				double mSA = driverConfig.streamFrame.kalmanAngMagScale;
+				if(mSA < 0.25){ mSA = 0.25; }
+				if(mSA > 4.0){ mSA = 4.0; }
+				for(int a2 = 0; a2 < 3; a2++){
+					vRep[a2] *= mS;
+					wRep[a2] *= mSA;
+				}
+			}
+			// gaze aim assist: bend the reported direction toward where
+			// the eyes already are. direction only; magnitude preserved.
+			{
+				double assist = driverConfig.streamFrame.kalmanGazeAssist;
+				if(assist > 0.001 && gazeFresh && haveHmdQuat){
+					// values > 1 are the TEST regime: they shrink the
+					// disagreement angle needed for full gaze takeover
+					// (full lock at >= 45/G degrees). G=10 with maxDeg=180
+					// locks any throw more than ~4.5 deg off gaze straight
+					// onto it — for verifying the pipeline end to end.
+					if(assist > 20.0){ assist = 20.0; }
+					double mV = sqrt(vRep[0] * vRep[0] + vRep[1] * vRep[1] + vRep[2] * vRep[2]);
+					if(mV > driverConfig.streamFrame.kalmanGazeMinSpeed){
+						// rotate head-space gaze into driver space: g' = q g q*
+						vr::HmdQuaternion_t q = hmdQuatForGaze;
+						vr::HmdQuaternion_t gq = {0, gazeHead[0], gazeHead[1], gazeHead[2]};
+						vr::HmdQuaternion_t qc = {q.w, -q.x, -q.y, -q.z};
+						vr::HmdQuaternion_t t1 = QuatMultiply(q, gq);
+						vr::HmdQuaternion_t gw = QuatMultiply(t1, qc);
+						double gW[3] = { gw.x, gw.y, gw.z };
+						double dirV[3] = { vRep[0] / mV, vRep[1] / mV, vRep[2] / mV };
+						double d = dirV[0] * gW[0] + dirV[1] * gW[1] + dirV[2] * gW[2];
+						if(d > -0.999 && d < 0.999){
+							double angBetween = acos(d);
+							// v2 weighting (field 2026-08-10: a fixed cap
+							// neuters the assist on reversals — a 170-deg
+							// wrong throw bent 30 deg is still wrong. small
+							// disagreement = the hand is basically right,
+							// refine gently; large disagreement at throw
+							// speed = the hand data is invalid and gaze,
+							// which fixated the target early, takes over.
+							// weight ramps with disagreement: t = assist *
+							// angle/45deg, clamped to 1 — continuous, no
+							// thresholds. maxDeg remains as a pure safety
+							// clamp on the final bend.
+							double t = assist * (angBetween / (45.0 * 3.14159265358979323846 / 180.0));
+							if(t > 1.0){ t = 1.0; }
+							double bend = t * angBetween;
+							double maxR = driverConfig.streamFrame.kalmanGazeMaxDeg * 3.14159265358979323846 / 180.0;
+							if(bend > maxR){ bend = maxR; }
+							if(bend > 1e-4){
+								t = bend / angBetween;
+								double nd[3];
+								double nn = 0;
+								for(int a2 = 0; a2 < 3; a2++){
+									nd[a2] = dirV[a2] * (1.0 - t) + gW[a2] * t;
+									nn += nd[a2] * nd[a2];
+								}
+								nn = sqrt(nn);
+								if(nn > 1e-6){
+									for(int a2 = 0; a2 < 3; a2++){ vRep[a2] = nd[a2] / nn * mV; }
+								}
+								ks.gazeBends++;
+								double bendDeg = bend * 180.0 / 3.14159265358979323846;
+								ks.gazeBendSum += bendDeg;
+								if(bendDeg > ks.gazeBendMax){ ks.gazeBendMax = bendDeg; }
+								if(!gazeAssistAnnounced){
+									gazeAssistAnnounced = true;
+									announceGaze = true;
+								}
+							}
+						}
+					}
+				}
+			}
+			// fixed-lag smoothed reporting: fuse the stored forward state
+			// at t-L with the current state backcast to t-L, and report the
+			// WHOLE state (pose + velocities) from that instant, coherent.
+			double smoothLag = driverConfig.streamFrame.kalmanSmoothLagMs / 1000.0;
+			if(smoothLag > 0.001 && ks.histCount > 3){
+				if(smoothLag > 0.2){ smoothLag = 0.2; }
+				double tTarget = now - smoothLag;
+				int best = -1;
+				double bestD = 1e9;
+				for(int i = 0; i < ks.histCount; i++){
+					double dTi = fabs(ks.histT[i] - tTarget);
+					if(dTi < bestD){ bestD = dTi; best = i; }
+				}
+				if(best >= 0 && bestD < 0.08){
+					for(int a2 = 0; a2 < 3; a2++){
+						double pBack = ks.p[a2] - ks.v[a2] * smoothLag;
+						double pFwd = ks.histP[best][a2];
+						double vFwd = ks.histV[best][a2];
+						double wFwd = ks.histW[best][a2];
+						ksOutP[a2] = 0.5 * (pFwd + pBack);
+						vRep[a2] = 0.5 * (vFwd + vRep[a2]);
+						wRep[a2] = 0.5 * (wFwd + wRep[a2]);
+					}
+					// orientation: backcast current q by -w*L, nlerp with
+					// the stored q (hemisphere safe)
+					double hb = -0.5 * smoothLag;
+					vr::HmdQuaternion_t dqb = {1.0, ks.w[0] * hb, ks.w[1] * hb, ks.w[2] * hb};
+					vr::HmdQuaternion_t qBack = QuatMultiply(dqb, ks.q);
+					vr::HmdQuaternion_t qF = ks.histQ[best];
+					double dotq = qF.w * qBack.w + qF.x * qBack.x + qF.y * qBack.y + qF.z * qBack.z;
+					double sg = dotq < 0 ? -1.0 : 1.0;
+					vr::HmdQuaternion_t qs = {
+						0.5 * (sg * qF.w + qBack.w), 0.5 * (sg * qF.x + qBack.x),
+						0.5 * (sg * qF.y + qBack.y), 0.5 * (sg * qF.z + qBack.z)};
+					double qsn = sqrt(qs.w * qs.w + qs.x * qs.x + qs.y * qs.y + qs.z * qs.z);
+					if(qsn > 1e-9){ qs.w /= qsn; qs.x /= qsn; qs.y /= qsn; qs.z /= qsn; }
+					ksOutQ = qs;
+					useSmoothOut = true;
+				}
+			}
+			for(int a2 = 0; a2 < 3; a2++){
+				pose.vecPosition[a2] = (useSmoothOut ? ksOutP[a2] : ks.p[a2]) + ks.v[a2] * lead;
+				pose.vecVelocity[a2] = vRep[a2];
+				pose.vecAngularVelocity[a2] = wRep[a2];
+			}
+			if(useSmoothOut){
+				pose.qRotation = ksOutQ;
+			}
+			if(!useSmoothOut){
+				if(lead > 0){
+					double hl = 0.5 * lead;
+					vr::HmdQuaternion_t dql = {1.0, ks.w[0] * hl, ks.w[1] * hl, ks.w[2] * hl};
+					vr::HmdQuaternion_t ql = QuatMultiply(dql, ks.q);
+					double n3 = sqrt(ql.w * ql.w + ql.x * ql.x + ql.y * ql.y + ql.z * ql.z);
+					if(n3 > 1e-9){ ql.w /= n3; ql.x /= n3; ql.y /= n3; ql.z /= n3; }
+					pose.qRotation = ql;
+				}else{
+					pose.qRotation = ks.q;
+				}
+			}
+			if(!ks.announced || ks.lastQa != driverConfig.streamFrame.kalmanProcessAccel){
+				ks.announced = true;
+				ks.lastQa = driverConfig.streamFrame.kalmanProcessAccel;
+				announceKalman = true;
+			}
+			if(driverConfig.streamFrame.poseLogging && now - ks.lastDiagLog >= 2.0){
+				ks.lastDiagLog = now;
+				diagNis = ks.nisEma;
+				diagStepMax = ks.stepMax;
+				diagFrozen = ks.stepFrozen;
+				diagDup = ks.dupSkipped;
+				diagBends = ks.gazeBends;
+				diagBendMean = ks.gazeBends > 0 ? ks.gazeBendSum / ks.gazeBends : 0.0;
+				diagBendMax = ks.gazeBendMax;
+				ks.stepMax = 0;
+				ks.stepFrozen = 0;
+				ks.dupSkipped = 0;
+				ks.gazeBends = 0;
+				ks.gazeBendSum = 0;
+				ks.gazeBendMax = 0;
+				logKalDiag = true;
+			}
+			}
+			if(announceKalman){
+			// outside the lock — lock discipline
+			DriverLog("VelocityFix: kalman mode active id=%u qa=%.0f rp=%.1fmm qaA=%.0f ro=%.2fdeg lead=%.0fms",
+				openVRID, driverConfig.streamFrame.kalmanProcessAccel,
+				driverConfig.streamFrame.kalmanPosNoiseMm,
+				driverConfig.streamFrame.kalmanProcessAngAccel,
+				driverConfig.streamFrame.kalmanOriNoiseDeg,
+				driverConfig.streamFrame.kalmanLeadMs);
+			}
+			if(announceGaze){
+				DriverLog("VelocityFix: gaze aim assist ENGAGED id=%u strength=%.2f maxDeg=%.0f", openVRID,
+					driverConfig.streamFrame.kalmanGazeAssist, driverConfig.streamFrame.kalmanGazeMaxDeg);
+			}
+			if(logKalDiag){
+				// tuning guide: NIS ~ 1 means the noise models match
+				// reality; sustained > 3 = too stiff; < 0.3 = too loose
+				DriverLog("PoseLog: KALDIAG id=%u nis=%.2f stepMax=%.1fmm frozenSteps=%d dupSkipped=%d gazeBends=%d bendMean=%.1fdeg bendMax=%.1fdeg", openVRID, diagNis, diagStepMax * 1000.0, diagFrozen, diagDup, diagBends, diagBendMean, diagBendMax);
+			}
+		}
+		// ==== end kalman mode ====
+		if(DeriveMotion(openVRID, pose, derivedVel, derivedAng, secantVel, secantAng)){
 			double derivedSpeed = sqrt(derivedVel[0] * derivedVel[0] + derivedVel[1] * derivedVel[1] + derivedVel[2] * derivedVel[2]);
 			double derivedAngSpeed = sqrt(derivedAng[0] * derivedAng[0] + derivedAng[1] * derivedAng[1] + derivedAng[2] * derivedAng[2]);
 			double reportedSpeed = sqrt(pose.vecVelocity[0] * pose.vecVelocity[0]
@@ -772,6 +1298,12 @@ bool CustomHeadsetDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 					if(dirPow < 0.0){ dirPow = 0.0; }
 					if(dirPow > 6.0){ dirPow = 6.0; }
 					bool logSplit = false;
+					int dirSource = driverConfig.streamFrame.deriveDirSource;
+					if(dirSource < 0 || dirSource > 2){ dirSource = 1; }
+					bool logDirDiag = false;
+					double diagOut[3] = {0, 0, 0};
+					double diagRaw[3] = {0, 0, 0};
+					double diagAngOut[3] = {0, 0, 0};
 					{
 						std::lock_guard<std::mutex> filterGuard(deriveFilterLock);
 						DeriveFilterState &fs = deriveFilterStates[openVRID];
@@ -781,16 +1313,40 @@ bool CustomHeadsetDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 								fs.vel[a] = derivedVel[a];
 								fs.ang[a] = derivedAng[a];
 							}
+							fs.magEma = derivedSpeed;
+							fs.angMagEma = derivedAngSpeed;
 							// a filter reset means a time gap or teleport:
 							// the direction ring's history is equally stale
 							fs.dirCount = 0;
 							fs.dirHead = 0;
 						}else{
 							double alpha = 1.0 - exp(-fdt / tau);
+							// angular channel: shared alpha (original, phase
+							// locked) or its own adaptive alpha from the
+							// angular knobs when separate smoothing is on
+							double alphaAng = alpha;
+							if(driverConfig.streamFrame.deriveSmoothAngSeparate){
+								double aTauSlow = driverConfig.streamFrame.deriveSmoothAngTauSlowMs / 1000.0;
+								double aTauFast = driverConfig.streamFrame.deriveSmoothAngTauFastMs / 1000.0;
+								double aLow = driverConfig.streamFrame.deriveSmoothAngSpeedLow;
+								double aHigh = driverConfig.streamFrame.deriveSmoothAngSpeedHigh;
+								if(aTauSlow < 0.001){ aTauSlow = 0.001; }
+								if(aTauFast < 0.001){ aTauFast = 0.001; }
+								if(aHigh <= aLow + 0.01){ aHigh = aLow + 0.01; }
+								double mA = (derivedAngSpeed - aLow) / (aHigh - aLow);
+								if(mA < 0){ mA = 0; }
+								if(mA > 1){ mA = 1; }
+								mA = mA * mA * (3.0 - 2.0 * mA);
+								double tauAng = aTauSlow + (aTauFast - aTauSlow) * mA;
+								alphaAng = 1.0 - exp(-fdt / tauAng);
+							}
 							for(int a = 0; a < 3; a++){
 								fs.vel[a] += alpha * (derivedVel[a] - fs.vel[a]);
-								fs.ang[a] += alpha * (derivedAng[a] - fs.ang[a]);
+								fs.ang[a] += alphaAng * (derivedAng[a] - fs.ang[a]);
 							}
+							// scalar magnitude channels, matching alphas
+							fs.magEma += alpha * (derivedSpeed - fs.magEma);
+							fs.angMagEma += alphaAng * (derivedAngSpeed - fs.angMagEma);
 						}
 						fs.time = now;
 						fs.have = true;
@@ -807,55 +1363,156 @@ bool CustomHeadsetDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 						double outVel[3] = { fs.vel[0], fs.vel[1], fs.vel[2] };
 						double outAng[3] = { fs.ang[0], fs.ang[1], fs.ang[2] };
 						if(splitLin || splitAng){
-							// speed^pow weighted sums of the raw samples
-							// inside the window, walked newest -> oldest
-							// (ring times are monotonic, so the first
-							// too-old sample ends the walk)
-							double sumVel[3] = { 0, 0, 0 };
-							double sumAng[3] = { 0, 0, 0 };
-							for(int i = 0; i < fs.dirCount; i++){
-								int idx = (fs.dirHead + DeriveFilterState::dirRingSize - 1 - i) % DeriveFilterState::dirRingSize;
-								if(now - fs.dirTime[idx] > dirWindow){
-									break;
-								}
-								double sv = sqrt(fs.dirVel[idx][0] * fs.dirVel[idx][0]
-									+ fs.dirVel[idx][1] * fs.dirVel[idx][1]
-									+ fs.dirVel[idx][2] * fs.dirVel[idx][2]);
-								double sa = sqrt(fs.dirAng[idx][0] * fs.dirAng[idx][0]
-									+ fs.dirAng[idx][1] * fs.dirAng[idx][1]
-									+ fs.dirAng[idx][2] * fs.dirAng[idx][2]);
-								double wv = pow(sv, dirPow);
-								double wa = pow(sa, dirPow);
+							// direction basis per source. window (0): the
+							// speed^pow weighted sum of ring samples —
+							// kept for A/B, but the raw estimates' noise
+							// is correlated across the window so it helps
+							// little. secant (1): raw displacement across
+							// the derive ring. runtime (2): vrlink's own
+							// reported vector.
+							double basisVel[3] = { 0, 0, 0 };
+							double basisAng[3] = { 0, 0, 0 };
+							if(dirSource == 1){
 								for(int a = 0; a < 3; a++){
-									sumVel[a] += fs.dirVel[idx][a] * wv;
-									sumAng[a] += fs.dirAng[idx][a] * wa;
+									basisVel[a] = secantVel[a];
+									basisAng[a] = secantAng[a];
+								}
+							}else if(dirSource == 2){
+								for(int a = 0; a < 3; a++){
+									basisVel[a] = runtimeVel[a];
+									basisAng[a] = runtimeAng[a];
+								}
+							}else{
+								for(int i = 0; i < fs.dirCount; i++){
+									int idx = (fs.dirHead + DeriveFilterState::dirRingSize - 1 - i) % DeriveFilterState::dirRingSize;
+									if(now - fs.dirTime[idx] > dirWindow){
+										break;
+									}
+									double sv = sqrt(fs.dirVel[idx][0] * fs.dirVel[idx][0]
+										+ fs.dirVel[idx][1] * fs.dirVel[idx][1]
+										+ fs.dirVel[idx][2] * fs.dirVel[idx][2]);
+									double sa = sqrt(fs.dirAng[idx][0] * fs.dirAng[idx][0]
+										+ fs.dirAng[idx][1] * fs.dirAng[idx][1]
+										+ fs.dirAng[idx][2] * fs.dirAng[idx][2]);
+									double wv = pow(sv, dirPow);
+									double wa = pow(sa, dirPow);
+									for(int a = 0; a < 3; a++){
+										basisVel[a] += fs.dirVel[idx][a] * wv;
+										basisAng[a] += fs.dirAng[idx][a] * wa;
+									}
 								}
 							}
 							if(splitLin){
-								double mag = sqrt(fs.vel[0] * fs.vel[0] + fs.vel[1] * fs.vel[1] + fs.vel[2] * fs.vel[2]);
-								double dn = sqrt(sumVel[0] * sumVel[0] + sumVel[1] * sumVel[1] + sumVel[2] * sumVel[2]);
+								double mag = driverConfig.streamFrame.deriveMagSource == 1
+									? fs.magEma
+									: sqrt(fs.vel[0] * fs.vel[0] + fs.vel[1] * fs.vel[1] + fs.vel[2] * fs.vel[2]);
+								double dn = sqrt(basisVel[0] * basisVel[0] + basisVel[1] * basisVel[1] + basisVel[2] * basisVel[2]);
 								if(dn > 1e-9 && mag > 1e-9){
 									for(int a = 0; a < 3; a++){
-										outVel[a] = sumVel[a] / dn * mag;
+										outVel[a] = basisVel[a] / dn * mag;
 									}
 								}
 							}
 							if(splitAng){
-								double magA = sqrt(fs.ang[0] * fs.ang[0] + fs.ang[1] * fs.ang[1] + fs.ang[2] * fs.ang[2]);
-								double dnA = sqrt(sumAng[0] * sumAng[0] + sumAng[1] * sumAng[1] + sumAng[2] * sumAng[2]);
+								double magA = driverConfig.streamFrame.deriveMagSource == 1
+									? fs.angMagEma
+									: sqrt(fs.ang[0] * fs.ang[0] + fs.ang[1] * fs.ang[1] + fs.ang[2] * fs.ang[2]);
+								double dnA = sqrt(basisAng[0] * basisAng[0] + basisAng[1] * basisAng[1] + basisAng[2] * basisAng[2]);
 								if(dnA > 1e-9 && magA > 1e-9){
 									for(int a = 0; a < 3; a++){
-										outAng[a] = sumAng[a] / dnA * magA;
+										outAng[a] = basisAng[a] / dnA * magA;
 									}
 								}
 							}
-							if(!fs.splitLogged){
+							if(!fs.splitLogged || fs.lastSource != dirSource){
 								fs.splitLogged = true;
+								fs.lastSource = dirSource;
 								logSplit = true;
 							}
 						}else{
 							// re-log if it gets re-enabled after being off
 							fs.splitLogged = false;
+						}
+						// release latch: keep the rolling window peak of the
+						// OUTPUT, and if an input release armed the latch,
+						// replay the peak (full strength for the first half
+						// of the hold, linear decay after)
+						{
+							// per-channel peaks: each channel keyed on ITS
+							// OWN speed, so arm-throw windup (angular spike,
+							// backward v) can never poison the linear replay
+							// peaks keyed on the SECANT magnitudes, not on
+							// |out|: the scalar-EMA magnitude crests AFTER
+							// physical release (lag), by which time the
+							// direction has reversed — |out|-keyed peaks
+							// captured the snap-back (field 2026-08-10:
+							// release dir 121 deg median off the true peak,
+							// magnitude 1.4-3x). the secant COLLAPSES at
+							// reversal (forward and back cancel), so a
+							// secant-keyed peak structurally cannot land in
+							// the snap-back.
+							double secSp = sqrt(secantVel[0] * secantVel[0] + secantVel[1] * secantVel[1] + secantVel[2] * secantVel[2]);
+							double secAngSp = sqrt(secantAng[0] * secantAng[0] + secantAng[1] * secantAng[1] + secantAng[2] * secantAng[2]);
+							double latchWindow = driverConfig.streamFrame.deriveLatchWindowMs / 1000.0;
+							if(latchWindow < 0.02){ latchWindow = 0.02; }
+							if(secSp >= fs.linPeakMag || now - fs.linPeakTime > latchWindow){
+								fs.linPeakMag = secSp;
+								fs.linPeakTime = now;
+								for(int a = 0; a < 3; a++){
+									fs.linPeakVel[a] = outVel[a];
+								}
+							}
+							if(secAngSp >= fs.angPeakMag || now - fs.angPeakTime > latchWindow){
+								fs.angPeakMag = secAngSp;
+								fs.angPeakTime = now;
+								for(int a = 0; a < 3; a++){
+									fs.angPeakVel[a] = outAng[a];
+								}
+							}
+							if(driverConfig.streamFrame.deriveReleaseLatch && now < fs.latchUntil){
+								double holdS = driverConfig.streamFrame.deriveLatchHoldMs / 1000.0;
+								if(holdS < 0.02){ holdS = 0.02; }
+								double frac = (fs.latchUntil - now) / holdS; // 1 -> 0
+								double w = frac * 2.0;
+								if(w > 1.0){ w = 1.0; }
+								if(w < 0.0){ w = 0.0; }
+								// each channel replays only if ITS peak passes
+								// ITS gate — casual regrabs no longer twitch
+								if(fs.linPeakMag > driverConfig.streamFrame.deriveLatchMinSpeed){
+									for(int a = 0; a < 3; a++){
+										outVel[a] = fs.linPeakVel[a] * w + outVel[a] * (1.0 - w);
+									}
+								}
+								if(fs.angPeakMag > driverConfig.streamFrame.deriveLatchAngMinSpeed){
+									for(int a = 0; a < 3; a++){
+										outAng[a] = fs.angPeakVel[a] * w + outAng[a] * (1.0 - w);
+									}
+								}
+								// pose-assist: continue the throw arc in the
+								// REPORTED position for engines that derive
+								// throws from pose deltas rather than
+								// vecVelocity. offset = latched v * elapsed
+								// hold time, faded with the same decay.
+								if(driverConfig.streamFrame.deriveLatchPoseAssist
+										&& fs.linPeakMag > driverConfig.streamFrame.deriveLatchMinSpeed){
+									double holdSFull = driverConfig.streamFrame.deriveLatchHoldMs / 1000.0;
+									if(holdSFull < 0.02){ holdSFull = 0.02; }
+									double elapsed = holdSFull - (fs.latchUntil - now);
+									if(elapsed < 0){ elapsed = 0; }
+									for(int a = 0; a < 3; a++){
+										pose.vecPosition[a] += fs.linPeakVel[a] * elapsed * w;
+									}
+								}
+							}
+							// consumer discriminator: zero the reported
+							// velocity so a 2-minute field test proves
+							// whether this game reads vecVelocity at all
+							if(driverConfig.streamFrame.deriveDiagVelocity == 1){
+								for(int a = 0; a < 3; a++){
+									outVel[a] = 0;
+									outAng[a] = 0;
+								}
+							}
 						}
 						pose.vecVelocity[0] = outVel[0];
 						pose.vecVelocity[1] = outVel[1];
@@ -863,11 +1520,49 @@ bool CustomHeadsetDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 						pose.vecAngularVelocity[0] = outAng[0];
 						pose.vecAngularVelocity[1] = outAng[1];
 						pose.vecAngularVelocity[2] = outAng[2];
+						// direction-source diagnostic: while poseLogging is
+						// on and the hand moves at throw speed, capture the
+						// output plus every candidate direction vector so a
+						// field log can rank the sources against reality
+						// (100Hz throttle per device; values copied out and
+						// the line written outside the lock)
+						if(driverConfig.streamFrame.poseLogging){
+							double outSp = sqrt(outVel[0] * outVel[0] + outVel[1] * outVel[1] + outVel[2] * outVel[2]);
+							double outAngSp = sqrt(outAng[0] * outAng[0] + outAng[1] * outAng[1] + outAng[2] * outAng[2]);
+							// effective speed so wrist flicks are captured
+							if(outSp + 0.15 * outAngSp > 2.0 && now - fs.lastDirLogTime >= 0.01){
+								fs.lastDirLogTime = now;
+								logDirDiag = true;
+								for(int a = 0; a < 3; a++){
+									diagOut[a] = outVel[a];
+									diagRaw[a] = derivedVel[a];
+									diagAngOut[a] = outAng[a];
+								}
+							}
+						}
 					}
 					if(logSplit){
 						// outside the lock — lock discipline
-						DriverLog("VelocityFix: split-dir active id=%u linear=%d angular=%d window=%.0fms pow=%.1f",
-							openVRID, splitLin ? 1 : 0, splitAng ? 1 : 0, dirWindow * 1000.0, dirPow);
+						DriverLog("VelocityFix: split-dir active id=%u linear=%d angular=%d source=%s window=%.0fms pow=%.1f",
+							openVRID, splitLin ? 1 : 0, splitAng ? 1 : 0,
+							dirSource == 1 ? "secant" : (dirSource == 2 ? "runtime" : "window"),
+							dirWindow * 1000.0, dirPow);
+					}
+					if(logDirDiag){
+						// secantVel/runtimeVel are locals of this frame —
+						// no lock needed; raw and out copied under the lock
+						DriverLog("PoseLog: BURSTDIR id=%u out=(%.3f, %.3f, %.3f) raw=(%.3f, %.3f, %.3f) sec=(%.3f, %.3f, %.3f) run=(%.3f, %.3f, %.3f)",
+							openVRID,
+							diagOut[0], diagOut[1], diagOut[2],
+							diagRaw[0], diagRaw[1], diagRaw[2],
+							secantVel[0], secantVel[1], secantVel[2],
+							runtimeVel[0], runtimeVel[1], runtimeVel[2]);
+						DriverLog("PoseLog: BURSTANG id=%u out=(%.3f, %.3f, %.3f) raw=(%.3f, %.3f, %.3f) sec=(%.3f, %.3f, %.3f) run=(%.3f, %.3f, %.3f)",
+							openVRID,
+							diagAngOut[0], diagAngOut[1], diagAngOut[2],
+							derivedAng[0], derivedAng[1], derivedAng[2],
+							secantAng[0], secantAng[1], secantAng[2],
+							runtimeAng[0], runtimeAng[1], runtimeAng[2]);
 					}
 				}
 			}else if(derivedSpeed < 20.0 && derivedAngSpeed < 60.0 && sEff > 1.0){
@@ -1174,7 +1869,39 @@ bool CustomHeadsetDeviceProvider::IsStreamedController(uint32_t openVRID){
 	return streamed;
 }
 
-bool CustomHeadsetDeviceProvider::DeriveMotion(uint32_t openVRID, const vr::DriverPose_t &pose, double derivedVel[3], double derivedAng[3]){
+// direction secant over the full derive ring: raw displacement newest-oldest
+// over the ring span. at throw speeds the displacement (5-20cm) dwarfs the
+// ~1-4mm per-sample position noise, so this direction is clean to a few
+// degrees where the endpoint-fit direction is noise dominated (the fit's
+// consecutive estimates share 7/8 of their inputs — their noise is common
+// mode and does not average away). pure math; called under poseLogLock.
+void CustomHeadsetDeviceProvider::ComputeRingSecant(const VelFixState &state, bool useSmoothed, double secantVel[3], double secantAng[3]){
+	int newest = (state.head + VelFixState::ringSize - 1) % VelFixState::ringSize;
+	int oldest = state.head; // ring is full at every call site
+	double span = state.time[newest] - state.time[oldest];
+	if(span <= 1e-6){
+		for(int a = 0; a < 3; a++){ secantVel[a] = 0; secantAng[a] = 0; }
+		return;
+	}
+	const double (*P)[3] = useSmoothed ? state.smPos : state.pos;
+	for(int a = 0; a < 3; a++){
+		secantVel[a] = (P[newest][a] - P[oldest][a]) / span;
+	}
+	// angular secant: world-frame relative rotation oldest -> newest as a
+	// rotation vector over the span (same small angle mapping as the fit)
+	const vr::HmdQuaternion_t* Q = useSmoothed ? state.smQuat : state.quat;
+	vr::HmdQuaternion_t qOldConj = {Q[oldest].w, -Q[oldest].x, -Q[oldest].y, -Q[oldest].z};
+	vr::HmdQuaternion_t dq = QuatMultiply(Q[newest], qOldConj);
+	double sign = dq.w < 0 ? -1.0 : 1.0;
+	double vn = sqrt(dq.x * dq.x + dq.y * dq.y + dq.z * dq.z);
+	double angle = 2.0 * atan2(vn, fabs(dq.w));
+	double scale = vn > 1e-9 ? sign * angle / (vn * span) : 0.0;
+	secantAng[0] = dq.x * scale;
+	secantAng[1] = dq.y * scale;
+	secantAng[2] = dq.z * scale;
+}
+
+bool CustomHeadsetDeviceProvider::DeriveMotion(uint32_t openVRID, const vr::DriverPose_t &pose, double derivedVel[3], double derivedAng[3], double secantVel[3], double secantAng[3]){
 	double now = std::chrono::duration_cast<std::chrono::microseconds>(
 		std::chrono::steady_clock::now().time_since_epoch()).count() / 1000000.0;
 	std::lock_guard<std::mutex> guard(poseLogLock);
@@ -1215,12 +1942,74 @@ bool CustomHeadsetDeviceProvider::DeriveMotion(uint32_t openVRID, const vr::Driv
 			derivedAng[0] = state.emaAng[0];
 			derivedAng[1] = state.emaAng[1];
 			derivedAng[2] = state.emaAng[2];
+			ComputeRingSecant(state, state.haveSm, secantVel, secantAng);
 			return true;
 		}
 	}
-	state.pos[state.head][0] = pose.vecPosition[0];
-	state.pos[state.head][1] = pose.vecPosition[1];
-	state.pos[state.head][2] = pose.vecPosition[2];
+	// input prefilter (opt-in): per-axis median of the last 3 raw
+	// positions. one-sample lag; single-sample spikes (network jitter
+	// tails) can no longer reach the fit or the secant. state is under
+	// poseLogLock like the rest of VelFixState; pure math only.
+	double pushPos[3] = { pose.vecPosition[0], pose.vecPosition[1], pose.vecPosition[2] };
+	if(driverConfig.streamFrame.derivePreFilter == 1){
+		state.rawPos[2][0] = state.rawPos[1][0]; state.rawPos[2][1] = state.rawPos[1][1]; state.rawPos[2][2] = state.rawPos[1][2];
+		state.rawPos[1][0] = state.rawPos[0][0]; state.rawPos[1][1] = state.rawPos[0][1]; state.rawPos[1][2] = state.rawPos[0][2];
+		state.rawPos[0][0] = pushPos[0]; state.rawPos[0][1] = pushPos[1]; state.rawPos[0][2] = pushPos[2];
+		if(state.rawCount < 3){ state.rawCount++; }
+		if(state.rawCount == 3){
+			for(int a = 0; a < 3; a++){
+				double x = state.rawPos[0][a], y = state.rawPos[1][a], z = state.rawPos[2][a];
+				double lo = x < y ? (x < z ? x : z) : (y < z ? y : z);
+				double hi = x > y ? (x > z ? x : z) : (y > z ? y : z);
+				pushPos[a] = x + y + z - lo - hi;
+			}
+		}
+	}else{
+		state.rawCount = 0;
+	}
+	// pre-smoothing EMA (adjustable strength): maintained whenever the
+	// knob is nonzero so the smoothed ring is warm; consumed by the
+	// secant (always, when on) and by the fit (scope=both)
+	double smoothMs = driverConfig.streamFrame.derivePreSmoothMs;
+	if(smoothMs > 0.001){
+		if(smoothMs > 100.0){ smoothMs = 100.0; }
+		double sdt = state.count > 0 ? now - state.time[(state.head + VelFixState::ringSize - 1) % VelFixState::ringSize] : 0.0;
+		if(!state.haveSm || sdt <= 0 || sdt > 0.1){
+			state.smPosEma[0] = pushPos[0];
+			state.smPosEma[1] = pushPos[1];
+			state.smPosEma[2] = pushPos[2];
+			state.smQuatEma = pose.qRotation;
+			state.haveSm = true;
+		}else{
+			double sAlpha = 1.0 - exp(-sdt / (smoothMs / 1000.0));
+			for(int a = 0; a < 3; a++){
+				state.smPosEma[a] += sAlpha * (pushPos[a] - state.smPosEma[a]);
+			}
+			// nlerp EMA toward the incoming orientation (hemisphere safe)
+			vr::HmdQuaternion_t q = pose.qRotation;
+			double dot = q.w * state.smQuatEma.w + q.x * state.smQuatEma.x + q.y * state.smQuatEma.y + q.z * state.smQuatEma.z;
+			double sgn = dot < 0 ? -1.0 : 1.0;
+			state.smQuatEma.w += sAlpha * (sgn * q.w - state.smQuatEma.w);
+			state.smQuatEma.x += sAlpha * (sgn * q.x - state.smQuatEma.x);
+			state.smQuatEma.y += sAlpha * (sgn * q.y - state.smQuatEma.y);
+			state.smQuatEma.z += sAlpha * (sgn * q.z - state.smQuatEma.z);
+			double qn = sqrt(state.smQuatEma.w * state.smQuatEma.w + state.smQuatEma.x * state.smQuatEma.x
+				+ state.smQuatEma.y * state.smQuatEma.y + state.smQuatEma.z * state.smQuatEma.z);
+			if(qn > 1e-9){
+				state.smQuatEma.w /= qn; state.smQuatEma.x /= qn; state.smQuatEma.y /= qn; state.smQuatEma.z /= qn;
+			}
+		}
+	}else{
+		state.haveSm = false;
+	}
+	state.smPos[state.head][0] = state.haveSm ? state.smPosEma[0] : pushPos[0];
+	state.smPos[state.head][1] = state.haveSm ? state.smPosEma[1] : pushPos[1];
+	state.smPos[state.head][2] = state.haveSm ? state.smPosEma[2] : pushPos[2];
+	state.smQuat[state.head] = state.haveSm ? state.smQuatEma : pose.qRotation;
+	bool feedFitSmoothed = state.haveSm && driverConfig.streamFrame.derivePreSmoothScope == 1;
+	state.pos[state.head][0] = feedFitSmoothed ? state.smPos[state.head][0] : pushPos[0];
+	state.pos[state.head][1] = feedFitSmoothed ? state.smPos[state.head][1] : pushPos[1];
+	state.pos[state.head][2] = feedFitSmoothed ? state.smPos[state.head][2] : pushPos[2];
 	state.quat[state.head] = pose.qRotation;
 	state.time[state.head] = now;
 	state.head = (state.head + 1) % VelFixState::ringSize;
@@ -1334,6 +2123,7 @@ bool CustomHeadsetDeviceProvider::DeriveMotion(uint32_t openVRID, const vr::Driv
 	derivedAng[0] = state.emaAng[0];
 	derivedAng[1] = state.emaAng[1];
 	derivedAng[2] = state.emaAng[2];
+	ComputeRingSecant(state, state.haveSm, secantVel, secantAng);
 	return true;
 }
 
@@ -1452,8 +2242,14 @@ void CustomHeadsetDeviceProvider::LogDevicePose(uint32_t openVRID, const vr::Dri
 			trackChange = true;
 		}
 		// keep burst logging alive for 300ms after fast motion so the
-		// post release phase (including any dropout / zeroing) is captured
-		if(speed > 2.0 || fdSpeed > 2.0){
+		// post release phase (including any dropout / zeroing) is captured.
+		// EFFECTIVE speed (|v| + 0.15|w|): pure wrist flicks are w-dominant
+		// with little linear motion, and a linear-only trigger made them
+		// systematically invisible to the diagnostics (field 2026-08-10:
+		// 3 flick samples out of 581)
+		double effSpeed = speed + 0.15 * angularSpeed;
+		double fdEffSpeed = fdSpeed + 0.15 * fdAngSpeed;
+		if(effSpeed > 2.0 || fdEffSpeed > 2.0){
 			state.recentFastTime = now;
 		}
 		bool inPostFastWindow = now - state.recentFastTime < 0.3;
@@ -1462,7 +2258,7 @@ void CustomHeadsetDeviceProvider::LogDevicePose(uint32_t openVRID, const vr::Dri
 			steady = true;
 			peakForLog = state.peakSpeed;
 			state.peakSpeed = 0;
-		}else if((speed > 2.0 || fdSpeed > 2.0 || inPostFastWindow) && now - state.lastBurstLog >= 0.01){
+		}else if((effSpeed > 2.0 || fdEffSpeed > 2.0 || inPostFastWindow) && now - state.lastBurstLog >= 0.01){
 			state.lastBurstLog = now;
 			burst = true;
 		}
