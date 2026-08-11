@@ -176,11 +176,58 @@ private:
 		ID3D11ShaderResourceView* inSRV = nullptr;
 		ID3D11Texture2D* out = nullptr;
 		ID3D11RenderTargetView* outRTV = nullptr;
+		// fxaa quality intermediate: pass 1 renders FXAA(in) here, the
+		// main pass samples it. lazily created when quality mode is on.
+		ID3D11Texture2D* fx = nullptr;
+		ID3D11ShaderResourceView* fxSRV = nullptr;
+		ID3D11RenderTargetView* fxRTV = nullptr;
 		uint64_t lastUsedMs = 0;
 	};
+	void EnsureFxTexture(ScratchSet &set, uint32_t width, uint32_t height, DXGI_FORMAT format);
+	ID3D11PixelShader* fxaaShader = nullptr;
+	uint64_t fxaaShaderFileTime = 0;
+	bool cfgFxaaQuality = false;
+	ID3D11Texture2D* scratchFx = nullptr;
+	ID3D11ShaderResourceView* scratchFxSRV = nullptr;
+	ID3D11RenderTargetView* scratchFxRTV = nullptr;
+	std::set<ID3D11Texture2D*> fxaaFallbackLogged;
 	static constexpr size_t maxScratchSets = 4;
 	std::map<uint64_t, ScratchSet> scratchSets;
 	static void ReleaseScratchSet(ScratchSet &set);
+	// deferred scratch eviction: LRU victims are moved here (map entry
+	// erased immediately, resources kept alive) and released at most one
+	// per frame, at least 3 frames later, AFTER ReleaseSync - never inside
+	// the mutex-held processing window. drained fully on EvictAll.
+	struct PendingEvict{
+		ScratchSet set;
+		uint64_t frame = 0;
+	};
+	std::vector<PendingEvict> pendingEvictions;
+	void DrainPendingEvictions(bool force);
+	// live-reloaded copy of streamFrame.deferredEviction, latched at frame
+	// start so EnsureScratch (no settings param) can read it
+	bool cfgDeferEvict = true;
+	// ---- HITCHDIAG: render-side cadence instrumentation (KALDIAG analog).
+	// gap between successive ProcessSceneLayer entries is the observable a
+	// user feels; acquire and work times plus per-frame event tags let an
+	// outlier gap self-attribute to what the PREVIOUS frame did.
+	static uint64_t NowUs();
+	uint64_t hdLastFrameStartUs = 0;
+	uint64_t hdWindowStartUs = 0;
+	uint32_t hdFrames = 0;
+	double hdGapSumMs = 0, hdGapMaxMs = 0;
+	double hdAcqSumMs = 0, hdAcqMaxMs = 0;
+	double hdWorkSumMs = 0, hdWorkMaxMs = 0;
+	uint32_t hdOver16 = 0, hdOver33 = 0, hdSkips = 0;
+	uint32_t hdCreates = 0, hdEvicts = 0, hdIdleBreaks = 0;
+	// tags for the CURRENT frame (set by EnsureScratch / BakeLutIfNeeded /
+	// EnsureShaders), rotated into prev* at frame end for attribution
+	enum HitchTag : uint32_t { TagScratchCreate = 1, TagLutBake = 2, TagShaderCompile = 4, TagSyncSkip = 8 };
+	uint32_t hdFrameTags = 0;
+	uint32_t hdPrevTags = 0;
+	double hdPrevAcqMs = 0, hdPrevWorkMs = 0;
+	// one-shot HITCH line budget, re-armed with the 5 minute error re-arm
+	uint32_t hdHitchLines = 0;
 	// direct render path: per layer-texture RTVs (one per slice) so the
 	// warped output is drawn straight into the layer, eliminating the
 	// scratchOut target and the bounds copy-back. per-texture fallback if

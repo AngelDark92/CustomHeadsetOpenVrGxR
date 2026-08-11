@@ -14,6 +14,9 @@ export type FileReadError = {
 }
 export abstract class JsonSettingServiceBase<T> {
     protected _values = signal<T | undefined>(undefined, {});
+    // migration hook: subclasses may strip retired keys from freshly
+    // loaded values so the next natural save writes a clean file
+    protected migrateLoadedValues(values: T): T { return values; }
     public values = this._values.asReadonly();
     protected readonly debouncedFileWriter: DebouncedFileWriter;
     protected _initTask: Promise<void>;
@@ -70,7 +73,7 @@ export abstract class JsonSettingServiceBase<T> {
                 if (await exists(this._filePath)) {
                     try {
                         const copiedDefaults = deepCopy(this.defaults);
-                        this._values.set(deepMerge(copiedDefaults as any, JSON.parse(cleanJsonComments(await readTextFile(this._filePath)))));
+                        this._values.set(this.migrateLoadedValues(deepMerge(copiedDefaults as any, JSON.parse(cleanJsonComments(await readTextFile(this._filePath))))));
                         this._readFileError.set(undefined);
                         return true;
                     } catch (e) {

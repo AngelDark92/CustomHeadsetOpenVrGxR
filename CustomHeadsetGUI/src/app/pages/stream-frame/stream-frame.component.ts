@@ -50,7 +50,9 @@ function defaultStreamFrame(): StreamFrameConfig {
     directRender: true,
     zeroCopyV3: false,
     nvencTap: false,
-    velocityFix: false,
+    fxaa: 'off',
+    hitchDiag: true,
+    deferredEviction: true,
     velocityFixMode: 'kalman',
     deriveSmoothTauSlowMs: 90,
     deriveSmoothTauFastMs: 6,
@@ -77,10 +79,10 @@ function defaultStreamFrame(): StreamFrameConfig {
     derivePreSmoothScope: 'direction',
     deriveDiagVelocity: 'off',
     deriveLatchPoseAssist: false,
-    kalmanProcessAccel: 40,
-    kalmanPosNoiseMm: 2,
+    kalmanProcessAccel: 1,
+    kalmanPosNoiseMm: 2.7,
     kalmanProcessAngAccel: 400,
-    kalmanOriNoiseDeg: 0.5,
+    kalmanOriNoiseDeg: 1.25,
     kalmanLeadMs: 0,
     kalmanReleaseRewindMs: 0,
     kalmanRewindHoldMs: 100,
@@ -166,6 +168,16 @@ export class StreamFrameComponent {
   matrixError = signal('');
 
   constructor() {
+    // driver-published defaults can arrive AFTER the last settings emission
+    // (info file poll race), leaving this.defaults stuck on the TS literals;
+    // reset arrows then write stale values (field 2026-08-11: a reset wrote
+    // pre-campaign A=40/P=2.0/O=0.5 over the ratified tuning and poisoned a
+    // capture). values() is a signal, so this effect re-runs on every info
+    // update and the literals become a true last-resort fallback only.
+    effect(() => {
+      const infoDefaults = (this.dis.values()?.defaultSettings as any)?.streamFrame;
+      this.defaults = fillDefaults(infoDefaults ? JSON.parse(JSON.stringify(infoDefaults)) : undefined, defaultStreamFrame());
+    });
     effect(() => {
       this.rootSetting = this.dss.values();
       if (this.rootSetting) {

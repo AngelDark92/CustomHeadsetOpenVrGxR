@@ -28,6 +28,24 @@ export class DriverSettingService extends JsonSettingServiceBase<Settings> {
   constructor(private pathService: PathsService, driverInfoService: DriverInfoService) {
     super(pathService.settingPath, pathService.appDataDirPath, computed(() => driverInfoService.values()?.defaultSettings ?? ({} as Settings)), false, true);
   }
+  // migration: keys the driver has retired are deleted on load so the
+  // next natural save writes a clean settings.json. Prune-on-save
+  // incident 2026-08-11: the round-trip writer preserved a legacy
+  // "velocityFix" bool for months; the default-diff serializer then
+  // pruned the explicit velocityFixMode the moment it matched the new
+  // published default, and the fossil took over mode selection.
+  private static readonly retiredStreamFrameKeys = ['velocityFix', 'kalmanDupSkip', 'kalmanAdaptiveBoost'];
+  protected override migrateLoadedValues(values: Settings): Settings {
+    const sf = (values as any)?.streamFrame;
+    if (sf) {
+      for (const key of DriverSettingService.retiredStreamFrameKeys) {
+        if (key in sf) {
+          delete sf[key];
+        }
+      }
+    }
+    return values;
+  }
   protected override async init() {
     await super.init();
     await this.listDistortionProfiles();

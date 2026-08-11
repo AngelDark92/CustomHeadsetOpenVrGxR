@@ -363,6 +363,14 @@ void ConfigLoader::ParseConfig(){
 					}
 				}
 			}
+			if(streamFrameData["fxaa"].is_boolean()){
+				// pre-1.6.6 boolean: true was the in-pass fast path
+				newConfig.streamFrame.fxaaMode = streamFrameData["fxaa"].get<bool>() ? 1 : 0;
+			}
+			if(streamFrameData["fxaa"].is_string()){
+				std::string fx = streamFrameData["fxaa"].get<std::string>();
+				newConfig.streamFrame.fxaaMode = fx == "quality" ? 2 : (fx == "fast" ? 1 : 0);
+			}
 			if(streamFrameData["cas"].is_object()){
 				json casData = streamFrameData["cas"];
 				if(casData["enable"].is_boolean()){
@@ -563,11 +571,15 @@ void ConfigLoader::ParseConfig(){
 			if(streamFrameData["poseLogging"].is_boolean()){
 				newConfig.streamFrame.poseLogging = streamFrameData["poseLogging"].get<bool>();
 			}
-			if(streamFrameData["velocityFix"].is_boolean()){
-				// legacy bool maps to full mode
-				newConfig.streamFrame.velocityFix = streamFrameData["velocityFix"].get<bool>();
-				newConfig.streamFrame.velocityFixMode = newConfig.streamFrame.velocityFix ? 2 : 0;
-			}
+			// RETIRED 1.6.7 (prune-on-save incident 2026-08-11): the legacy
+			// "velocityFix" bool no longer selects a mode. The GUI's
+			// default-diff serializer prunes an explicit velocityFixMode the
+			// moment it equals the published default, after which this
+			// round-trip preserved fossil used to take over and select the
+			// rejected FULL blend. The key is inert; the GUI migration
+			// deletes it from the file. Mode selection: the
+			// "velocityFixMode" string only (classic/full/derive stay
+			// reachable by string per the graveyard law).
 			if(streamFrameData["zeroCopyV3"].is_boolean()){
 				newConfig.streamFrame.zeroCopyV3 = streamFrameData["zeroCopyV3"].get<bool>();
 			}
@@ -577,6 +589,21 @@ void ConfigLoader::ParseConfig(){
 			if(streamFrameData["velocityFixMode"].is_string()){
 				std::string mode = streamFrameData["velocityFixMode"].get<std::string>();
 				newConfig.streamFrame.velocityFixMode = mode == "kalman" ? 4 : (mode == "derive" ? 3 : (mode == "full" ? 2 : (mode == "classic" ? 1 : 0)));
+			}
+			// mode provenance (2x incident 2026-08-11): a round-trip
+			// preserved legacy "velocityFix" bool with no
+			// "velocityFixMode" string silently downgraded kalman to the
+			// retired FULL blend and cost a field session. resolve loudly
+			// so the very first grep answers "which estimator ran".
+			{
+				bool legacyBool = streamFrameData["velocityFix"].is_boolean();
+				bool modeString = streamFrameData["velocityFixMode"].is_string();
+				DriverLog("Config: velocityFixMode=%d source=%s",
+					newConfig.streamFrame.velocityFixMode,
+					modeString ? "string" : "default");
+				if(legacyBool){
+					DriverLog("Config: legacy \"velocityFix\" key present and IGNORED (retired 1.6.7); the GUI removes it on its next save. Mode selection uses \"velocityFixMode\" only.");
+				}
 			}
 			if(streamFrameData["deriveSmoothTauSlowMs"].is_number()){
 				newConfig.streamFrame.deriveSmoothTauSlowMs = streamFrameData["deriveSmoothTauSlowMs"].get<double>();
@@ -778,6 +805,12 @@ void ConfigLoader::ParseConfig(){
 			}
 			if(streamFrameData["reconLogger"].is_boolean()){
 				newConfig.streamFrame.reconLogger = streamFrameData["reconLogger"].get<bool>();
+			}
+			if(streamFrameData["hitchDiag"].is_boolean()){
+				newConfig.streamFrame.hitchDiag = streamFrameData["hitchDiag"].get<bool>();
+			}
+			if(streamFrameData["deferredEviction"].is_boolean()){
+				newConfig.streamFrame.deferredEviction = streamFrameData["deferredEviction"].get<bool>();
 			}
 			if(streamFrameData["directRender"].is_boolean()){
 				newConfig.streamFrame.directRender = streamFrameData["directRender"].get<bool>();
@@ -1042,6 +1075,7 @@ void ConfigLoader::WriteInfo(){
 					{"b", defaultSettings.streamFrame.colorMultiplier.b},
 				}},
 				{"srgbMatrix", defaultSettings.streamFrame.srgbMatrix},
+				{"fxaa", defaultSettings.streamFrame.fxaaMode == 2 ? "quality" : (defaultSettings.streamFrame.fxaaMode == 1 ? "fast" : "off")},
 				{"cas", {
 					{"enable", defaultSettings.streamFrame.cas.enable},
 					{"strength", defaultSettings.streamFrame.cas.strength},
@@ -1102,6 +1136,8 @@ void ConfigLoader::WriteInfo(){
 				{"poseLogging", defaultSettings.streamFrame.poseLogging},
 				{"syncTimeoutMs", defaultSettings.streamFrame.syncTimeoutMs},
 				{"reconLogger", defaultSettings.streamFrame.reconLogger},
+				{"hitchDiag", defaultSettings.streamFrame.hitchDiag},
+				{"deferredEviction", defaultSettings.streamFrame.deferredEviction},
 				{"directRender", defaultSettings.streamFrame.directRender},
 				{"zeroCopy", defaultSettings.streamFrame.zeroCopy},
 				{"eyeGaze", {
@@ -1122,7 +1158,6 @@ void ConfigLoader::WriteInfo(){
 					{"centerStrengthX", defaultSettings.streamFrame.pupilSwim.centerStrengthX},
 					{"centerStrengthY", defaultSettings.streamFrame.pupilSwim.centerStrengthY},
 				}},
-				{"velocityFix", defaultSettings.streamFrame.velocityFix},
 				{"zeroCopyV3", defaultSettings.streamFrame.zeroCopyV3},
 				{"nvencTap", defaultSettings.streamFrame.nvencTap},
 				{"velocityFixMode", defaultSettings.streamFrame.velocityFixMode == 4 ? "kalman" : (defaultSettings.streamFrame.velocityFixMode == 3 ? "derive" : (defaultSettings.streamFrame.velocityFixMode == 2 ? "full" : (defaultSettings.streamFrame.velocityFixMode == 1 ? "classic" : "off")))},

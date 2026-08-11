@@ -129,7 +129,7 @@ cbuffer Params : register(b0){
 	float3 hby; float padD;
 	float3 hbz; float padE;
 	float alignShiftU; float alignShiftV; float segCount; float tuneSegIdx;
-	float tuneSegCount; float padH; float padI; float padJ;
+	float tuneSegCount; float fxaaEnable; float padI; float padJ;
 };
 Texture2D<float4> tex : register(t0);
 Texture2D<float4> lut : register(t1);
@@ -217,7 +217,7 @@ struct FrameProcessorConstants{
 	float alignShiftU, alignShiftV, segCount, tuneSegIdx;
 	// per-band layouts: the CURRENT band's segment count for the sector
 	// highlight (the sampling row count above may be larger)
-	float tuneSegCount, padH, padI, padJ;
+	float tuneSegCount, fxaaEnable, padI, padJ;
 };
 
 // map a layer texture format to the scratch format and shader mode used to
@@ -278,6 +278,10 @@ static bool MapLayerFormat(DXGI_FORMAT layerFormat, DXGI_FORMAT &scratchFormat, 
 
 static uint64_t NowMs(){
 	return (uint64_t)std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+uint64_t FrameProcessor::NowUs(){
+	return (uint64_t)std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
 }
 
 // find the dxgi adapter SteamVR renders on, from the hmd's reported luid.
@@ -352,6 +356,10 @@ static std::string GetLayerShaderPath(){
 	return driverConfigLoader.info.driverResources + "shaders/d3d11/vrlink_layer_ps.hlsl";
 }
 
+static std::string GetFxaaShaderPath(){
+	return driverConfigLoader.info.driverResources + "shaders/d3d11/vrlink_fxaa_ps.hlsl";
+}
+
 static uint64_t GetFileTime(const std::string &path){
 	std::error_code ec;
 	auto t = std::filesystem::last_write_time(path, ec);
@@ -408,6 +416,41 @@ bool FrameProcessor::EnsureShaders(){
 	bool checkFile = now - lastShaderCheckMs > 1000 || !pixelShader;
 	if(checkFile){
 		lastShaderCheckMs = now;
+		// pass 1 shader (fxaa quality mode): file only, no embedded
+		// fallback — when absent or broken, quality degrades to the
+		// in-pass fast path at runtime instead of failing frames
+		{
+			std::string fxPath = GetFxaaShaderPath();
+			uint64_t fxTime = GetFileTime(fxPath);
+			if(fxTime != fxaaShaderFileTime){
+				fxaaShaderFileTime = fxTime;
+				std::string fxSource;
+				if(fxTime != 0){
+					std::ifstream fxFile(fxPath, std::ios::binary);
+					if(fxFile){
+						fxSource.assign(std::istreambuf_iterator<char>(fxFile), std::istreambuf_iterator<char>());
+					}
+				}
+				if(!fxSource.empty()){
+					ID3DBlob* fxBlob = nullptr;
+					ID3DBlob* fxErrors = nullptr;
+					if(SUCCEEDED(D3DCompile(fxSource.c_str(), fxSource.size(), "vrlink_fxaa_ps", nullptr, nullptr,
+						"main", "ps_5_0", D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &fxBlob, &fxErrors)) && fxBlob){
+						ID3D11PixelShader* fxNew = nullptr;
+						if(SUCCEEDED(device->CreatePixelShader(fxBlob->GetBufferPointer(), fxBlob->GetBufferSize(), nullptr, &fxNew))){
+							if(fxaaShader){ fxaaShader->Release(); }
+							fxaaShader = fxNew;
+							hdFrameTags |= TagShaderCompile;
+							DriverLog("FrameProcessor: fxaa pass shader ready (from file)");
+						}
+						fxBlob->Release();
+					}else if(fxErrors){
+						DriverLog("FrameProcessor: FXAA PS compile error: %s", (char*)fxErrors->GetBufferPointer());
+					}
+					if(fxErrors){ fxErrors->Release(); }
+				}
+			}
+		}
 		std::string path = GetLayerShaderPath();
 		uint64_t fileTime = GetFileTime(path);
 		if(pixelShader && fileTime == pixelShaderFileTime){
@@ -457,6 +500,7 @@ bool FrameProcessor::EnsureShaders(){
 		pixelShader = newShader;
 		pixelShaderFileTime = fileTime;
 		shaderFailed = false;
+		hdFrameTags |= TagShaderCompile;
 		// capability provenance: a stale hlsl next to a new dll fails
 		// SILENTLY for appended features (cbuffer appends are layout
 		// compatible), so name what this shader source actually contains
@@ -469,12 +513,13 @@ bool FrameProcessor::EnsureShaders(){
 		// cbuffer fields (layout identity) without applying them
 		bool hasAlignShift = source.find("float2(alignShiftU") != std::string::npos;
 		bool hasSegments = source.find("SampleLutSegmented(") != std::string::npos;
+		bool hasFxaa = source.find("fxaaEnable > 0.5") != std::string::npos;
 		bool hasAuxMarkers = source.find("dotMode > 2.5") != std::string::npos;
-		DriverLog("FrameProcessor: pixel shader ready (%s, gaze ring support: %s, calib dot support: %s, warped overlays: %s, tuner ring: %s, world grid: %s, align shift: %s, band segments: %s)",
+		DriverLog("FrameProcessor: pixel shader ready (%s, gaze ring support: %s, calib dot support: %s, warped overlays: %s, tuner ring: %s, world grid: %s, align shift: %s, band segments: %s, fxaa: %s, fxaaPass: %s)",
 			fileTime ? "from file" : "embedded", hasGazeRing ? "yes" : "NO - stale hlsl?",
 			hasCalibDot ? "yes" : "NO - stale hlsl?", hasWarpedOverlay ? "yes" : "NO - stale hlsl?",
 			hasTuneRing ? "yes" : "NO - stale hlsl?", hasWorldGrid ? "yes" : "NO - stale hlsl?",
-			hasAlignShift ? "yes" : "NO - stale hlsl?", hasSegments ? "yes" : "NO - stale hlsl?");
+			hasAlignShift ? "yes" : "NO - stale hlsl?", hasSegments ? "yes" : "NO - stale hlsl?", hasFxaa ? "yes" : "NO - stale hlsl?", fxaaShader ? "yes" : "NO - file missing?");
 		if(!hasAuxMarkers){
 			DriverLog("FrameProcessor: aux markers (center cross / tip marker): NO - stale hlsl?");
 		}
@@ -483,6 +528,9 @@ bool FrameProcessor::EnsureShaders(){
 }
 
 void FrameProcessor::ReleaseScratchSet(ScratchSet &set){
+	if(set.fxSRV){ set.fxSRV->Release(); set.fxSRV = nullptr; }
+	if(set.fxRTV){ set.fxRTV->Release(); set.fxRTV = nullptr; }
+	if(set.fx){ set.fx->Release(); set.fx = nullptr; }
 	if(set.inSRV){ set.inSRV->Release(); set.inSRV = nullptr; }
 	if(set.in){ set.in->Release(); set.in = nullptr; }
 	if(set.outRTV){ set.outRTV->Release(); set.outRTV = nullptr; }
@@ -519,10 +567,16 @@ bool FrameProcessor::EnsureScratch(uint32_t width, uint32_t height, DXGI_FORMAT 
 				width, height, (unsigned)format);
 		}
 		found->second.lastUsedMs = now;
+		if(cfgFxaaQuality && !found->second.fx){
+			EnsureFxTexture(found->second, width, height, format);
+		}
 		scratchIn = found->second.in;
 		scratchInSRV = found->second.inSRV;
 		scratchOut = found->second.out;
 		scratchOutRTV = found->second.outRTV;
+		scratchFx = found->second.fx;
+		scratchFxSRV = found->second.fxSRV;
+		scratchFxRTV = found->second.fxRTV;
 		return true;
 	}
 
@@ -559,7 +613,11 @@ bool FrameProcessor::EnsureScratch(uint32_t width, uint32_t height, DXGI_FORMAT 
 	}
 	set.lastUsedMs = now;
 
-	// bound the cache: evict the least recently used entry beyond the cap
+	// bound the cache: evict the least recently used entry beyond the cap.
+	// deferred mode (default) moves the victim to pendingEvictions - the
+	// map entry disappears now, but the D3D resources are released a few
+	// frames later OUTSIDE the keyed-mutex hold, so an eviction never adds
+	// release cost to the frame that already pays the creation stall.
 	while(scratchSets.size() >= maxScratchSets){
 		auto lru = scratchSets.begin();
 		for(auto it = scratchSets.begin(); it != scratchSets.end(); ++it){
@@ -567,17 +625,81 @@ bool FrameProcessor::EnsureScratch(uint32_t width, uint32_t height, DXGI_FORMAT 
 				lru = it;
 			}
 		}
-		ReleaseScratchSet(lru->second);
+		hdEvicts++;
+		if(cfgDeferEvict){
+			PendingEvict pe;
+			pe.set = lru->second;
+			pe.frame = frameCounter;
+			pendingEvictions.push_back(pe);
+		}else{
+			ReleaseScratchSet(lru->second);
+		}
 		scratchSets.erase(lru);
 	}
 	auto inserted = scratchSets.emplace(key, set).first;
+	if(cfgFxaaQuality){
+		EnsureFxTexture(inserted->second, width, height, format);
+	}
 	scratchIn = inserted->second.in;
 	scratchInSRV = inserted->second.inSRV;
 	scratchOut = inserted->second.out;
 	scratchOutRTV = inserted->second.outRTV;
-	DriverLog("FrameProcessor: created scratch textures %ux%u format=%u (%zu sets cached)",
-		width, height, (unsigned)format, scratchSets.size());
+	scratchFx = inserted->second.fx;
+	scratchFxSRV = inserted->second.fxSRV;
+	scratchFxRTV = inserted->second.fxRTV;
+	hdCreates++;
+	hdFrameTags |= TagScratchCreate;
+	DriverLog("FrameProcessor: created scratch textures %ux%u format=%u (%zu sets cached, %zu pending evict)",
+		width, height, (unsigned)format, scratchSets.size(), pendingEvictions.size());
 	return true;
+}
+
+void FrameProcessor::EnsureFxTexture(ScratchSet &set, uint32_t width, uint32_t height, DXGI_FORMAT format){
+	D3D11_TEXTURE2D_DESC desc = {};
+	desc.Width = width;
+	desc.Height = height;
+	desc.MipLevels = 1;
+	desc.ArraySize = 1;
+	desc.Format = format;
+	desc.SampleDesc.Count = 1;
+	desc.Usage = D3D11_USAGE_DEFAULT;
+	desc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
+	if(FAILED(device->CreateTexture2D(&desc, nullptr, &set.fx))){
+		PROCESSOR_ERROR("FrameProcessor: failed to create fxaa intermediate %ux%u", width, height);
+		set.fx = nullptr;
+		return;
+	}
+	if(FAILED(device->CreateShaderResourceView(set.fx, nullptr, &set.fxSRV)) ||
+		FAILED(device->CreateRenderTargetView(set.fx, nullptr, &set.fxRTV))){
+		if(set.fxSRV){ set.fxSRV->Release(); set.fxSRV = nullptr; }
+		set.fx->Release();
+		set.fx = nullptr;
+		return;
+	}
+	hdFrameTags |= TagScratchCreate;
+	DriverLog("FrameProcessor: added fxaa intermediate %ux%u format=%u", width, height, (unsigned)format);
+}
+
+void FrameProcessor::DrainPendingEvictions(bool force){
+	if(pendingEvictions.empty()){
+		return;
+	}
+	if(force){
+		for(auto &pe : pendingEvictions){
+			ReleaseScratchSet(pe.set);
+		}
+		pendingEvictions.clear();
+		return;
+	}
+	// steady state: release at most ONE aged victim per frame, spreading
+	// release cost across frames instead of stacking it on a transition
+	for(size_t i = 0; i < pendingEvictions.size(); i++){
+		if(frameCounter - pendingEvictions[i].frame >= 3){
+			ReleaseScratchSet(pendingEvictions[i].set);
+			pendingEvictions.erase(pendingEvictions.begin() + i);
+			break;
+		}
+	}
 }
 
 static const int lutSize = 512;
@@ -747,6 +869,7 @@ bool FrameProcessor::BakeLutIfNeeded(const StreamFrameConfig &config){
 
 	lastLutKey = key;
 	lutBaked = true;
+	hdFrameTags |= TagLutBake;
 	DriverLog("FrameProcessor: baked distortion lut (%s, %d rows)", spline ? "spline" : "k1k2", rowCount);
 	return true;
 }
@@ -918,6 +1041,9 @@ void FrameProcessor::EvictTexture(vr::SharedTextureHandle_t handle){
 
 void FrameProcessor::EvictAll(){
 	std::lock_guard<std::mutex> guard(lock);
+	// pending scratch evictions: release now - teardown is already a load
+	// boundary and stranding aged victims across it would leak VRAM
+	DrainPendingEvictions(true);
 	for(auto &pair : layerRTVs){
 		for(auto *rtv : pair.second){
 			if(rtv){ rtv->Release(); }
@@ -1006,6 +1132,9 @@ bool FrameProcessor::ProcessEye(ID3D11Texture2D* texture, const vr::VRTextureBou
 		DriverLog("FrameProcessor: %s path for %ux%u format=%u layer",
 			v3Active ? "zero-copy v3" : (directRTV ? "direct render" : "copy-back"), desc.Width, desc.Height, (unsigned)desc.Format);
 	}
+	scratchFx = nullptr;
+	scratchFxSRV = nullptr;
+	scratchFxRTV = nullptr;
 	if(!v3Active && !EnsureScratch(desc.Width, desc.Height, mappedScratchFormat, directRTV == nullptr)){
 		return false;
 	}
@@ -1052,6 +1181,21 @@ bool FrameProcessor::ProcessEye(ID3D11Texture2D* texture, const vr::VRTextureBou
 		: config.cas.strength;
 	constants.casStrength = (float)casStrengthEye;
 	constants.casEnable = config.cas.enable ? 1.0f : 0.0f;
+	// fxaa mode resolve: quality (2) runs the separate pre-pass when its
+	// shader and intermediate exist; otherwise degrade to the in-pass
+	// fast path (missing/stale fxaa shader file, fx alloc failure, or the
+	// v3 tier which has no scratch by design) so the feature never
+	// silently disappears — the one-shot line names the reason
+	bool fxaaQualityActive = false;
+	if(config.fxaaMode == 2){
+		if(!v3Active && fxaaShader && scratchFxSRV && scratchFxRTV){
+			fxaaQualityActive = true;
+		}else if(fxaaFallbackLogged.insert(texture).second){
+			DriverLog("FrameProcessor: fxaa quality unavailable for this layer (%s), using fast path",
+				v3Active ? "zero-copy v3 tier" : (fxaaShader ? "no fx intermediate" : "pass shader not compiled"));
+		}
+	}
+	constants.fxaaEnable = (config.fxaaMode == 1 || (config.fxaaMode == 2 && !fxaaQualityActive)) ? 1.0f : 0.0f;
 	constants.annulusEnable = config.distortion.annulus.enable ? 1.0f : 0.0f;
 	constants.annulusMin = (float)config.distortion.annulus.rMin;
 	constants.annulusMax = (float)config.distortion.annulus.rMax;
@@ -1248,11 +1392,27 @@ bool FrameProcessor::ProcessEye(ID3D11Texture2D* texture, const vr::VRTextureBou
 	viewport.Width = uSize * desc.Width;
 	viewport.Height = vSize * desc.Height;
 	viewport.MaxDepth = 1.0f;
+	if(fxaaQualityActive){
+		// pass 1: FXAA in unwarped source space into the fx intermediate,
+		// same bounds region and texel grid as the source — the main pass
+		// below then samples fully AA-resolved neighborhoods
+		context->ClearState();
+		context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+		context->VSSetShader(vertexShader, nullptr, 0);
+		context->PSSetShader(fxaaShader, nullptr, 0);
+		ID3D11ShaderResourceView* fxSrvs[1] = { scratchInSRV };
+		context->PSSetShaderResources(0, 1, fxSrvs);
+		context->PSSetSamplers(0, 1, &sampler);
+		context->PSSetConstantBuffers(0, 1, &constantBuffer);
+		context->RSSetViewports(1, &viewport);
+		context->OMSetRenderTargets(1, &scratchFxRTV, nullptr);
+		context->Draw(3, 0);
+	}
 	context->ClearState();
 	context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 	context->VSSetShader(vertexShader, nullptr, 0);
 	context->PSSetShader(pixelShader, nullptr, 0);
-	ID3D11ShaderResourceView* srvs[2] = { v3Active ? layerSRV : scratchInSRV, lutSRV };
+	ID3D11ShaderResourceView* srvs[2] = { fxaaQualityActive ? scratchFxSRV : (v3Active ? layerSRV : scratchInSRV), lutSRV };
 	context->PSSetShaderResources(0, 2, srvs);
 	context->PSSetSamplers(0, 1, &sampler);
 	context->PSSetConstantBuffers(0, 1, &constantBuffer);
@@ -1305,7 +1465,59 @@ bool FrameProcessor::ProcessSceneLayer(vr::SharedTextureHandle_t leftEye, vr::Sh
 	if(nowMs - lastErrorResetMs > 300000){
 		lastErrorResetMs = nowMs;
 		errorCount = 0;
+		hdHitchLines = 0;
 	}
+
+	// ---- HITCHDIAG frame-start accounting. the gap between successive
+	// entries here is the cadence the user feels; an outlier gap is
+	// attributed to what the PREVIOUS frame did (its tags/acquire/work),
+	// because that is the frame whose cost shows up as this gap.
+	cfgDeferEvict = settings.config.deferredEviction;
+	cfgFxaaQuality = settings.config.fxaaMode == 2;
+	uint64_t tFrameUs = NowUs();
+	double gapMs = hdLastFrameStartUs ? (tFrameUs - hdLastFrameStartUs) / 1000.0 : 0.0;
+	hdLastFrameStartUs = tFrameUs;
+	if(hdWindowStartUs == 0){
+		hdWindowStartUs = tFrameUs;
+	}
+	if(gapMs > 1000.0){
+		// standby / disconnect / first frame of a new app: a session
+		// boundary, not a hitch - keep it out of the stats
+		hdIdleBreaks++;
+	}else if(gapMs > 0.0){
+		hdFrames++;
+		hdGapSumMs += gapMs;
+		if(gapMs > hdGapMaxMs){ hdGapMaxMs = gapMs; }
+		if(gapMs > 16.7){ hdOver16++; }
+		if(gapMs > 33.4){ hdOver33++; }
+		if(settings.config.hitchDiag && gapMs > 25.0 && hdHitchLines < 30){
+			hdHitchLines++;
+			DriverLog("FrameProcessor: HITCH gap=%.1fms prevAcq=%.2fms prevWork=%.2fms tags=%s%s%s%s%s",
+				gapMs, hdPrevAcqMs, hdPrevWorkMs,
+				hdPrevTags == 0 ? "none" : "",
+				(hdPrevTags & TagScratchCreate) ? "scratchCreate " : "",
+				(hdPrevTags & TagLutBake) ? "lutBake " : "",
+				(hdPrevTags & TagShaderCompile) ? "shaderCompile " : "",
+				(hdPrevTags & TagSyncSkip) ? "syncSkip" : "");
+		}
+	}
+	// 2s summary window, the render-side KALDIAG
+	if(tFrameUs - hdWindowStartUs >= 2000000){
+		if(settings.config.hitchDiag && hdFrames > 0){
+			DriverLog("FrameProcessor: HITCHDIAG frames=%u dtMean=%.2fms dtMax=%.1fms over16=%u over33=%u acqMean=%.2fms acqMax=%.1fms workMean=%.2fms workMax=%.1fms skips=%u creates=%u evicts=%u pend=%zu idle=%u",
+				hdFrames, hdGapSumMs / hdFrames, hdGapMaxMs, hdOver16, hdOver33,
+				hdAcqSumMs / hdFrames, hdAcqMaxMs, hdWorkSumMs / hdFrames, hdWorkMaxMs,
+				hdSkips, hdCreates, hdEvicts, pendingEvictions.size(), hdIdleBreaks);
+		}
+		hdWindowStartUs = tFrameUs;
+		hdFrames = 0;
+		hdGapSumMs = 0; hdGapMaxMs = 0;
+		hdAcqSumMs = 0; hdAcqMaxMs = 0;
+		hdWorkSumMs = 0; hdWorkMaxMs = 0;
+		hdOver16 = 0; hdOver33 = 0; hdSkips = 0;
+		hdCreates = 0; hdEvicts = 0; hdIdleBreaks = 0;
+	}
+	hdFrameTags = 0;
 
 	if(!EnsureDevice() || !EnsureShaders()){
 		return false;
@@ -1337,11 +1549,20 @@ bool FrameProcessor::ProcessSceneLayer(vr::SharedTextureHandle_t leftEye, vr::Sh
 		uint32_t escalated = (uint32_t)baseTimeout * 3;
 		timeout = escalated < 15 ? 15 : escalated;
 	}
+	uint64_t tAcqUs = NowUs();
 	HRESULT hr = mutex->AcquireSync(0, timeout);
+	double acqMs = (NowUs() - tAcqUs) / 1000.0;
+	hdAcqSumMs += acqMs;
+	if(acqMs > hdAcqMaxMs){ hdAcqMaxMs = acqMs; }
 	if(hr != S_OK){
 		// timeout or abandoned: skip this frame rather than stall the pipeline
 		consecutiveSyncSkips++;
 		mutex->Release();
+		hdSkips++;
+		hdFrameTags |= TagSyncSkip;
+		hdPrevTags = hdFrameTags;
+		hdPrevAcqMs = acqMs;
+		hdPrevWorkMs = (NowUs() - tFrameUs) / 1000.0;
 		PROCESSOR_ERROR("FrameProcessor: AcquireSync returned 0x%08X, skipping frame (%d consecutive)", (unsigned)hr, consecutiveSyncSkips);
 		return false;
 	}
@@ -1394,6 +1615,17 @@ bool FrameProcessor::ProcessSceneLayer(vr::SharedTextureHandle_t leftEye, vr::Sh
 
 	mutex->ReleaseSync(0);
 	mutex->Release();
+
+	// deferred scratch eviction drain: the mutex is released, vrlink can
+	// consume the frame - release cost here is invisible to the pipeline
+	DrainPendingEvictions(false);
+
+	double workMs = (NowUs() - tFrameUs) / 1000.0;
+	hdWorkSumMs += workMs;
+	if(workMs > hdWorkMaxMs){ hdWorkMaxMs = workMs; }
+	hdPrevTags = hdFrameTags;
+	hdPrevAcqMs = acqMs;
+	hdPrevWorkMs = workMs;
 	return ok;
 }
 

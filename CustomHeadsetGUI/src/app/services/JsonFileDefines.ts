@@ -129,7 +129,9 @@ export type StreamFrameConfig = {
   directRender: boolean;
   zeroCopyV3: boolean;
   nvencTap: boolean;
-  velocityFix: boolean;
+  fxaa: string;
+  hitchDiag: boolean;
+  deferredEviction: boolean;
   velocityFixMode: string;
   deriveSmoothTauSlowMs: number;
   deriveSmoothTauFastMs: number;

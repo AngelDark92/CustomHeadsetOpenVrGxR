@@ -91,7 +91,9 @@ cbuffer Params : register(b0){
 	float alignShiftU; float alignShiftV; float segCount; float tuneSegIdx;
 	// per-band layouts: the CURRENT band's segment count for the sector
 	// highlight (segCount above stays the lut ROW count for sampling)
-	float tuneSegCount; float padH; float padI; float padJ;
+	// fxaaEnable promoted from padH (cbuffer size and every prior offset
+	// unchanged); the USAGE expression below is the capability token
+	float tuneSegCount; float fxaaEnable; float padI; float padJ;
 };
 Texture2D<float4> tex : register(t0);
 Texture2D<float4> lut : register(t1);
@@ -114,6 +116,12 @@ float3 SrgbToLinear(float3 c){
 // interleaved gradient noise, stable per output pixel
 float InterleavedGradientNoise(float2 pixel){
 	return frac(52.9829189 * frac(0.06711056 * pixel.x + 0.00583715 * pixel.y));
+}
+
+// perceptual luma for FXAA edge detection (sqrt approximates the gamma
+// the algorithm's thresholds were tuned in; samples here are linear)
+float FxaaLuma(float3 c){
+	return sqrt(dot(c, float3(0.299, 0.587, 0.114)));
 }
 
 float4 SampleWarped(float2 uvSrcNorm){
@@ -189,6 +197,36 @@ float4 main(float4 pos : SV_Position, float2 uv : TEXCOORD0) : SV_Target0{
 	float2 ovUv = (overlayWarped > 0.5) ? nSrc : uv;
 	float4 color = SampleWarped(nSrc);
 	bool outside = any(nSrc < 0.0) || any(nSrc > 1.0);
+
+	// ---- FXAA (compact 3.11 console variant), BEFORE CAS: resolve the
+	// center color along the detected local edge so sharpening enhances a
+	// clean edge instead of amplifying the staircase. flat areas exit at
+	// the contrast gate after 4 corner taps; CAS then sharpens the
+	// AA-resolved center against its raw cross neighbors (single pass
+	// compromise: the neighborhood is not itself AA-resolved).
+	if(fxaaEnable > 0.5 && !outside){
+		float2 tf = texelSize / boundsSize;
+		float lNW = FxaaLuma(SampleWarped(nSrc + float2(-tf.x, -tf.y)).rgb);
+		float lNE = FxaaLuma(SampleWarped(nSrc + float2( tf.x, -tf.y)).rgb);
+		float lSW = FxaaLuma(SampleWarped(nSrc + float2(-tf.x,  tf.y)).rgb);
+		float lSE = FxaaLuma(SampleWarped(nSrc + float2( tf.x,  tf.y)).rgb);
+		float lM  = FxaaLuma(color.rgb);
+		float lMin = min(lM, min(min(lNW, lNE), min(lSW, lSE)));
+		float lMax = max(lM, max(max(lNW, lNE), max(lSW, lSE)));
+		if(lMax - lMin >= max(0.0625, lMax * 0.125)){
+			lNE += 1.0 / 384.0;
+			float2 dir = float2(-((lNW + lNE) - (lSW + lSE)), (lNW + lSW) - (lNE + lSE));
+			float dirReduce = max((lNW + lNE + lSW + lSE) * 0.03125, 1.0 / 512.0);
+			float rcpMin = 1.0 / (min(abs(dir.x), abs(dir.y)) + dirReduce);
+			dir = clamp(dir * rcpMin, -8.0, 8.0) * tf;
+			float3 rgbA = 0.5 * (SampleWarped(nSrc + dir * (1.0 / 3.0 - 0.5)).rgb
+				+ SampleWarped(nSrc + dir * (2.0 / 3.0 - 0.5)).rgb);
+			float3 rgbB = rgbA * 0.5 + 0.25 * (SampleWarped(nSrc + dir * -0.5).rgb
+				+ SampleWarped(nSrc + dir * 0.5).rgb);
+			float lB = FxaaLuma(rgbB);
+			color.rgb = (lB < lMin || lB > lMax) ? rgbA : rgbB;
+		}
+	}
 
 	// ---- CAS sharpening (per channel, compact FidelityFX style) ----
 	if(casEnable > 0.5 && !outside){

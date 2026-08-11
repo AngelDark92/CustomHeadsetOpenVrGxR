@@ -130,6 +130,21 @@
 @if(sections.enhance){
 <div class="field">
     <div class="title">
+        <span>FXAA Anti-Aliasing</span>
+        <app-field-tip info="FXAA applied BEFORE CAS so sharpening enhances resolved edges instead of amplifying jagged staircases. Best for titles with heavy edge shimmer (specular geometry, foliage, thin railings); slightly softens fine text - leave off for text-heavy apps. Fast: integrated into the main pass; CAS sharpens raw neighbors around the AA-resolved center (can faintly re-jag very strong edges at high CAS strength). Quality: a separate FXAA pre-pass, so CAS sees fully resolved edges - costs one extra full-frame pass and VRAM for an intermediate texture; falls back to Fast automatically (with a log line) if the pass shader or intermediate is unavailable. Check 'pixel shader ready (... fxaa: yes, fxaaPass: yes)' in the log after updating." />
+        <app-reset-button [canReset]="settings.fxaa != defaults.fxaa" (resetClick)="reset('fxaa')"></app-reset-button>
+    </div>
+    <div class="control">
+        <mat-select [(ngModel)]="settings.fxaa" (ngModelChange)="save()">
+            <mat-option value="off">Off</mat-option>
+            <mat-option value="fast">Fast - in-pass (single pass, lightest)</mat-option>
+            <mat-option value="quality">Quality - separate pre-pass (best edges)</mat-option>
+        </mat-select>
+    </div>
+</div>
+
+<div class="field">
+    <div class="title">
         <span>CAS Sharpening</span>
         <app-field-tip info="Contrast adaptive sharpening applied before the video encode. One of the most effective quality improvements for streamed headsets." />
     </div>
@@ -720,6 +735,28 @@
     </div>
     <div class="control">
         <mat-slide-toggle [(ngModel)]="settings.directRender" (ngModelChange)="save()"></mat-slide-toggle>
+    </div>
+</div>
+
+<div class="field">
+    <div class="title">
+        <span>Hitch Diagnostics (HITCHDIAG)</span>
+        <app-field-tip info="Render-side cadence instrumentation, the frame-path analog of KALDIAG. Every 2 seconds a HITCHDIAG log line summarizes the frame callback rhythm: mean/max gap between frames, counts over 16.7ms and 33ms, sync-mutex wait, this driver's own work time, and skip/scratch-create/evict counters. Any single gap over 25ms also logs a one-shot HITCH line tagged with what the previous frame did (scratch creation, distortion LUT bake, shader compile, sync skip) so stutters name their own cause. Costs a few clock reads per frame - safe to leave on; grep the log for HITCHDIAG / HITCH." />
+        <app-reset-button [canReset]="settings.hitchDiag != defaults.hitchDiag" (resetClick)="reset('hitchDiag')"></app-reset-button>
+    </div>
+    <div class="control">
+        <mat-slide-toggle [(ngModel)]="settings.hitchDiag" (ngModelChange)="save()"></mat-slide-toggle>
+    </div>
+</div>
+
+<div class="field">
+    <div class="title">
+        <span>Deferred Scratch Eviction</span>
+        <app-field-tip info="Performance: when the scratch texture cache is full and a new resolution arrives, the old set's release is postponed a few frames and performed after the frame sync mutex is released, instead of inside the same frame that already pays the unavoidable creation stall. Spreads transition cost so resolution/app switches hitch less. Off restores the old synchronous eviction for A/B; score the difference with Hitch Diagnostics on ('creates'/'evicts' counters and HITCH tags mark the transitions)." />
+        <app-reset-button [canReset]="settings.deferredEviction != defaults.deferredEviction" (resetClick)="reset('deferredEviction')"></app-reset-button>
+    </div>
+    <div class="control">
+        <mat-slide-toggle [(ngModel)]="settings.deferredEviction" (ngModelChange)="save()"></mat-slide-toggle>
     </div>
 </div>
 

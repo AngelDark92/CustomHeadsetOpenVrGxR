@@ -206,6 +206,15 @@ struct StreamFrameConfig{
 	ConfigColor colorMultiplier = {};
 	// 3x3 linear rgb color matrix, row major. active when exactly 9 values.
 	std::vector<double> srgbMatrix = {};
+	// FXAA-class single pass AA integrated into the layer shader, applied
+	// BEFORE CAS so sharpening acts on resolved edges (off by default:
+	// costs up to ~8 extra taps per pixel on edges and softens text
+	// slightly; intended for titles with heavy specular/geometry shimmer)
+	// 0 off, 1 fast (in-pass, CAS sharpens raw neighbors around the AA
+	// resolved center), 2 quality (separate FXAA pre-pass into an fx
+	// intermediate; CAS then sees fully resolved neighborhoods, at the
+	// cost of one extra full-region pass and one extra scratch texture)
+	int fxaaMode = 0;
 	StreamFrameCASConfig cas = {};
 	// add low amplitude noise before encoding to reduce banding in dark scenes
 	bool dither = false;
@@ -313,6 +322,20 @@ struct StreamFrameConfig{
 	// intended for ONE disposable session; never substitutes or alters
 	// anything. see ReconLogger.h.
 	bool reconLogger = false;
+	// render-side hitch instrumentation, the HITCHDIAG analog of KALDIAG:
+	// every 2s a summary of the frame-callback cadence (dt mean/max, counts
+	// over 16.7/33ms, AcquireSync wait, our own work time, skip/create/evict
+	// counters), plus a one-shot HITCH line whenever the gap since the
+	// previous frame callback exceeds 25ms, tagged with what the previous
+	// frame did (scratch create, lut bake, shader compile, sync skip) so
+	// outliers self-attribute. cost is a few clock reads per frame.
+	bool hitchDiag = true;
+	// scratch LRU evictions are moved to a deferred list and released a few
+	// frames later, one per frame, AFTER the keyed mutex is released - so a
+	// resolution/layer change never pays release cost inside the same
+	// mutex-held frame that already pays the (unavoidable) creation stall.
+	// off = legacy synchronous evict-in-frame, kept for A/B.
+	bool deferredEviction = true;
 	// render the processed frame directly into the layer texture (slice
 	// aware RTV) instead of drawing into a scratch target and copying the
 	// bounds region back. cuts per-eye traffic from ~6x to ~4x of the
@@ -485,10 +508,15 @@ struct StreamFrameConfig{
 	// self consistent; no splits, no latches, no replays.
 	// kalmanProcessAccel (m/s^2) is THE responsiveness knob: high = trusts
 	// motion (snappy, noisier), low = trusts smoothness (calm, laggier).
-	double kalmanProcessAccel = 40.0;
-	double kalmanPosNoiseMm = 2.0;
+	// RATIFIED 2026-08-11 (campaign close, §3/§4): A=1 P=2.7 W=400 O=1.25
+	// L=0. these ARE the consolidation defaults — the 1.6.0 commit updated
+	// mode/dup/coast but missed this trio, so the driver published the
+	// pre-campaign 40/2.0/0.5 and every GUI reset restored untuned values
+	// (field incident 2026-08-11, cost one capture).
+	double kalmanProcessAccel = 1.0;
+	double kalmanPosNoiseMm = 2.7;
 	double kalmanProcessAngAccel = 400.0;
-	double kalmanOriNoiseDeg = 0.5;
+	double kalmanOriNoiseDeg = 1.25;
 	// optional fixed forward prediction of the reported state (native
 	// drivers do this to counter transport latency); 0 = off
 	double kalmanLeadMs = 0.0;
