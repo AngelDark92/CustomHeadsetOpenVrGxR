@@ -91,6 +91,7 @@ function defaultStreamFrame(): StreamFrameConfig {
     kalmanMagScale: 1,
     kalmanAngMagScale: 1,
     kalmanDupMode: 'off',
+    kalmanDupRScale: 1,
     kalmanDeviceTime: true,
     kalmanDupCoastMaxMs: 60,
     kalmanGazeAssist: 0,

@@ -547,7 +547,16 @@ struct StreamFrameConfig{
 	// gap in one honest step. no fake stillness, no invented positions;
 	// reported pose holds (runtime still animates from v). the run cap
 	// below applies to coast AND drop. default off = field champion.
+	// 3=soft: the repeat IS processed as a measurement, but with R
+	// inflated by dupRScale^2 — honest noise model for a sample of
+	// unknown age (its true uncertainty at hand speed v is v*sigma_age,
+	// not the sensor floor). gain on repeats shrinks ~k^2 while
+	// covariance keeps accumulating through the run, so fresh-sample
+	// catch-up self-schedules. dupRScale=1 in soft is bit-identical to
+	// off; k -> inf converges toward coast/drop. the run cap applies:
+	// repeats sustained past it are accepted at full weight.
 	int kalmanDupMode = 0;
+	double kalmanDupRScale = 1.0;
 	// measurement timestamping (estimator correctness pass 2026-08-10):
 	// vrlink stamps every pose with poseTimeOffset, and this session's
 	// field data shows it is real and VARYING — median +13.8ms, stdev

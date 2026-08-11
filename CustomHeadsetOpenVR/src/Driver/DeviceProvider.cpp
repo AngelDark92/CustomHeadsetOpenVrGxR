@@ -881,6 +881,20 @@ bool CustomHeadsetDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 				}
 			}
 			bool dupDrop = dupHit && dupMode == 2;
+			if(dupHit && dupMode == 3){
+				// SOFT: this repeat WILL be processed as a measurement,
+				// but with honest noise for a sample of unknown age —
+				// inflate R (and the angular Ra: the payload freezes as
+				// a whole) for this callback only. gain on the repeat
+				// shrinks ~k^2; covariance keeps accumulating through
+				// the run, so the fresh sample's catch-up gain
+				// self-schedules. k=1 is bit-identical to off.
+				double sK = driverConfig.streamFrame.kalmanDupRScale;
+				if(sK < 1.0){ sK = 1.0; }
+				if(sK > 100.0){ sK = 100.0; }
+				R *= sK * sK;
+				Ra *= sK * sK;
+			}
 			if(dropSample || dupDrop){
 				// state, clocks, and dt statistics untouched. the
 				// reported pose repeats the last filtered state; the
@@ -906,11 +920,14 @@ bool CustomHeadsetDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 				ks.dtN++;
 				if(dt * 1000.0 > ks.dtMaxMs){ ks.dtMaxMs = dt * 1000.0; }
 				double dt2 = dt * dt;
-				// dup decision was made above (coast mode reaches here;
-				// drop mode never does — it exits via the drop path)
-				bool dupCoast = dupHit;
-				if(!dupCoast){
-					// any normally processed sample ends the coast run
+				// dup decision was made above (coast and soft reach
+				// here; drop never does — it exits via the drop path)
+				bool dupCoast = dupHit && dupMode == 1;
+				if(!dupHit){
+					// any non-repeat sample ends the dup run. keyed on
+					// dupHit, not dupCoast: soft-mode repeats are
+					// processed but must still accumulate toward the
+					// cap, or sustained stillness would stay distrusted
 					ks.coastStart = -1.0;
 				}
 				if(dupCoast){

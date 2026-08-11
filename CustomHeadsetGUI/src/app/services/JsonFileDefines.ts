@@ -170,6 +170,7 @@ export type StreamFrameConfig = {
   kalmanMagScale: number;
   kalmanAngMagScale: number;
   kalmanDupMode: string;
+  kalmanDupRScale: number;
   kalmanDeviceTime: boolean;
   kalmanDupCoastMaxMs: number;
   kalmanGazeAssist: number;

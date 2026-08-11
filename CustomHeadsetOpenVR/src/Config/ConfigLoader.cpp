@@ -699,7 +699,10 @@ void ConfigLoader::ParseConfig(){
 			}
 			if(streamFrameData["kalmanDupMode"].is_string()){
 				std::string dupModeStr = streamFrameData["kalmanDupMode"].get<std::string>();
-				newConfig.streamFrame.kalmanDupMode = dupModeStr == "drop" ? 2 : (dupModeStr == "coast" ? 1 : 0);
+				newConfig.streamFrame.kalmanDupMode = dupModeStr == "soft" ? 3 : (dupModeStr == "drop" ? 2 : (dupModeStr == "coast" ? 1 : 0));
+			}
+			if(streamFrameData["kalmanDupRScale"].is_number()){
+				newConfig.streamFrame.kalmanDupRScale = streamFrameData["kalmanDupRScale"].get<double>();
 			}
 			if(streamFrameData["kalmanDeviceTime"].is_boolean()){
 				newConfig.streamFrame.kalmanDeviceTime = streamFrameData["kalmanDeviceTime"].get<bool>();
@@ -1158,7 +1161,8 @@ void ConfigLoader::WriteInfo(){
 				{"kalmanMagAccel", defaultSettings.streamFrame.kalmanMagAccel},
 				{"kalmanMagScale", defaultSettings.streamFrame.kalmanMagScale},
 				{"kalmanAngMagScale", defaultSettings.streamFrame.kalmanAngMagScale},
-				{"kalmanDupMode", defaultSettings.streamFrame.kalmanDupMode == 2 ? "drop" : (defaultSettings.streamFrame.kalmanDupMode == 1 ? "coast" : "off")},
+				{"kalmanDupMode", defaultSettings.streamFrame.kalmanDupMode == 3 ? "soft" : (defaultSettings.streamFrame.kalmanDupMode == 2 ? "drop" : (defaultSettings.streamFrame.kalmanDupMode == 1 ? "coast" : "off"))},
+				{"kalmanDupRScale", defaultSettings.streamFrame.kalmanDupRScale},
 				{"kalmanDeviceTime", defaultSettings.streamFrame.kalmanDeviceTime},
 				{"kalmanDupCoastMaxMs", defaultSettings.streamFrame.kalmanDupCoastMaxMs},
 				{"kalmanGazeAssist", defaultSettings.streamFrame.kalmanGazeAssist},
