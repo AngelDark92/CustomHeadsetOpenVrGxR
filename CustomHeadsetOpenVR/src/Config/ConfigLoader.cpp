@@ -694,7 +694,18 @@ void ConfigLoader::ParseConfig(){
 				newConfig.streamFrame.kalmanAngMagScale = streamFrameData["kalmanAngMagScale"].get<double>();
 			}
 			if(streamFrameData["kalmanDupSkip"].is_boolean()){
-				newConfig.streamFrame.kalmanDupSkip = streamFrameData["kalmanDupSkip"].get<bool>();
+				// legacy bool from older settings files: true = coast
+				newConfig.streamFrame.kalmanDupMode = streamFrameData["kalmanDupSkip"].get<bool>() ? 1 : 0;
+			}
+			if(streamFrameData["kalmanDupMode"].is_string()){
+				std::string dupModeStr = streamFrameData["kalmanDupMode"].get<std::string>();
+				newConfig.streamFrame.kalmanDupMode = dupModeStr == "drop" ? 2 : (dupModeStr == "coast" ? 1 : 0);
+			}
+			if(streamFrameData["kalmanDeviceTime"].is_boolean()){
+				newConfig.streamFrame.kalmanDeviceTime = streamFrameData["kalmanDeviceTime"].get<bool>();
+			}
+			if(streamFrameData["kalmanDupCoastMaxMs"].is_number()){
+				newConfig.streamFrame.kalmanDupCoastMaxMs = streamFrameData["kalmanDupCoastMaxMs"].get<double>();
 			}
 			if(streamFrameData["kalmanGazeAssist"].is_number()){
 				newConfig.streamFrame.kalmanGazeAssist = streamFrameData["kalmanGazeAssist"].get<double>();
@@ -1147,7 +1158,9 @@ void ConfigLoader::WriteInfo(){
 				{"kalmanMagAccel", defaultSettings.streamFrame.kalmanMagAccel},
 				{"kalmanMagScale", defaultSettings.streamFrame.kalmanMagScale},
 				{"kalmanAngMagScale", defaultSettings.streamFrame.kalmanAngMagScale},
-				{"kalmanDupSkip", defaultSettings.streamFrame.kalmanDupSkip},
+				{"kalmanDupMode", defaultSettings.streamFrame.kalmanDupMode == 2 ? "drop" : (defaultSettings.streamFrame.kalmanDupMode == 1 ? "coast" : "off")},
+				{"kalmanDeviceTime", defaultSettings.streamFrame.kalmanDeviceTime},
+				{"kalmanDupCoastMaxMs", defaultSettings.streamFrame.kalmanDupCoastMaxMs},
 				{"kalmanGazeAssist", defaultSettings.streamFrame.kalmanGazeAssist},
 				{"kalmanGazeMaxDeg", defaultSettings.streamFrame.kalmanGazeMaxDeg},
 				{"kalmanGazeMinSpeed", defaultSettings.streamFrame.kalmanGazeMinSpeed},

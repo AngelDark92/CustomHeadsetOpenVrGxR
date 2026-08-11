@@ -537,7 +537,41 @@ struct StreamFrameConfig{
 	// moving, duplicates now coast the filter (predict only) instead of
 	// braking it. genuine stillness keeps normal updates. textbook
 	// missing-data handling; toggle for A/B.
-	bool kalmanDupSkip = true;
+	// 0=off 1=coast 2=drop. field 2026-08-11: with device-time active,
+	// COAST is feel-rejected (extrapolated positions + snap poison the
+	// pose history the game fits throws from; NIS 100-500 spikes), and
+	// OFF pays a velocity drag (every repeat says "stopped"; the chronic
+	// ~0.80 strength). DROP treats a detected repeat as never having
+	// arrived: no measurement, no prediction, no clock advance — the
+	// next real sample predicts across the full accumulated device-time
+	// gap in one honest step. no fake stillness, no invented positions;
+	// reported pose holds (runtime still animates from v). the run cap
+	// below applies to coast AND drop. default off = field champion.
+	int kalmanDupMode = 0;
+	// measurement timestamping (estimator correctness pass 2026-08-10):
+	// vrlink stamps every pose with poseTimeOffset, and this session's
+	// field data shows it is real and VARYING — median +13.8ms, stdev
+	// 3.8ms, sample-to-sample swings of ~6ms during throws, and a stale
+	// tail down to -69ms. the filter previously treated every sample as
+	// "now": at 5 m/s a 6ms timing swing masquerades as 30mm of position
+	// noise against a 4mm R, which is exactly the unmodeled noise that
+	// forced A=1 and its weak throws. with deviceTime on, each
+	// measurement is stamped tMeas = receipt + poseTimeOffset and dt is
+	// the device-time delta; out-of-order samples (dt <= 0) are DROPPED,
+	// never reinit (the old dt<=0 reinit would zero velocity mid-throw
+	// once device time is in play). |offset| > 100ms falls back to
+	// receipt time. toggle off = previous behavior exactly, for A/B.
+	bool kalmanDeviceTime = true;
+	// dup-coast runaway cap (bug fix 2026-08-10, caught live in the log:
+	// NIS 570 on one controller for 8+ seconds). the coast gate compares
+	// state speed > 0.5 to decide "moving", but coasting blocks the very
+	// measurements that update that speed: stop the hand abruptly and
+	// the filter coasts forever on stale velocity while position runs
+	// away. a repeat sustained longer than this cap IS evidence of
+	// stillness — the coast premise (brief transport gap) only holds for
+	// short runs. beyond the cap the sample is processed normally;
+	// inflated covariance reconverges in 1-2 samples.
+	double kalmanDupCoastMaxMs = 60.0;
 	// ET gaze aim assist (plan C): people fixate throw targets BEFORE the
 	// hand releases, so gaze carries the intended direction through the
 	// one channel immune to the input-timing problem that produces the

@@ -818,13 +818,79 @@ bool CustomHeadsetDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 			int diagBends = 0;
 			double diagBendMean = 0;
 			double diagBendMax = 0;
+			int diagDtBack = 0;
+			double diagDtMean = 0;
+			double diagDtMax = 0;
+			double diagCoastMax = 0;
+			// device-time measurement stamp: the device says WHEN this
+			// pose was true (poseTimeOffset); the filter previously
+			// treated every sample as "now" — timing is the proven
+			// pathology of this platform. sanity: an offset beyond
+			// 100ms is not believed (falls back to receipt time).
+			bool devTime = driverConfig.streamFrame.kalmanDeviceTime;
+			double tOff = pose.poseTimeOffset;
+			if(tOff < -0.1 || tOff > 0.1){ tOff = 0; }
+			double tMeas = devTime ? now + tOff : now;
 			{
 			std::lock_guard<std::mutex> kalGuard(deriveFilterLock);
 			KalState &ks = kalStates[openVRID];
-			double dt = now - ks.time;
-			if(!ks.have || dt <= 0 || dt > 0.2){
+			double dt = devTime ? tMeas - ks.tMeas : now - ks.time;
+			bool dropSample = false;
+			if(devTime && ks.have && dt <= 0 && dt > -0.2){
+				// out-of-order on the device clock: this sample is OLDER
+				// than the state. it carries no new information — drop
+				// it. never reinit here: zeroing velocity mid-throw on a
+				// late packet is exactly the failure the old dt<=0
+				// reinit would produce once device time is in play.
+				dropSample = true;
+				ks.dtBack++;
+			}
+			// duplicate detection, BEFORE any clock or state commit: in
+			// drop mode a detected repeat is treated as never having
+			// arrived, so ks.tMeas must stay at the last ACCEPTED
+			// measurement — the next real sample then predicts across
+			// the full accumulated device-time gap in one honest step.
+			// (committing the clock here would under-advance that
+			// prediction and re-introduce the stale-stillness drag.)
+			int dupMode = driverConfig.streamFrame.kalmanDupMode;
+			bool dupHit = false;
+			if(!dropSample && ks.have && dt > 0 && dt <= 0.2 && dupMode != 0 && ks.haveMeas){
+				double ddx = pose.vecPosition[0] - ks.lastMeas[0];
+				double ddy = pose.vecPosition[1] - ks.lastMeas[1];
+				double ddz = pose.vecPosition[2] - ks.lastMeas[2];
+				double stepD = sqrt(ddx * ddx + ddy * ddy + ddz * ddz);
+				double stSpd = sqrt(ks.v[0] * ks.v[0] + ks.v[1] * ks.v[1] + ks.v[2] * ks.v[2]);
+				if(stepD < 0.0003 && stSpd > 0.5){
+					// run cap (bug fix, caught live: NIS 570 for 8+s).
+					// skipping repeats blocks the very measurements that
+					// update the speed this gate tests, so an abrupt
+					// stop could skip forever on stale velocity. a
+					// repeat sustained past the cap IS stillness:
+					// process it normally. applies to coast AND drop.
+					double coastMax = driverConfig.streamFrame.kalmanDupCoastMaxMs / 1000.0;
+					if(coastMax < 0.01){ coastMax = 0.01; }
+					if(coastMax > 0.5){ coastMax = 0.5; }
+					if(ks.coastStart < 0){ ks.coastStart = now; }
+					double coastLen = now - ks.coastStart + dt;
+					if(coastLen <= coastMax){
+						dupHit = true;
+						ks.dupSkipped++;
+						double cMs = coastLen * 1000.0;
+						if(cMs > ks.coastMaxMs){ ks.coastMaxMs = cMs; }
+					}
+				}
+			}
+			bool dupDrop = dupHit && dupMode == 2;
+			if(dropSample || dupDrop){
+				// state, clocks, and dt statistics untouched. the
+				// reported pose repeats the last filtered state; the
+				// runtime's forward prediction keeps the rendered hand
+				// animating from the still-live velocity.
+			}else if(!ks.have || dt <= 0 || dt > 0.2){
 				ks.have = true;
 				ks.time = now;
+				ks.tMeas = tMeas;
+				ks.coastStart = -1.0;
 				for(int a2 = 0; a2 < 3; a2++){
 					ks.p[a2] = pose.vecPosition[a2];
 					ks.v[a2] = 0;
@@ -835,20 +901,17 @@ bool CustomHeadsetDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 				ks.q = pose.qRotation;
 			}else{
 				ks.time = now;
+				ks.tMeas = tMeas;
+				ks.dtSumMs += dt * 1000.0;
+				ks.dtN++;
+				if(dt * 1000.0 > ks.dtMaxMs){ ks.dtMaxMs = dt * 1000.0; }
 				double dt2 = dt * dt;
-				// duplicate detection: measurement step vs previous raw
-				// sample, while the STATE says we are moving
-				bool dupCoast = false;
-				if(driverConfig.streamFrame.kalmanDupSkip && ks.haveMeas){
-					double ddx = pose.vecPosition[0] - ks.lastMeas[0];
-					double ddy = pose.vecPosition[1] - ks.lastMeas[1];
-					double ddz = pose.vecPosition[2] - ks.lastMeas[2];
-					double stepD = sqrt(ddx * ddx + ddy * ddy + ddz * ddz);
-					double stSpd = sqrt(ks.v[0] * ks.v[0] + ks.v[1] * ks.v[1] + ks.v[2] * ks.v[2]);
-					if(stepD < 0.0003 && stSpd > 0.5){
-						dupCoast = true;
-						ks.dupSkipped++;
-					}
+				// dup decision was made above (coast mode reaches here;
+				// drop mode never does — it exits via the drop path)
+				bool dupCoast = dupHit;
+				if(!dupCoast){
+					// any normally processed sample ends the coast run
+					ks.coastStart = -1.0;
 				}
 				if(dupCoast){
 					// coast: advance both estimators along their velocity,
@@ -1216,12 +1279,21 @@ bool CustomHeadsetDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 				diagBends = ks.gazeBends;
 				diagBendMean = ks.gazeBends > 0 ? ks.gazeBendSum / ks.gazeBends : 0.0;
 				diagBendMax = ks.gazeBendMax;
+				diagDtBack = ks.dtBack;
+				diagDtMean = ks.dtN > 0 ? ks.dtSumMs / ks.dtN : 0.0;
+				diagDtMax = ks.dtMaxMs;
+				diagCoastMax = ks.coastMaxMs;
 				ks.stepMax = 0;
 				ks.stepFrozen = 0;
 				ks.dupSkipped = 0;
 				ks.gazeBends = 0;
 				ks.gazeBendSum = 0;
 				ks.gazeBendMax = 0;
+				ks.dtBack = 0;
+				ks.dtSumMs = 0;
+				ks.dtN = 0;
+				ks.dtMaxMs = 0;
+				ks.coastMaxMs = 0;
 				logKalDiag = true;
 			}
 			}
@@ -1241,7 +1313,7 @@ bool CustomHeadsetDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 			if(logKalDiag){
 				// tuning guide: NIS ~ 1 means the noise models match
 				// reality; sustained > 3 = too stiff; < 0.3 = too loose
-				DriverLog("PoseLog: KALDIAG id=%u nis=%.2f stepMax=%.1fmm frozenSteps=%d dupSkipped=%d gazeBends=%d bendMean=%.1fdeg bendMax=%.1fdeg", openVRID, diagNis, diagStepMax * 1000.0, diagFrozen, diagDup, diagBends, diagBendMean, diagBendMax);
+				DriverLog("PoseLog: KALDIAG id=%u nis=%.2f stepMax=%.1fmm frozenSteps=%d dupSkipped=%d dtBack=%d dtMean=%.2fms dtMax=%.1fms coastMax=%.0fms gazeBends=%d bendMean=%.1fdeg bendMax=%.1fdeg", openVRID, diagNis, diagStepMax * 1000.0, diagFrozen, diagDup, diagDtBack, diagDtMean, diagDtMax, diagCoastMax, diagBends, diagBendMean, diagBendMax);
 			}
 		}
 		// ==== end kalman mode ====

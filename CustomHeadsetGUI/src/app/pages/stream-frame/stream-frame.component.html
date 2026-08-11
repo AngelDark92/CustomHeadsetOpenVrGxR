@@ -801,12 +801,38 @@
 
 <div class="field">
     <div class="title">
-        <span>Kalman Duplicate-Sample Skip</span>
-        <app-field-tip info="Major data-quality fix: telemetry caught the streamer repeating the last hand position thousands of times per session whenever fresh tracking hadn't arrived - and every repeat told the filter your hand STOPPED, sapping throw strength and destabilizing fast estimators. With this on, repeated positions while your hand is moving are treated as missing data: the filter coasts through them instead of braking. Genuine stillness is unaffected. Leave on; the toggle exists for A/B. After enabling, your tuned A may deserve revisiting upward (some of what forced A=1 was this pollution, not real noise)." />
-        <app-reset-button [canReset]="settings.kalmanDupSkip != defaults.kalmanDupSkip" (resetClick)="reset('kalmanDupSkip')"></app-reset-button>
+        <span>Kalman Duplicate-Sample Handling</span>
+        <app-field-tip info="The streamer repeats the last hand position whenever fresh tracking hasn't arrived - during fast throws roughly 2 of every 3 samples are such repeats. Three ways to handle them. OFF: repeats are believed as real measurements; each one says your hand stopped, dragging throw speed down slightly (chronic mild weakness), but the reported motion stays smooth - field champion so far. COAST: repeats are skipped and the hand's position is extrapolated forward instead; field-rejected - the invented positions then snap back on real data and games that read hand position history feel it as jerks and random release directions. DROP: repeats are ignored entirely as if they never arrived - no fake stillness, no invented positions; the filter bridges to the next real sample in one honest step using the device's own timestamps. Repeats sustained past the cap below are always accepted as genuine stillness. A/B Drop against Off; Coast remains for completeness." />
+        <app-reset-button [canReset]="settings.kalmanDupMode != defaults.kalmanDupMode" (resetClick)="reset('kalmanDupMode')"></app-reset-button>
     </div>
     <div class="control">
-        <mat-slide-toggle [(ngModel)]="settings.kalmanDupSkip" (ngModelChange)="save()"></mat-slide-toggle>
+        <mat-select [(ngModel)]="settings.kalmanDupMode" (ngModelChange)="save()">
+            <mat-option value="off">Off - repeats believed (smooth, slight drag)</mat-option>
+            <mat-option value="coast">Coast - extrapolate through repeats (field-rejected)</mat-option>
+            <mat-option value="drop">Drop - repeats never happened (honest gaps)</mat-option>
+        </mat-select>
+    </div>
+</div>
+
+<div class="field">
+    <div class="title">
+        <span>Kalman Device-Time Measurements</span>
+        <app-field-tip info="Estimator correctness fix: the streamer stamps every hand pose with WHEN it was actually true (poseTimeOffset), and field data shows that stamp varies by several ms sample-to-sample during throws - with occasional poses arriving up to 69ms stale. The filter previously ignored the stamp and treated every sample as happening 'now', so timing jitter masqueraded as position noise (30mm-equivalent at throw speed) and stale poses near release could kick the velocity BACKWARD. With this on, the filter uses the device's own timestamps for its time steps and silently discards out-of-order samples. Leave on; the toggle exists for A/B against the old behavior." />
+        <app-reset-button [canReset]="settings.kalmanDeviceTime != defaults.kalmanDeviceTime" (resetClick)="reset('kalmanDeviceTime')"></app-reset-button>
+    </div>
+    <div class="control">
+        <mat-slide-toggle [(ngModel)]="settings.kalmanDeviceTime" (ngModelChange)="save()"></mat-slide-toggle>
+    </div>
+</div>
+
+<div class="field">
+    <div class="title">
+        <span>Kalman Duplicate-Coast Cap (ms)</span>
+        <app-field-tip info="Bug fix for a runaway caught live in the logs: when your hand stops abruptly, the streamer repeats the last pose, the duplicate-skip treats those repeats as missing data, and the filter can coast forever on its stale velocity - drifting away from reality until telemetry explodes. Repeats sustained longer than this cap are accepted as genuine stillness and processed normally. 60ms covers real transport gaps while making the runaway impossible. Range 10-500." />
+        <app-reset-button [canReset]="settings.kalmanDupCoastMaxMs != defaults.kalmanDupCoastMaxMs" (resetClick)="reset('kalmanDupCoastMaxMs')"></app-reset-button>
+    </div>
+    <div class="control">
+        <input matInput [(ngModel)]="settings.kalmanDupCoastMaxMs" step="10" min="10" max="500" (ngModelChange)="save()" type="number">
     </div>
 </div>
 

@@ -209,6 +209,21 @@ private:
 		double stepMax = 0;
 		int stepFrozen = 0;
 		int dupSkipped = 0;
+		// device-time measurement stamping (correctness pass): timestamp
+		// of the last ACCEPTED measurement on the device clock
+		// (receipt + poseTimeOffset); receipt-time ks.time stays as the
+		// legacy clock so the off-toggle reproduces old behavior exactly
+		double tMeas = 0;
+		// continuous dup-coast tracking for the runaway cap: receipt time
+		// the current coast run began, or -1 when not coasting
+		double coastStart = -1.0;
+		// per-window diag: dropped out-of-order samples, accepted-dt
+		// stats (ms), longest continuous coast (ms)
+		int dtBack = 0;
+		double dtSumMs = 0;
+		int dtN = 0;
+		double dtMaxMs = 0;
+		double coastMaxMs = 0;
 		int gazeBends = 0;
 		double gazeBendSum = 0;
 		double gazeBendMax = 0;
