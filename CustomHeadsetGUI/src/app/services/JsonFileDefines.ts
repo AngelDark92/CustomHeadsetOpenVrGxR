@@ -171,6 +171,7 @@ export type StreamFrameConfig = {
   kalmanAngMagScale: number;
   kalmanDupMode: string;
   kalmanDupRScale: number;
+  graveyardEnable: boolean;
   kalmanDeviceTime: boolean;
   kalmanDupCoastMaxMs: number;
   kalmanGazeAssist: number;

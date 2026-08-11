@@ -306,7 +306,7 @@ struct StreamFrameConfig{
 	// ungraded color), which happens under heavy load (shader compilation,
 	// level streaming). after a skip the timeout escalates (3x, min 15ms) to
 	// break flash streaks, and resets on the next acquired frame.
-	int syncTimeoutMs = 5;
+	int syncTimeoutMs = 10;
 	// passive recon logger: opt-in, off by default. installs observation-only
 	// vtable hooks on vrlink's D3D11 context to map its layer-consumption
 	// point (zero-copy v3 feasibility), NVENC module, and copy/bind shape.
@@ -362,7 +362,7 @@ struct StreamFrameConfig{
 	// surface for the black-floor work. modifies nothing. enable BEFORE
 	// launching SteamVR so the encoder creation is not missed.
 	bool nvencTap = false;
-	int velocityFixMode = 0;
+	int velocityFixMode = 4; // kalman: consolidation default 2026-08-11
 	// derive-mode speed-adaptive smoothing: the estimator is a low lag
 	// endpoint derivative, so its noise shows fully in derive mode (the
 	// old modes' 1 m/s engage gate was hiding it). the filter time
@@ -555,8 +555,8 @@ struct StreamFrameConfig{
 	// catch-up self-schedules. dupRScale=1 in soft is bit-identical to
 	// off; k -> inf converges toward coast/drop. the run cap applies:
 	// repeats sustained past it are accepted at full weight.
-	int kalmanDupMode = 0;
-	double kalmanDupRScale = 1.0;
+	int kalmanDupMode = 3;
+	double kalmanDupRScale = 3.0;
 	// measurement timestamping (estimator correctness pass 2026-08-10):
 	// vrlink stamps every pose with poseTimeOffset, and this session's
 	// field data shows it is real and VARYING — median +13.8ms, stdev
@@ -571,16 +571,16 @@ struct StreamFrameConfig{
 	// once device time is in play). |offset| > 100ms falls back to
 	// receipt time. toggle off = previous behavior exactly, for A/B.
 	bool kalmanDeviceTime = true;
-	// dup-coast runaway cap (bug fix 2026-08-10, caught live in the log:
-	// NIS 570 on one controller for 8+ seconds). the coast gate compares
-	// state speed > 0.5 to decide "moving", but coasting blocks the very
-	// measurements that update that speed: stop the hand abruptly and
-	// the filter coasts forever on stale velocity while position runs
-	// away. a repeat sustained longer than this cap IS evidence of
-	// stillness — the coast premise (brief transport gap) only holds for
-	// short runs. beyond the cap the sample is processed normally;
-	// inflated covariance reconverges in 1-2 samples.
-	double kalmanDupCoastMaxMs = 60.0;
+	// dup run cap (bug fix 2026-08-10; rationale sharpened 2026-08-11):
+	// no human hand holds a position BIT-IDENTICALLY for tens of ms —
+	// real stillness shows micro-tremor above the 0.3mm gate. a repeat
+	// sustained past this cap therefore means the TRACKER stopped
+	// producing (set-down controller, long dropout), and in both cases
+	// believing the repeat (velocity to zero, hold position) beats
+	// extrapolating or distrusting blind. also closes the runaway loop:
+	// skipping repeats blocks the very measurements that update the
+	// speed the dup gate tests. applies to coast, drop, and soft.
+	double kalmanDupCoastMaxMs = 90.0;
 	// ET gaze aim assist (plan C): people fixate throw targets BEFORE the
 	// hand releases, so gaze carries the intended direction through the
 	// one channel immune to the input-timing problem that produces the
@@ -617,6 +617,11 @@ struct StreamFrameConfig{
 	// captures high-velocity moments (throws). live-reloaded, so it can be
 	// toggled mid-session. groundwork for the throw/velocity fix.
 	bool poseLogging = false;
+	// GUI-only fence: retired experimental knobs render in the GUI's
+	// Graveyard section only when this is set by hand in settings.json.
+	// no GUI knob on purpose. values of archived knobs stay ACTIVE
+	// regardless — hiding is not disabling.
+	bool graveyardEnable = false;
 };
 
 // pose adjustments for streamed controllers, applied in the PoseUpdated hook.

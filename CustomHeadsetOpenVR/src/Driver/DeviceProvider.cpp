@@ -822,6 +822,9 @@ bool CustomHeadsetDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 			double diagDtMean = 0;
 			double diagDtMax = 0;
 			double diagCoastMax = 0;
+			double diagANis = 0;
+			double diagFdtMean = 0;
+			double diagFdtMax = 0;
 			// device-time measurement stamp: the device says WHEN this
 			// pose was true (poseTimeOffset); the filter previously
 			// treated every sample as "now" — timing is the proven
@@ -986,6 +989,23 @@ bool CustomHeadsetDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 						if(step > ks.stepMax){ ks.stepMax = step; }
 						double stSpeed = sqrt(ks.v[0] * ks.v[0] + ks.v[1] * ks.v[1] + ks.v[2] * ks.v[2]);
 						if(step < 0.0003 && stSpeed > 0.7){ ks.stepFrozen++; }
+						// fresh-to-fresh clock: time between DISTINCT
+						// raw samples on the measurement clock — the
+						// tracker's true cadence (~8.3ms expected),
+						// as opposed to dtMean's callback cadence.
+						// mode-independent by design; also the
+						// instrument for any transport-side fix.
+						if(step >= 0.0003){
+							if(ks.tFresh > 0){
+								double fdt = (tMeas - ks.tFresh) * 1000.0;
+								if(fdt > 0){
+									ks.fdtSumMs += fdt;
+									ks.fdtN++;
+									if(fdt > ks.fdtMaxMs){ ks.fdtMaxMs = fdt; }
+								}
+							}
+							ks.tFresh = tMeas;
+						}
 					}
 					ks.haveMeas = true;
 					ks.lastMeas[0] = pose.vecPosition[0];
@@ -1033,11 +1053,13 @@ bool CustomHeadsetDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 				double sgn = qe.w < 0 ? -1.0 : 1.0;
 				double res[3] = { 2.0 * sgn * qe.x, 2.0 * sgn * qe.y, 2.0 * sgn * qe.z };
 				double corr[3];
+				double aNisAccum = 0;
 				for(int a2 = 0; a2 < 3; a2++){
 					double Ppp = ks.Pa[a2][0] + 2.0 * ks.Pa[a2][1] * dt + ks.Pa[a2][2] * dt2 + qaA * qaA * dt2 * dt2 / 4.0;
 					double Ppv = ks.Pa[a2][1] + ks.Pa[a2][2] * dt + qaA * qaA * dt2 * dt / 2.0;
 					double Pvv = ks.Pa[a2][2] + qaA * qaA * dt2;
 					double S = Ppp + Ra;
+					aNisAccum += res[a2] * res[a2] / S;
 					double Kp = Ppp / S;
 					double Kv = Ppv / S;
 					corr[a2] = Kp * res[a2];
@@ -1046,6 +1068,7 @@ bool CustomHeadsetDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 					ks.Pa[a2][1] = (1.0 - Kp) * Ppv;
 					ks.Pa[a2][2] = Pvv - Kv * Ppv;
 				}
+				ks.nisAEma += 0.1 * (aNisAccum / 3.0 - ks.nisAEma);
 				vr::HmdQuaternion_t qCorr = {1.0, corr[0] * 0.5, corr[1] * 0.5, corr[2] * 0.5};
 				ks.q = QuatMultiply(qCorr, qPred);
 				double qn2 = sqrt(ks.q.w * ks.q.w + ks.q.x * ks.q.x + ks.q.y * ks.q.y + ks.q.z * ks.q.z);
@@ -1282,10 +1305,24 @@ bool CustomHeadsetDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 					pose.qRotation = ks.q;
 				}
 			}
-			if(!ks.announced || ks.lastQa != driverConfig.streamFrame.kalmanProcessAccel){
-				ks.announced = true;
-				ks.lastQa = driverConfig.streamFrame.kalmanProcessAccel;
-				announceKalman = true;
+			{
+				// announce on ANY kalman knob change (2026-08-11: the
+				// P-sweep sessions were invisible in the log because
+				// only qa re-announced — never again)
+				double sig = driverConfig.streamFrame.kalmanProcessAccel
+					+ driverConfig.streamFrame.kalmanPosNoiseMm * 1e3
+					+ driverConfig.streamFrame.kalmanProcessAngAccel * 1e5
+					+ driverConfig.streamFrame.kalmanOriNoiseDeg * 1e8
+					+ driverConfig.streamFrame.kalmanLeadMs * 1e10
+					+ driverConfig.streamFrame.kalmanDupMode * 1e12
+					+ driverConfig.streamFrame.kalmanDupRScale * 1e13
+					+ (driverConfig.streamFrame.kalmanDeviceTime ? 1e15 : 0)
+					+ driverConfig.streamFrame.kalmanDupCoastMaxMs * 1e16;
+				if(!ks.announced || ks.lastQa != sig){
+					ks.announced = true;
+					ks.lastQa = sig;
+					announceKalman = true;
+				}
 			}
 			if(driverConfig.streamFrame.poseLogging && now - ks.lastDiagLog >= 2.0){
 				ks.lastDiagLog = now;
@@ -1300,6 +1337,9 @@ bool CustomHeadsetDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 				diagDtMean = ks.dtN > 0 ? ks.dtSumMs / ks.dtN : 0.0;
 				diagDtMax = ks.dtMaxMs;
 				diagCoastMax = ks.coastMaxMs;
+				diagANis = ks.nisAEma;
+				diagFdtMean = ks.fdtN > 0 ? ks.fdtSumMs / ks.fdtN : 0.0;
+				diagFdtMax = ks.fdtMaxMs;
 				ks.stepMax = 0;
 				ks.stepFrozen = 0;
 				ks.dupSkipped = 0;
@@ -1311,17 +1351,25 @@ bool CustomHeadsetDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 				ks.dtN = 0;
 				ks.dtMaxMs = 0;
 				ks.coastMaxMs = 0;
+				ks.fdtSumMs = 0;
+				ks.fdtN = 0;
+				ks.fdtMaxMs = 0;
 				logKalDiag = true;
 			}
 			}
 			if(announceKalman){
 			// outside the lock — lock discipline
-			DriverLog("VelocityFix: kalman mode active id=%u qa=%.0f rp=%.1fmm qaA=%.0f ro=%.2fdeg lead=%.0fms",
+			DriverLog("VelocityFix: kalman mode active id=%u qa=%.0f rp=%.1fmm qaA=%.0f ro=%.2fdeg lead=%.0fms dup=%d dupR=%.0f devT=%d cap=%.0f log=%d",
 				openVRID, driverConfig.streamFrame.kalmanProcessAccel,
 				driverConfig.streamFrame.kalmanPosNoiseMm,
 				driverConfig.streamFrame.kalmanProcessAngAccel,
 				driverConfig.streamFrame.kalmanOriNoiseDeg,
-				driverConfig.streamFrame.kalmanLeadMs);
+				driverConfig.streamFrame.kalmanLeadMs,
+				driverConfig.streamFrame.kalmanDupMode,
+				driverConfig.streamFrame.kalmanDupRScale,
+				driverConfig.streamFrame.kalmanDeviceTime ? 1 : 0,
+				driverConfig.streamFrame.kalmanDupCoastMaxMs,
+				driverConfig.streamFrame.poseLogging ? 1 : 0);
 			}
 			if(announceGaze){
 				DriverLog("VelocityFix: gaze aim assist ENGAGED id=%u strength=%.2f maxDeg=%.0f", openVRID,
@@ -1330,7 +1378,7 @@ bool CustomHeadsetDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 			if(logKalDiag){
 				// tuning guide: NIS ~ 1 means the noise models match
 				// reality; sustained > 3 = too stiff; < 0.3 = too loose
-				DriverLog("PoseLog: KALDIAG id=%u nis=%.2f stepMax=%.1fmm frozenSteps=%d dupSkipped=%d dtBack=%d dtMean=%.2fms dtMax=%.1fms coastMax=%.0fms gazeBends=%d bendMean=%.1fdeg bendMax=%.1fdeg", openVRID, diagNis, diagStepMax * 1000.0, diagFrozen, diagDup, diagDtBack, diagDtMean, diagDtMax, diagCoastMax, diagBends, diagBendMean, diagBendMax);
+				DriverLog("PoseLog: KALDIAG id=%u nis=%.2f aNis=%.2f stepMax=%.1fmm frozenSteps=%d dupSkipped=%d dtBack=%d dtMean=%.2fms dtMax=%.1fms fdtMean=%.2fms fdtMax=%.1fms coastMax=%.0fms gazeBends=%d bendMean=%.1fdeg bendMax=%.1fdeg", openVRID, diagNis, diagANis, diagStepMax * 1000.0, diagFrozen, diagDup, diagDtBack, diagDtMean, diagDtMax, diagFdtMean, diagFdtMax, diagCoastMax, diagBends, diagBendMean, diagBendMax);
 			}
 		}
 		// ==== end kalman mode ====

@@ -46,12 +46,12 @@ function defaultStreamFrame(): StreamFrameConfig {
     alignment: { leftH: 0, leftV: 0, rightH: 0, rightV: 0 },
     skipColorWhileDashboardOpen: false,
     processAtSubmitLayer: false,
-    syncTimeoutMs: 5,
+    syncTimeoutMs: 10,
     directRender: true,
     zeroCopyV3: false,
     nvencTap: false,
     velocityFix: false,
-    velocityFixMode: 'off',
+    velocityFixMode: 'kalman',
     deriveSmoothTauSlowMs: 90,
     deriveSmoothTauFastMs: 6,
     deriveSmoothSpeedLow: 0.25,
@@ -90,17 +90,18 @@ function defaultStreamFrame(): StreamFrameConfig {
     kalmanMagAccel: 60,
     kalmanMagScale: 1,
     kalmanAngMagScale: 1,
-    kalmanDupMode: 'off',
-    kalmanDupRScale: 1,
+    kalmanDupMode: 'soft',
+    kalmanDupRScale: 3,
     kalmanDeviceTime: true,
-    kalmanDupCoastMaxMs: 60,
+    kalmanDupCoastMaxMs: 90,
     kalmanGazeAssist: 0,
     kalmanGazeMaxDeg: 30,
     kalmanGazeMinSpeed: 1.2,
     kalmanSmoothLagMs: 0,
     eyeGaze: { debugRing: false, tanHalfFovX: 1.19, tanHalfFovY: 1.19, predictionMs: 30, debugGrid: false, gridMode: 'uv', gridAngularDeg: 2.5, calibDot: false, swimProbe: false, overlayWarped: false, probeCapture: false, gridWorldLocked: false },
     pupilSwim: { centerStrengthX: 0, centerStrengthY: 0 },
-    poseLogging: false
+    poseLogging: false,
+    graveyardEnable: false
   };
 }
 
@@ -255,6 +256,20 @@ export class StreamFrameComponent {
     return a.leftH != d.leftH || a.leftV != d.leftV || a.rightH != d.rightH || a.rightV != d.rightV;
   }
 
+  velocityFixTip = 'Off: pass the native runtime velocities through untouched. Kalman (recommended): a single estimator produces position, rotation, velocity and spin as one coherent state, the same architecture native tracked controllers use; all tuning lives in Advanced.';
+  velocityFixTipFull = 'Off: pass the native runtime velocities through untouched. Kalman (recommended): a single estimator produces position, rotation, velocity and spin as one coherent state, the same architecture native tracked controllers use; all tuning lives in Advanced. Classic/Full: first-generation fixes, superseded. Derive: the legacy pose-derivation pipeline; retired after field testing, kept intact for reproducibility.';
+
+  resetGraveyard() {
+    if (!this.settings) return;
+    const archived: (keyof StreamFrameConfig)[] = ['deriveDirSource', 'deriveDirWeightPow', 'deriveDirWindowMs', 'deriveLatchAngMinSpeed', 'deriveLatchHoldMs', 'deriveLatchMinSpeed', 'deriveLatchWindowMs', 'deriveMagSource', 'derivePreFilter', 'derivePreSmoothMs', 'derivePreSmoothScope', 'deriveReleaseLatch', 'deriveSmoothAngSeparate', 'deriveSmoothAngSpeedHigh', 'deriveSmoothAngSpeedLow', 'deriveSmoothAngTauFastMs', 'deriveSmoothAngTauSlowMs', 'deriveSmoothSpeedHigh', 'deriveSmoothSpeedLow', 'deriveSmoothTauFastMs', 'deriveSmoothTauSlowMs', 'deriveSplitDirAngular', 'deriveSplitDirLinear', 'kalmanAngDirSmoothMs', 'kalmanDirSmoothMs', 'kalmanDupCoastMaxMs', 'kalmanGazeAssist', 'kalmanGazeMaxDeg', 'kalmanGazeMinSpeed', 'kalmanReleaseRewindMs', 'kalmanRewindHoldMs', 'kalmanSmoothLagMs', 'nvencTap', 'zeroCopyV3'];
+    for (const k of archived) { (this.settings as any)[k] = JSON.parse(JSON.stringify((this.defaults as any)[k])); }
+    // FOV tangents live inside eyeGaze; reset only those subkeys so
+    // gaze prediction is untouched
+    this.settings.eyeGaze.tanHalfFovX = this.defaults.eyeGaze.tanHalfFovX;
+    this.settings.eyeGaze.tanHalfFovY = this.defaults.eyeGaze.tanHalfFovY;
+    this.save();
+  }
+
   reset(key: keyof StreamFrameConfig) {
     if (!this.settings) return;
     (this.settings as any)[key] = JSON.parse(JSON.stringify((this.defaults as any)[key]));
@@ -270,7 +285,7 @@ export class StreamFrameComponent {
   shareStatus = signal('');
   // collapsible section state; debug starts closed, everything else open.
   // concrete shape (no index signature) so strict templates allow dot access
-  sections = { color: true, enhance: true, distortion: true, share: true, advanced: true, debug: false };
+  sections = { color: true, enhance: true, distortion: true, share: true, advanced: true, debug: false, eyeAlign: false, graveyard: false };
   // any calibration overlay/mode that would be visible or disruptive in a
   // normal play session — drives the warning banner at the top of the page
   calibrationActive(): boolean {

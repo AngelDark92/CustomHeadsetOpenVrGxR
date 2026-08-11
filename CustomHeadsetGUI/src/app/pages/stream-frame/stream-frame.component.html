@@ -511,6 +511,10 @@
 @if(sections.advanced){
 
 <div class="field">
+    <div class="section-title collapsible" (click)="sections.eyeAlign = !sections.eyeAlign"><span>Eye Alignment</span><span class="chevron" [class.closed]="!sections.eyeAlign">▾</span></div>
+</div>
+@if(sections.eyeAlign){
+<div class="field">
     <div class="title">
         <span>Eye Alignment Left H</span>
         <app-field-tip info="Prism correction: shifts the LEFT eye's whole image horizontally, in fractions of the image (positive = right). Corrects binocular misalignment when an eye sits off its lens axis. Use sparingly: horizontal shift also changes apparent depth. Typical useful values are within a few thousandths." />
@@ -562,11 +566,12 @@
         </mat-slider>
     </div>
 </div>
+}
 
 <div class="field">
     <div class="title">
         <span>Sync Timeout (ms)</span>
-        <app-field-tip info="How long to wait for the frame sync before letting a frame through unprocessed (a brief 'flash' of ungraded color). Higher values trade flashes under heavy load for slightly later frames. After a skipped frame the wait automatically escalates to break flash streaks. Default 5, sensible range 3-15." />
+        <app-field-tip info="How long to wait for the frame sync before letting a frame through unprocessed (a brief 'flash' of ungraded color). Higher values trade flashes under heavy load for slightly later frames. After a skipped frame the wait automatically escalates to break flash streaks. Default 10, sensible range 3-15." />
         <app-reset-button [canReset]="settings.syncTimeoutMs != defaults.syncTimeoutMs" (resetClick)="reset('syncTimeoutMs')"></app-reset-button>
     </div>
     <div class="control">
@@ -576,18 +581,73 @@
 
 <div class="field">
     <div class="title">
-        <span>Throw Velocity Fix (experimental)</span>
-        <app-field-tip info="The driver's reported controller velocity is heavily smoothed, which makes thrown objects land short and mistimed. Classic recomputes linear velocity from recent positions and substitutes it during fast motion. Full additionally corrects angular velocity and adds release-timing protection. Derive discards the reported velocity entirely and always reports the pose-derived estimate - one consistent signal with no engage threshold (the previous modes blended the two sources, which can misbehave exactly at release). All modes apply only to the streamed (Galaxy XR) controllers; lighthouse devices like Knuckles keep their native velocity untouched. Derive smoothing is speed-adaptive (strong when held still, near-raw at throw speeds); tune it live under Debug (Derive Smoothing / Split Direction knobs)." />
+        <span>Throw Velocity Fix</span>
+        <app-field-tip [info]="settings.graveyardEnable ? velocityFixTipFull : velocityFixTip" />
         <app-reset-button [canReset]="settings.velocityFixMode != defaults.velocityFixMode" (resetClick)="reset('velocityFixMode')"></app-reset-button>
     </div>
     <div class="control">
         <mat-select [(ngModel)]="settings.velocityFixMode" (ngModelChange)="save()">
             <mat-option value="off">Off</mat-option>
-            <mat-option value="classic">Classic (linear velocity only)</mat-option>
-            <mat-option value="full">Full (angular + release timing)</mat-option>
-            <mat-option value="derive">Derive (always use pose-derived)</mat-option>
-            <mat-option value="kalman">Kalman (coherent state, new)</mat-option>
+            @if(settings.graveyardEnable){
+            <mat-option value="classic">Classic (legacy)</mat-option>
+            <mat-option value="full">Full (legacy)</mat-option>
+            <mat-option value="derive">Derive (legacy, retired)</mat-option>
+            }
+            <mat-option value="kalman">Kalman (recommended)</mat-option>
         </mat-select>
+    </div>
+</div>
+
+<div class="field">
+    <div class="title">
+        <span>Kalman Tuning (accel m/s&#178;, pos mm, ang accel, ori deg, lead ms)</span>
+        <app-field-tip info="For the Kalman velocity mode: a single estimator produces position, rotation, velocity and spin together, the same architecture native lighthouse controllers use. A adjusts the responsiveness: higher trusts your motion more (snappier throws, a bit noisier), lower trusts smoothness (calmer hands, slight lag). W does the same for rotation: responsiveness of the spin estimate. Pos(P) mm and ori(O) deg describe how noisy the incoming tracking is. Lead(L) predicts the reported state slightly ahead to counter streaming latency (0-30ms)." />
+        <app-reset-button [canReset]="settings.kalmanProcessAccel != defaults.kalmanProcessAccel || settings.kalmanPosNoiseMm != defaults.kalmanPosNoiseMm || settings.kalmanProcessAngAccel != defaults.kalmanProcessAngAccel || settings.kalmanOriNoiseDeg != defaults.kalmanOriNoiseDeg || settings.kalmanLeadMs != defaults.kalmanLeadMs" (resetClick)="reset('kalmanProcessAccel'); reset('kalmanPosNoiseMm'); reset('kalmanProcessAngAccel'); reset('kalmanOriNoiseDeg'); reset('kalmanLeadMs')"></app-reset-button>
+    </div>
+    <div class="control">
+        <span>A</span><input matInput [(ngModel)]="settings.kalmanProcessAccel" step="10" min="1" max="2000" (ngModelChange)="save()" type="number">
+        <span>P</span><input matInput [(ngModel)]="settings.kalmanPosNoiseMm" step="0.5" min="0.2" max="20" (ngModelChange)="save()" type="number">
+        <span>W</span><input matInput [(ngModel)]="settings.kalmanProcessAngAccel" step="50" min="10" max="20000" (ngModelChange)="save()" type="number">
+        <span>O</span><input matInput [(ngModel)]="settings.kalmanOriNoiseDeg" step="0.1" min="0.05" max="10" (ngModelChange)="save()" type="number">
+        <span>L</span><input matInput [(ngModel)]="settings.kalmanLeadMs" step="5" min="0" max="50" (ngModelChange)="save()" type="number">
+    </div>
+</div>
+
+<div class="field">
+    <div class="title">
+        <span>Kalman Duplicate-Sample Handling</span>
+        <app-field-tip info="The streamer repeats the last pose whenever fresh tracking hasn&#39;t arrived (~2 of 3 samples during fast throws). Off: Repeats believed as measurements; smooth, slight speed drag. Coast (not recommended): Skip repeats and extrapolate through them. Drop (not recommended): Repeats are ignored entirely. Soft (default): repeats processed but distrusted by the scale below; measured equal to Off on strength, halves motion jitter. Sustained repeats are always accepted as genuine stillness." />
+        <app-reset-button [canReset]="settings.kalmanDupMode != defaults.kalmanDupMode" (resetClick)="reset('kalmanDupMode')"></app-reset-button>
+    </div>
+    <div class="control">
+        <mat-select [(ngModel)]="settings.kalmanDupMode" (ngModelChange)="save()">
+            <mat-option value="off">Off - repeats believed (smooth, slight drag)</mat-option>
+            <mat-option value="coast">Coast - extrapolate through repeats (field-rejected)</mat-option>
+            <mat-option value="drop">Drop - repeats never happened (honest gaps)</mat-option>
+            <mat-option value="soft">Soft - repeats distrusted by the scale below</mat-option>
+        </mat-select>
+    </div>
+</div>
+
+<div class="field">
+    <div class="title">
+        <span>Kalman Duplicate Distrust Scale (Soft mode)</span>
+        <app-field-tip info="Only used when duplicate handling is Soft. A repeated sample is a true position of unknown age, so its honest uncertainty at hand speed is far above the sensor floor; this multiplies the measurement noise for detected repeats. 1 behaves exactly like Off; the default of 3 halves motion jitter with no measured cost; 6 and above re-create Coast&#39;s rejected snap character. Repeats sustained past the run cap are always accepted at full weight." />
+        <app-reset-button [canReset]="settings.kalmanDupRScale != defaults.kalmanDupRScale" (resetClick)="reset('kalmanDupRScale')"></app-reset-button>
+    </div>
+    <div class="control">
+        <input matInput [(ngModel)]="settings.kalmanDupRScale" step="1" min="1" max="100" (ngModelChange)="save()" type="number">
+    </div>
+</div>
+
+<div class="field">
+    <div class="title">
+        <span>Kalman Device-Time Measurements</span>
+        <app-field-tip info="The streamer stamps every hand pose with WHEN it was actually true (poseTimeOffset). When this is on, the filter uses the device&#39;s own timestamps for its time steps and quietly discards out-of-order samples. Leave on." />
+        <app-reset-button [canReset]="settings.kalmanDeviceTime != defaults.kalmanDeviceTime" (resetClick)="reset('kalmanDeviceTime')"></app-reset-button>
+    </div>
+    <div class="control">
+        <mat-slide-toggle [(ngModel)]="settings.kalmanDeviceTime" (ngModelChange)="save()"></mat-slide-toggle>
     </div>
 </div>
 
@@ -665,28 +725,6 @@
 
 <div class="field">
     <div class="title">
-        <span>Zero-Copy v3 (experimental)</span>
-        <app-field-tip info="Performance: instead of writing the processed frame back into the layer, it is drawn into a shared shadow texture and the streamer's own per-frame staging copy is redirected to read it - roughly halving this driver's GPU memory traffic on top of Direct Render. Failure mode is benign: any miss ships one unprocessed frame (a brief ungraded flash), the same as a sync timeout skip. Test in a disposable session first: grep the log for 'zero-copy v3: redirect active' to confirm engagement, and 'passthrough' lines to see misses. Turn off if you see persistent unprocessed frames or flicker." />
-        <app-reset-button [canReset]="settings.zeroCopyV3 != defaults.zeroCopyV3" (resetClick)="reset('zeroCopyV3')"></app-reset-button>
-    </div>
-    <div class="control">
-        <mat-slide-toggle [(ngModel)]="settings.zeroCopyV3" (ngModelChange)="save()"></mat-slide-toggle>
-    </div>
-</div>
-
-<div class="field">
-    <div class="title">
-        <span>NVENC Tap (observe only)</span>
-        <app-field-tip info="Diagnostic that watches how the streamer sets up its video encoder: resolution, frame rate, rate-control parameters, and which GPU textures it feeds the encoder directly. Changes NOTHING - it only writes log lines. Turn it on BEFORE launching SteamVR (the encoder is created early and would otherwise be missed); changing the stream resolution mid-session also forces the encoder to be recreated and observed. One disposable session with this on gives the data for both the direct-encode zero-copy variant and the black-floor/banding encoder work." />
-        <app-reset-button [canReset]="settings.nvencTap != defaults.nvencTap" (resetClick)="reset('nvencTap')"></app-reset-button>
-    </div>
-    <div class="control">
-        <mat-slide-toggle [(ngModel)]="settings.nvencTap" (ngModelChange)="save()"></mat-slide-toggle>
-    </div>
-</div>
-
-<div class="field">
-    <div class="title">
         <span>Skip Color While Dashboard Open</span>
         <app-field-tip info="Only needed if the custom shader is also enabled with color adjustments: avoids applying them twice while the dashboard is open. Recommended setup for streamed headsets is custom shader off and this off." />
         <app-reset-button [canReset]="settings.skipColorWhileDashboardOpen != defaults.skipColorWhileDashboardOpen" (resetClick)="reset('skipColorWhileDashboardOpen')"></app-reset-button>
@@ -715,17 +753,6 @@
     </div>
     <div class="control">
         <mat-slide-toggle [(ngModel)]="settings.eyeGaze.debugRing" (ngModelChange)="save()"></mat-slide-toggle>
-    </div>
-</div>
-
-<div class="field">
-    <div class="title">
-        <span>Gaze FOV Tangents</span>
-        <app-field-tip info="Half-FOV tangents used to map gaze direction to screen position. 1.19 corresponds to ~100 degrees. If the ring moves too far for your gaze, increase; too little, decrease. Tune X with horizontal gaze, Y with vertical." />
-    </div>
-    <div class="control">
-        <span>X</span><input matInput [(ngModel)]="settings.eyeGaze.tanHalfFovX" step="0.02" min="0.3" max="3" (ngModelChange)="save()" type="number">
-        <span>Y</span><input matInput [(ngModel)]="settings.eyeGaze.tanHalfFovY" step="0.02" min="0.3" max="3" (ngModelChange)="save()" type="number">
     </div>
 </div>
 
@@ -762,16 +789,80 @@
 
 <div class="field">
     <div class="title">
-        <span>Kalman Tuning (accel m/s&#178;, pos mm, ang accel, ori deg, lead ms)</span>
-        <app-field-tip info="For the Kalman velocity mode: a single estimator produces position, rotation, velocity and spin together, the same architecture native lighthouse controllers use - so the rendered hands and throw physics always agree. Accel is THE responsiveness knob: higher trusts your motion more (snappier throws, a bit noisier), lower trusts smoothness (calmer hands, slight lag); try 20-120. Pos mm and ori deg describe how noisy the incoming tracking is (raise them on a bad network to smooth more). Lead predicts the reported state slightly ahead to counter streaming latency (0-30ms). All live." />
-        <app-reset-button [canReset]="settings.kalmanProcessAccel != defaults.kalmanProcessAccel || settings.kalmanPosNoiseMm != defaults.kalmanPosNoiseMm || settings.kalmanProcessAngAccel != defaults.kalmanProcessAngAccel || settings.kalmanOriNoiseDeg != defaults.kalmanOriNoiseDeg || settings.kalmanLeadMs != defaults.kalmanLeadMs" (resetClick)="reset('kalmanProcessAccel'); reset('kalmanPosNoiseMm'); reset('kalmanProcessAngAccel'); reset('kalmanOriNoiseDeg'); reset('kalmanLeadMs')"></app-reset-button>
+        <span>Kalman Throw Strength (source / fast accel / scale / spin scale)</span>
+        <app-field-tip info="Fixes weak throws at low Accel without giving up the calm direction. S/Sa globally scale reported speed. Leave at 1 unless a specific title needs it." />
+        <app-reset-button [canReset]="settings.kalmanMagSource != defaults.kalmanMagSource || settings.kalmanMagAccel != defaults.kalmanMagAccel || settings.kalmanMagScale != defaults.kalmanMagScale || settings.kalmanAngMagScale != defaults.kalmanAngMagScale" (resetClick)="reset('kalmanMagSource'); reset('kalmanMagAccel'); reset('kalmanMagScale'); reset('kalmanAngMagScale')"></app-reset-button>
     </div>
     <div class="control">
-        <span>A</span><input matInput [(ngModel)]="settings.kalmanProcessAccel" step="10" min="1" max="2000" (ngModelChange)="save()" type="number">
-        <span>P</span><input matInput [(ngModel)]="settings.kalmanPosNoiseMm" step="0.5" min="0.2" max="20" (ngModelChange)="save()" type="number">
-        <span>W</span><input matInput [(ngModel)]="settings.kalmanProcessAngAccel" step="50" min="10" max="20000" (ngModelChange)="save()" type="number">
-        <span>O</span><input matInput [(ngModel)]="settings.kalmanOriNoiseDeg" step="0.1" min="0.05" max="10" (ngModelChange)="save()" type="number">
-        <span>L</span><input matInput [(ngModel)]="settings.kalmanLeadMs" step="5" min="0" max="50" (ngModelChange)="save()" type="number">
+        <mat-select [(ngModel)]="settings.kalmanMagSource" (ngModelChange)="save()">
+            <mat-option value="state">Calm state (default)</mat-option>
+            <mat-option value="fast">Fast estimator (recommended at low A)</mat-option>
+        </mat-select>
+        <span>FA</span><input matInput [(ngModel)]="settings.kalmanMagAccel" step="10" min="1" max="2000" (ngModelChange)="save()" type="number">
+        <span>S</span><input matInput [(ngModel)]="settings.kalmanMagScale" step="0.05" min="0.25" max="4" (ngModelChange)="save()" type="number">
+        <span>Sa</span><input matInput [(ngModel)]="settings.kalmanAngMagScale" step="0.05" min="0.25" max="4" (ngModelChange)="save()" type="number">
+    </div>
+</div>
+
+<div class="field">
+    <div class="title">
+        <span>Velocity Consumer Test / Pose Assist</span>
+        <app-field-tip info="Helps decide if a game uses vecVelocity or computes the velocity itself. Report zero for ~2 minutes: if throws still fly, the game ignores reported velocity. Turn off after testing." />
+        <app-reset-button [canReset]="settings.deriveDiagVelocity != defaults.deriveDiagVelocity || settings.deriveLatchPoseAssist != defaults.deriveLatchPoseAssist" (resetClick)="reset('deriveDiagVelocity'); reset('deriveLatchPoseAssist')"></app-reset-button>
+    </div>
+    <div class="control">
+        <mat-select [(ngModel)]="settings.deriveDiagVelocity" (ngModelChange)="save()">
+            <mat-option value="off">Normal velocity</mat-option>
+            <mat-option value="zero">Report zero (test)</mat-option>
+        </mat-select>
+        <mat-slide-toggle [(ngModel)]="settings.deriveLatchPoseAssist" (ngModelChange)="save()"></mat-slide-toggle>
+    </div>
+</div>
+
+}
+
+@if(settings.graveyardEnable){
+<div class="field">
+    <div class="section-title collapsible" (click)="sections.graveyard = !sections.graveyard"><span>Graveyard (retired experiments)</span><span class="chevron" [class.closed]="!sections.graveyard">▾</span></div>
+</div>
+@if(sections.graveyard){
+<div class="field">
+    <div class="title">
+        <span>Field-retired experiments - kept for reproducibility. Each lost a live test. Values here stay ACTIVE while hidden; re-test only if the transport fresh-rate materially improves.</span>
+        <app-reset-button [canReset]="true" (resetClick)="resetGraveyard()"></app-reset-button>
+    </div>
+</div>
+
+<div class="field">
+    <div class="title">
+        <span>Zero-Copy v3 (experimental)</span>
+        <app-field-tip info="Performance: instead of writing the processed frame back into the layer, it is drawn into a shared shadow texture and the streamer's own per-frame staging copy is redirected to read it - roughly halving this driver's GPU memory traffic on top of Direct Render. Failure mode is benign: any miss ships one unprocessed frame (a brief ungraded flash), the same as a sync timeout skip. Test in a disposable session first: grep the log for 'zero-copy v3: redirect active' to confirm engagement, and 'passthrough' lines to see misses. Turn off if you see persistent unprocessed frames or flicker." />
+        <app-reset-button [canReset]="settings.zeroCopyV3 != defaults.zeroCopyV3" (resetClick)="reset('zeroCopyV3')"></app-reset-button>
+    </div>
+    <div class="control">
+        <mat-slide-toggle [(ngModel)]="settings.zeroCopyV3" (ngModelChange)="save()"></mat-slide-toggle>
+    </div>
+</div>
+
+<div class="field">
+    <div class="title">
+        <span>NVENC Tap (observe only)</span>
+        <app-field-tip info="Diagnostic that watches how the streamer sets up its video encoder: resolution, frame rate, rate-control parameters, and which GPU textures it feeds the encoder directly. Changes NOTHING - it only writes log lines. Turn it on BEFORE launching SteamVR (the encoder is created early and would otherwise be missed); changing the stream resolution mid-session also forces the encoder to be recreated and observed. One disposable session with this on gives the data for both the direct-encode zero-copy variant and the black-floor/banding encoder work." />
+        <app-reset-button [canReset]="settings.nvencTap != defaults.nvencTap" (resetClick)="reset('nvencTap')"></app-reset-button>
+    </div>
+    <div class="control">
+        <mat-slide-toggle [(ngModel)]="settings.nvencTap" (ngModelChange)="save()"></mat-slide-toggle>
+    </div>
+</div>
+
+<div class="field">
+    <div class="title">
+        <span>Gaze FOV Tangents</span>
+        <app-field-tip info="Half-FOV tangents used to map gaze direction to screen position. 1.19 corresponds to ~100 degrees. If the ring moves too far for your gaze, increase; too little, decrease. Tune X with horizontal gaze, Y with vertical." />
+    </div>
+    <div class="control">
+        <span>X</span><input matInput [(ngModel)]="settings.eyeGaze.tanHalfFovX" step="0.02" min="0.3" max="3" (ngModelChange)="save()" type="number">
+        <span>Y</span><input matInput [(ngModel)]="settings.eyeGaze.tanHalfFovY" step="0.02" min="0.3" max="3" (ngModelChange)="save()" type="number">
     </div>
 </div>
 
@@ -801,67 +892,12 @@
 
 <div class="field">
     <div class="title">
-        <span>Kalman Duplicate-Sample Handling</span>
-        <app-field-tip info="The streamer repeats the last hand position whenever fresh tracking hasn't arrived - during fast throws roughly 2 of every 3 samples are such repeats. Three ways to handle them. OFF: repeats are believed as real measurements; each one says your hand stopped, dragging throw speed down slightly (chronic mild weakness), but the reported motion stays smooth - field champion so far. COAST: repeats are skipped and the hand's position is extrapolated forward instead; field-rejected - the invented positions then snap back on real data and games that read hand position history feel it as jerks and random release directions. DROP: repeats are ignored entirely as if they never arrived - no fake stillness, no invented positions; the filter bridges to the next real sample in one honest step using the device's own timestamps. Repeats sustained past the cap below are always accepted as genuine stillness. A/B Drop against Off; Coast remains for completeness." />
-        <app-reset-button [canReset]="settings.kalmanDupMode != defaults.kalmanDupMode" (resetClick)="reset('kalmanDupMode')"></app-reset-button>
-    </div>
-    <div class="control">
-        <mat-select [(ngModel)]="settings.kalmanDupMode" (ngModelChange)="save()">
-            <mat-option value="off">Off - repeats believed (smooth, slight drag)</mat-option>
-            <mat-option value="coast">Coast - extrapolate through repeats (field-rejected)</mat-option>
-            <mat-option value="drop">Drop - repeats never happened (honest gaps)</mat-option>
-            <mat-option value="soft">Soft - repeats distrusted by the scale below</mat-option>
-        </mat-select>
-    </div>
-</div>
-
-<div class="field">
-    <div class="title">
-        <span>Kalman Duplicate Distrust Scale (Soft mode)</span>
-        <app-field-tip info="Only used when duplicate handling is Soft. A repeated sample is a true position of unknown age - at hand speed its honest uncertainty is far above the sensor floor. This multiplies the measurement noise for detected repeats: 1 behaves exactly like Off (repeats fully believed); higher values let the filter carry speed through stale runs with only weak drag from the plateau, converging toward Coast-like behavior as it grows. The physics of your stream suggests the honest zone is roughly 3-6. Repeats sustained past the coast cap are always accepted at full weight (genuine stillness). Sweep 1, 3, 6, 12 and let feel decide - hard-throw strength should climb with the value until snap character re-emerges." />
-        <app-reset-button [canReset]="settings.kalmanDupRScale != defaults.kalmanDupRScale" (resetClick)="reset('kalmanDupRScale')"></app-reset-button>
-    </div>
-    <div class="control">
-        <input matInput [(ngModel)]="settings.kalmanDupRScale" step="1" min="1" max="100" (ngModelChange)="save()" type="number">
-    </div>
-</div>
-
-<div class="field">
-    <div class="title">
-        <span>Kalman Device-Time Measurements</span>
-        <app-field-tip info="Estimator correctness fix: the streamer stamps every hand pose with WHEN it was actually true (poseTimeOffset), and field data shows that stamp varies by several ms sample-to-sample during throws - with occasional poses arriving up to 69ms stale. The filter previously ignored the stamp and treated every sample as happening 'now', so timing jitter masqueraded as position noise (30mm-equivalent at throw speed) and stale poses near release could kick the velocity BACKWARD. With this on, the filter uses the device's own timestamps for its time steps and silently discards out-of-order samples. Leave on; the toggle exists for A/B against the old behavior." />
-        <app-reset-button [canReset]="settings.kalmanDeviceTime != defaults.kalmanDeviceTime" (resetClick)="reset('kalmanDeviceTime')"></app-reset-button>
-    </div>
-    <div class="control">
-        <mat-slide-toggle [(ngModel)]="settings.kalmanDeviceTime" (ngModelChange)="save()"></mat-slide-toggle>
-    </div>
-</div>
-
-<div class="field">
-    <div class="title">
         <span>Kalman Duplicate-Coast Cap (ms)</span>
-        <app-field-tip info="Bug fix for a runaway caught live in the logs: when your hand stops abruptly, the streamer repeats the last pose, the duplicate-skip treats those repeats as missing data, and the filter can coast forever on its stale velocity - drifting away from reality until telemetry explodes. Repeats sustained longer than this cap are accepted as genuine stillness and processed normally. 60ms covers real transport gaps while making the runaway impossible. Range 10-500." />
+        <app-field-tip info="Active even while archived. Repeats sustained past this cap are accepted as genuine stillness at full weight - no human hand holds a position bit-identically for tens of ms, so a long repeat means the tracker stopped producing, and believing it beats extrapolating or distrusting blind. Also closes a coast runaway. Default 90, range 10-500. Applies to Coast, Drop, and Soft." />
         <app-reset-button [canReset]="settings.kalmanDupCoastMaxMs != defaults.kalmanDupCoastMaxMs" (resetClick)="reset('kalmanDupCoastMaxMs')"></app-reset-button>
     </div>
     <div class="control">
         <input matInput [(ngModel)]="settings.kalmanDupCoastMaxMs" step="10" min="10" max="500" (ngModelChange)="save()" type="number">
-    </div>
-</div>
-
-<div class="field">
-    <div class="title">
-        <span>Kalman Throw Strength (source / fast accel / scale / spin scale)</span>
-        <app-field-tip info="Fixes weak throws at low Accel without giving up the calm direction you tuned: with source Fast, throw STRENGTH is measured by a second, snappier estimator running in parallel (its own accel below, 60 default - higher = punchier peaks), while the throw DIRECTION still comes from your calm A=1 state. Always on, no gates, no thresholds. The two Scale numbers are plain multipliers applied last (1 = neutral, 1.15 = +15% oomph) for final taste and per-game feel. Only the reported velocity is shaped; the rendered hand never changes." />
-        <app-reset-button [canReset]="settings.kalmanMagSource != defaults.kalmanMagSource || settings.kalmanMagAccel != defaults.kalmanMagAccel || settings.kalmanMagScale != defaults.kalmanMagScale || settings.kalmanAngMagScale != defaults.kalmanAngMagScale" (resetClick)="reset('kalmanMagSource'); reset('kalmanMagAccel'); reset('kalmanMagScale'); reset('kalmanAngMagScale')"></app-reset-button>
-    </div>
-    <div class="control">
-        <mat-select [(ngModel)]="settings.kalmanMagSource" (ngModelChange)="save()">
-            <mat-option value="state">Calm state (default)</mat-option>
-            <mat-option value="fast">Fast estimator (recommended at low A)</mat-option>
-        </mat-select>
-        <span>FA</span><input matInput [(ngModel)]="settings.kalmanMagAccel" step="10" min="1" max="2000" (ngModelChange)="save()" type="number">
-        <span>S</span><input matInput [(ngModel)]="settings.kalmanMagScale" step="0.05" min="0.25" max="4" (ngModelChange)="save()" type="number">
-        <span>Sa</span><input matInput [(ngModel)]="settings.kalmanAngMagScale" step="0.05" min="0.25" max="4" (ngModelChange)="save()" type="number">
     </div>
 </div>
 
@@ -972,21 +1008,6 @@
 
 <div class="field">
     <div class="title">
-        <span>Velocity Consumer Test / Pose Assist</span>
-        <app-field-tip info="Consumer test 'Report zero': a 2-minute diagnostic that reports ZERO controller velocity. Try a few throws - if objects still fly, this game computes throws from hand pose history and ignores reported velocity entirely, which redirects all further tuning to the pose stream. Turn back off after testing. Pose assist: for games that DO derive throws from pose history, the reported hand position briefly continues along the latched throw arc at release, so their estimators read the clean throw instead of the hand's snap-back. Costs a short visual hand overshoot on release; test in-game." />
-        <app-reset-button [canReset]="settings.deriveDiagVelocity != defaults.deriveDiagVelocity || settings.deriveLatchPoseAssist != defaults.deriveLatchPoseAssist" (resetClick)="reset('deriveDiagVelocity'); reset('deriveLatchPoseAssist')"></app-reset-button>
-    </div>
-    <div class="control">
-        <mat-select [(ngModel)]="settings.deriveDiagVelocity" (ngModelChange)="save()">
-            <mat-option value="off">Normal velocity</mat-option>
-            <mat-option value="zero">Report zero (test)</mat-option>
-        </mat-select>
-        <mat-slide-toggle [(ngModel)]="settings.deriveLatchPoseAssist" (ngModelChange)="save()"></mat-slide-toggle>
-    </div>
-</div>
-
-<div class="field">
-    <div class="title">
         <span>Split Direction Source</span>
         <app-field-tip info="Where the throw DIRECTION comes from when a Split Direction toggle is on (magnitude always comes from the smoothed estimate). Position secant: direction of the raw hand displacement over the last ~25-70ms - very noise resistant, small fixed lag; the recommended default. Runtime report: direction of the driver's own (heavily smoothed) velocity - device-side sensor fusion, smooth but more lagged. Window average: the original weighted average of recent estimates - kept for A/B, weakest against correlated noise. After changing this, flip a Split toggle off and on to get a fresh confirmation log line." />
         <app-reset-button [canReset]="settings.deriveDirSource != defaults.deriveDirSource" (resetClick)="reset('deriveDirSource')"></app-reset-button>
@@ -1040,5 +1061,7 @@
     </div>
 </div>
 }
+}
+
 }
 }

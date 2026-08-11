@@ -224,6 +224,14 @@ private:
 		int dtN = 0;
 		double dtMaxMs = 0;
 		double coastMaxMs = 0;
+		// angular-channel NIS (same EMA treatment as linear nisEma)
+		double nisAEma = 1.0;
+		// fresh-to-fresh clock: device-time stamp of last DISTINCT raw
+		// sample + per-window stats of the tracker's true cadence
+		double tFresh = 0;
+		double fdtSumMs = 0;
+		int fdtN = 0;
+		double fdtMaxMs = 0;
 		int gazeBends = 0;
 		double gazeBendSum = 0;
 		double gazeBendMax = 0;
