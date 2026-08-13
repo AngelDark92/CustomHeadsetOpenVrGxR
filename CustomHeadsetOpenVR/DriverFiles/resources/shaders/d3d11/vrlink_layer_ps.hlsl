@@ -94,6 +94,11 @@ cbuffer Params : register(b0){
 	// fxaaEnable promoted from padH (cbuffer size and every prior offset
 	// unchanged); the USAGE expression below is the capability token
 	float tuneSegCount; float fxaaEnable; float padI; float padJ;
+	// black floor: ramp bar enable, range remap mode (0/1/2), shadow
+	// lift floor in sRGB code units (-1 = lift disabled), knee code
+	float bfRampBar; float bfRangeMode; float bfShadowFloor; float bfKnee;
+	// sboys camera grid: opaque background flag
+	float gridOpaque; float padK; float padL; float padM;
 };
 Texture2D<float4> tex : register(t0);
 Texture2D<float4> lut : register(t1);
@@ -272,6 +277,52 @@ float4 main(float4 pos : SV_Position, float2 uv : TEXCOORD0) : SV_Target0{
 	}
 
 	// ---- dither ----
+	// ---- black floor: near-black diagnostic ramps + fixes. the ramp
+	// bar is drawn FIRST so its patches ride through the range remap,
+	// the shadow lift, the dither and the encoder exactly like game
+	// shadows do — what the eye reads off the strips is the honest
+	// end-to-end near-black transfer. two strips per eye: screen
+	// center (the foveal encode region when looking straight ahead)
+	// and near the bottom (peripheral region); comparing them isolates
+	// the foveated encoder's per-region quantization floor. ----
+	if(bfRampBar > 0.5){
+		bool stripA = uv.y > 0.46 && uv.y < 0.53;   // foveal
+		bool stripB = uv.y > 0.86 && uv.y < 0.93;   // peripheral
+		if((stripA || stripB) && uv.x > 0.1 && uv.x < 0.9){
+			float fx = (uv.x - 0.1) / 0.8;
+			float patch = min(floor(fx * 17.0), 16.0);
+			float g = patch * 2.0 / 255.0; // sRGB codes 0..32 step 2
+			color.rgb = SrgbToLinear(float3(g, g, g));
+			// white tick row at the strip top marking codes 0/8/16/24/32
+			float stripTop = stripA ? 0.46 : 0.86;
+			if(uv.y - stripTop < 0.006 && fmod(patch, 4.0) < 0.5){
+				color.rgb = 1.0;
+			}
+		}
+	}
+	if(bfRangeMode > 0.5 || bfShadowFloor >= 0.0){
+		float3 g = LinearToSrgb(color.rgb);
+		if(bfShadowFloor >= 0.0){
+			// shadow-only lift: linear squeeze below the knee mapping
+			// [0, knee] -> [floor, knee], identity above. dark content
+			// rises above the OLED/encoder floor; midtones untouched.
+			float knee = max(bfKnee, bfShadowFloor + 0.5) / 255.0;
+			float fl = bfShadowFloor / 255.0;
+			float3 low = fl + g * ((knee - fl) / knee);
+			g = lerp(low, g, step(knee, g));
+		}
+		if(bfRangeMode > 1.5){
+			// expand: decode as if limited range (fix for grey blacks /
+			// clipped whites when the chain double-applies limited)
+			g = saturate((g * 255.0 - 16.0) / 219.0);
+		}else if(bfRangeMode > 0.5){
+			// compress into limited range before encode (fix when the
+			// display decodes full-range video as limited)
+			g = (16.0 + 219.0 * g) / 255.0;
+		}
+		color.rgb = SrgbToLinear(g);
+	}
+
 	if(ditherEnable > 0.5){
 		// one quantization step of noise in the srgb domain, where the 8 bit
 		// encode happens, to break up banding in dark gradients
@@ -287,7 +338,53 @@ float4 main(float4 pos : SV_Position, float2 uv : TEXCOORD0) : SV_Target0{
 	// frustum (sboy-style distortion photos: every rendered line has a
 	// known angular position, so a photo through the lens reads
 	// distortion error directly). axes emphasized for pose recovery. ----
-	if(debugGrid > 1.5){
+	if(debugGrid > 2.5){
+		// ---- sboys camera-calibration pattern (FovCalibration.shader
+		// port): per-axis visual angles through the real frustum,
+		// hue-coded lines every gridSpacingRad. each line's COLOR
+		// encodes its absolute angular index (hue = frac(n/6), n =
+		// round(|angle|/step)), so a photo through the lens identifies
+		// every line without counting from center — which also lets the
+		// fit script solve residual camera pose jointly with the
+		// distortion residual. bright full-length axis cross (|angle| <
+		// 0.1 deg) for centering the camera; optional opaque grey
+		// background so the camera sees only the pattern. angular
+		// convention identical to the repo shader: angleH = atan2(x,-z)
+		// = atan(tx), up-positive vertical via -ty. ----
+		float tx = projL + ovUv.x * (projR - projL);
+		float ty = projT + ovUv.y * (projB - projT);
+		float aH = atan(tx) * 57.29577951308232;
+		float aV = atan(-ty) * 57.29577951308232;
+		float stepDeg = max(gridSpacingRad * 57.29577951308232, 0.25);
+		if(gridOpaque > 0.5){
+			color.rgb = SrgbToLinear(float3(0.1, 0.1, 0.1));
+		}
+		// white axis cross first; colored lines never overlap it
+		// (their box index is 0 there and 0 is skipped, like sboys)
+		if(abs(aH) < 0.1 || abs(aV) < 0.1){
+			color.rgb = 1.0;
+		}
+		float lineW = 0.05; // fraction of one step, sboys default
+		float modH = frac(aH / stepDeg);
+		float modV = frac(aV / stepDeg);
+		float boxN = 0.0;
+		// dominant-axis priority resolves crossings deterministically
+		if((modH <= lineW || modH >= 1.0 - lineW) && abs(aH) >= abs(aV)){
+			boxN = round(abs(aH) / stepDeg);
+		}
+		if((modV <= lineW || modV >= 1.0 - lineW) && abs(aV) > abs(aH)){
+			boxN = round(abs(aV) / stepDeg);
+		}
+		if(boxN > 0.5){
+			float hue = frac(boxN / 6.0);
+			// HUEtoRGB, matching the source shader's coding exactly
+			float3 hc = saturate(float3(
+				abs(hue * 6.0 - 3.0) - 1.0,
+				2.0 - abs(hue * 6.0 - 2.0),
+				2.0 - abs(hue * 6.0 - 4.0)));
+			color.rgb = SrgbToLinear(hc);
+		}
+	}else if(debugGrid > 1.5){
 		float tx = projL + ovUv.x * (projR - projL);
 		float ty = projT + ovUv.y * (projB - projT);
 		float ax, ay;

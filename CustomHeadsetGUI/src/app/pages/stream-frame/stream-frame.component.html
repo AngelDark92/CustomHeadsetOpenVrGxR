@@ -373,10 +373,23 @@
         <mat-select [(ngModel)]="settings.eyeGaze.gridMode" (ngModelChange)="save()">
             <mat-option value="uv">UV grid (eye tuning)</mat-option>
             <mat-option value="angular">Angular grid (camera photos)</mat-option>
+            <mat-option value="sboys">Camera pattern (hue-coded, sboys)</mat-option>
         </mat-select>
         <span>deg</span><input matInput [(ngModel)]="settings.eyeGaze.gridAngularDeg" step="0.5" min="0.5" max="30" (ngModelChange)="save()" type="number">
     </div>
 </div>
+
+@if(settings.eyeGaze.gridMode == 'sboys'){
+<div class="field">
+    <div class="title">
+        <span>Camera Pattern: Opaque Background</span>
+        <app-field-tip info="The sboys pattern draws per-axis angle lines whose COLOR encodes their angular index (hue = line number / 6), so the calibrated camera and the fit script can identify every line absolutely - no counting from center, and residual camera pose can be solved jointly with the distortion. This toggle replaces game content with a dim grey background so the camera sees only the pattern. Turn on Warped Overlays for measurement runs: the pattern must pass through the active distortion profile exactly like game content, so the camera reads the residual OF the correction, not the raw lens. Keep 2.5 deg spacing to match the reference tooling." />
+    </div>
+    <div class="control">
+        <mat-slide-toggle [(ngModel)]="settings.eyeGaze.gridOpaque" (ngModelChange)="save()"></mat-slide-toggle>
+    </div>
+</div>
+}
 
 <div class="field">
     <div class="title">
@@ -609,10 +622,13 @@
             <mat-option value="derive">Derive (legacy, retired)</mat-option>
             }
             <mat-option value="kalman">Kalman (recommended)</mat-option>
+            <mat-option value="kalmanCAM">Kalman CA &mdash; Magnitude (experimental)</mat-option>
+            <mat-option value="kalmanCA">Kalman CA &mdash; Full (experimental)</mat-option>
         </mat-select>
     </div>
 </div>
 
+@if(settings.velocityFixMode == 'kalman' || settings.velocityFixMode == 'kalmanCAM'){
 <div class="field">
     <div class="title">
         <span>Kalman Tuning (accel m/s&#178;, pos mm, ang accel, ori deg, lead ms)</span>
@@ -627,7 +643,52 @@
         <span>L</span><input matInput [(ngModel)]="settings.kalmanLeadMs" step="5" min="0" max="50" (ngModelChange)="save()" type="number">
     </div>
 </div>
+}
 
+@if(settings.velocityFixMode == 'kalmanCA'){
+<div class="field">
+    <div class="title">
+        <span>Kalman CA Tuning (jerk m/s&#179;, ang jerk, pos mm, ori deg, lead ms)</span>
+        <app-field-tip info="Constant-acceleration estimation: the standard Kalman treats a throw's speed ramp as noise and lags its peak (the ~80% magnitude deficit); the CA state tracks the ramp itself, so magnitude comes from the model instead of a rescale. J is the responsiveness knob (jerk, replaces A): higher follows snappier motion, lower is calmer. Wj is the same for rotation. P/O are the sensor noise levels (own copies, so tuning here never disturbs the standard mode). L leads the report to counter streaming latency." />
+        <app-reset-button [canReset]="settings.kalmanCaJerk != defaults.kalmanCaJerk || settings.kalmanCaAngJerk != defaults.kalmanCaAngJerk || settings.kalmanCaPosNoiseMm != defaults.kalmanCaPosNoiseMm || settings.kalmanCaOriNoiseDeg != defaults.kalmanCaOriNoiseDeg || settings.kalmanLeadMs != defaults.kalmanLeadMs" (resetClick)="reset('kalmanCaJerk'); reset('kalmanCaAngJerk'); reset('kalmanCaPosNoiseMm'); reset('kalmanCaOriNoiseDeg'); reset('kalmanLeadMs')"></app-reset-button>
+    </div>
+    <div class="control">
+        <span>J</span><input matInput [(ngModel)]="settings.kalmanCaJerk" step="50" min="10" max="50000" (ngModelChange)="save()" type="number">
+        <span>Wj</span><input matInput [(ngModel)]="settings.kalmanCaAngJerk" step="250" min="50" max="500000" (ngModelChange)="save()" type="number">
+        <span>P</span><input matInput [(ngModel)]="settings.kalmanCaPosNoiseMm" step="0.5" min="0.2" max="20" (ngModelChange)="save()" type="number">
+        <span>O</span><input matInput [(ngModel)]="settings.kalmanCaOriNoiseDeg" step="0.1" min="0.05" max="10" (ngModelChange)="save()" type="number">
+        <span>L</span><input matInput [(ngModel)]="settings.kalmanLeadMs" step="5" min="0" max="50" (ngModelChange)="save()" type="number">
+    </div>
+</div>
+
+<div class="field">
+    <div class="title">
+        <span>Kalman CA Accel Decay &tau; (ms) / Report Acceleration</span>
+        <app-field-tip info="The acceleration state decays toward zero with this time constant (Singer model). It bounds phantom speed during repeated-sample coasts and abrupt stops; ~150ms matches how long a real throw sustains acceleration. Very large values approach pure constant-acceleration. Report Acceleration also hands the runtime's forward prediction the acceleration states - honest accel can cut rendered-hand latency but doubles overshoot risk. Leave off for a clean A/B first." />
+        <app-reset-button [canReset]="settings.kalmanCaAccelTauMs != defaults.kalmanCaAccelTauMs || settings.kalmanCaReportAccel != defaults.kalmanCaReportAccel" (resetClick)="reset('kalmanCaAccelTauMs'); reset('kalmanCaReportAccel')"></app-reset-button>
+    </div>
+    <div class="control">
+        <span>&tau;</span><input matInput [(ngModel)]="settings.kalmanCaAccelTauMs" step="25" min="20" max="10000" (ngModelChange)="save()" type="number">
+        <mat-slide-toggle [(ngModel)]="settings.kalmanCaReportAccel" (ngModelChange)="save()"></mat-slide-toggle>
+    </div>
+</div>
+}
+
+@if(settings.velocityFixMode == 'kalmanCAM'){
+<div class="field">
+    <div class="title">
+        <span>Kalman CA Magnitude Channel (jerk m/s&#179;, decay &tau; ms)</span>
+        <app-field-tip info="CA-Magnitude mode: everything about the standard Kalman mode stays identical (calm direction, the A/P/W/O/L tuning above, duplicate handling), except the fast magnitude channel becomes a constant-acceleration estimator. J (jerk) is its responsiveness: higher follows the throw ramp harder. The decay bounds phantom speed across repeated-sample coasts (~150ms matches a real throw's acceleration duration). Success looks like Throw Strength Trim converging to 1.0." />
+        <app-reset-button [canReset]="settings.kalmanCaMagJerk != defaults.kalmanCaMagJerk || settings.kalmanCaMagAccelTauMs != defaults.kalmanCaMagAccelTauMs" (resetClick)="reset('kalmanCaMagJerk'); reset('kalmanCaMagAccelTauMs')"></app-reset-button>
+    </div>
+    <div class="control">
+        <span>J</span><input matInput [(ngModel)]="settings.kalmanCaMagJerk" step="50" min="10" max="50000" (ngModelChange)="save()" type="number">
+        <span>&tau;</span><input matInput [(ngModel)]="settings.kalmanCaMagAccelTauMs" step="25" min="20" max="10000" (ngModelChange)="save()" type="number">
+    </div>
+</div>
+}
+
+@if(isKalmanMode()){
 <div class="field">
     <div class="title">
         <span>Kalman Duplicate-Sample Handling</span>
@@ -665,6 +726,7 @@
         <mat-slide-toggle [(ngModel)]="settings.kalmanDeviceTime" (ngModelChange)="save()"></mat-slide-toggle>
     </div>
 </div>
+}
 
 <div class="field">
     <div class="title">
@@ -735,6 +797,42 @@
     </div>
     <div class="control">
         <mat-slide-toggle [(ngModel)]="settings.directRender" (ngModelChange)="save()"></mat-slide-toggle>
+    </div>
+</div>
+
+<div class="field">
+    <div class="title">
+        <span>Black Floor: Diagnostic Ramp Bar</span>
+        <app-field-tip info="Draws two near-black test strips per eye (17 patches, sRGB codes 0 to 32 in steps of 2, white ticks over codes 0/8/16/24/32): one across screen center (inside the foveated encoder's high-quality region when looking straight ahead) and one near the bottom (peripheral region). The bar is injected before the fixes, the dither and the encoder, so what you see is the honest end-to-end near-black response. See Docs/BlackFloorProtocol.md for how to read it." />
+    </div>
+    <div class="control">
+        <mat-slide-toggle [(ngModel)]="settings.blackFloor.rampBar" (ngModelChange)="save()"></mat-slide-toggle>
+    </div>
+</div>
+
+<div class="field">
+    <div class="title">
+        <span>Black Floor: Range Remap</span>
+        <app-field-tip info="Fix for a full-vs-limited video range mismatch in the stream chain. Compress: pre-maps into limited range (16-235) before encode - the fix when the first ~8 ramp patches are indistinguishable black (display decoding full as limited). Expand: the inverse - the fix when black looks grey and highlights clip. Leave off unless the ramp bar diagnosed one of the two." />
+    </div>
+    <div class="control">
+        <mat-select [(ngModel)]="settings.blackFloor.rangeMode" (ngModelChange)="save()">
+            <mat-option value="off">Off</mat-option>
+            <mat-option value="compress">Compress (fix crushed blacks below code 16)</mat-option>
+            <mat-option value="expand">Expand (fix grey blacks / clipped whites)</mat-option>
+        </mat-select>
+    </div>
+</div>
+
+<div class="field">
+    <div class="title">
+        <span>Black Floor: Shadow Lift (floor / knee, sRGB codes)</span>
+        <app-field-tip info="Lifts only the deepest shadows: codes below the knee are squeezed linearly so true black lands at the floor code, everything above the knee is untouched. Rescues detail crushed by the OLED floor or the encoder's dark-scene quantization (including the foveated-region boundary square) without greying the whole image. Floor 2 / knee 8 is a subtle start; raise the knee if banding remains just above it." />
+    </div>
+    <div class="control">
+        <mat-slide-toggle [(ngModel)]="settings.blackFloor.shadowLift" (ngModelChange)="save()"></mat-slide-toggle>
+        <span>F</span><input matInput [(ngModel)]="settings.blackFloor.floorCode" step="0.5" min="0" max="16" (ngModelChange)="save()" type="number">
+        <span>K</span><input matInput [(ngModel)]="settings.blackFloor.kneeCode" step="1" min="2" max="48" (ngModelChange)="save()" type="number">
     </div>
 </div>
 
@@ -824,6 +922,7 @@
     </div>
 </div>
 
+@if(settings.velocityFixMode == 'kalman'){
 <div class="field">
     <div class="title">
         <span>Kalman Throw Strength (source / fast accel / scale / spin scale)</span>
@@ -840,6 +939,20 @@
         <span>Sa</span><input matInput [(ngModel)]="settings.kalmanAngMagScale" step="0.05" min="0.25" max="4" (ngModelChange)="save()" type="number">
     </div>
 </div>
+}
+@if(settings.velocityFixMode == 'kalmanCAM' || settings.velocityFixMode == 'kalmanCA'){
+<div class="field">
+    <div class="title">
+        <span>Throw Strength Trim (scale / spin scale)</span>
+        <app-field-tip info="Global multipliers on reported speed and spin, kept as safety trims for the CA experiment modes. If the CA model is doing its job these converge to 1.0 - the PEAKDIAG log line (out/sec ratio) is the instrument that says whether they can." />
+        <app-reset-button [canReset]="settings.kalmanMagScale != defaults.kalmanMagScale || settings.kalmanAngMagScale != defaults.kalmanAngMagScale" (resetClick)="reset('kalmanMagScale'); reset('kalmanAngMagScale')"></app-reset-button>
+    </div>
+    <div class="control">
+        <span>S</span><input matInput [(ngModel)]="settings.kalmanMagScale" step="0.05" min="0.25" max="4" (ngModelChange)="save()" type="number">
+        <span>Sa</span><input matInput [(ngModel)]="settings.kalmanAngMagScale" step="0.05" min="0.25" max="4" (ngModelChange)="save()" type="number">
+    </div>
+</div>
+}
 
 <div class="field">
     <div class="title">

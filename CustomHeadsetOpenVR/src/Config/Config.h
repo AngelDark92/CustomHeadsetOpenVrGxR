@@ -218,6 +218,38 @@ struct StreamFrameConfig{
 	StreamFrameCASConfig cas = {};
 	// add low amplitude noise before encoding to reduce banding in dark scenes
 	bool dither = false;
+	// ==== black floor diagnostics + fixes (GUI Debug section) ====
+	// near-black on the GxR stream crushes/steps. candidate mechanisms:
+	// (a) a full-vs-limited range mismatch somewhere in the encode ->
+	// decode -> display chain (everything below code ~16 crushed, or
+	// blacks grey + whites clipped for the inverse), (b) encoder
+	// quantization starving dark low-contrast regions — the foveated-
+	// encode boundary square that becomes visible in dark scenes is this
+	// mechanism's signature: two QP regions with different effective
+	// floors meeting at an edge, (c) the display's own OLED black floor.
+	// the ramp bar identifies which; rangeMode and the shadow lift are
+	// the fixes. see Docs/BlackFloorProtocol.md for the test protocol.
+	struct BlackFloorConfig {
+		// draw the near-black diagnostic ramps: 17 patches, sRGB codes
+		// 0..32 step 2, one strip across screen center (foveal encode
+		// region) and one near the bottom (peripheral region), white
+		// ticks marking codes 0/8/16/24/32. the bar is injected BEFORE
+		// the fixes + dither so the patches ride the exact pipeline
+		// game shadows do.
+		bool rampBar = false;
+		// 0 off; 1 compress into limited range before encode
+		// (g' = (16 + 219 g) / 255) — the fix when the display decodes
+		// full-range video as limited; 2 expand as if limited
+		// (inverse) — the fix for the opposite mismatch
+		int rangeMode = 0;
+		// shadow-only lift: linear squeeze below kneeCode raising true
+		// black to floorCode, identity above. lifts dark content above
+		// the OLED/encoder floor without greying the whole image.
+		bool shadowLift = false;
+		double floorCode = 2.0;
+		double kneeCode = 8.0;
+	};
+	BlackFloorConfig blackFloor = {};
 	StreamFrameDimmingConfig stationaryDimming = {};
 	// radial distortion pre perturbation, applied to the streamed eye images to
 	// compensate an imperfect distortion profile on the standalone headset.
@@ -273,8 +305,19 @@ struct StreamFrameConfig{
 		// each rendered line has a known angular position, so a photo
 		// through the lens directly measures distortion error)
 		bool debugGrid = false;
+		// "uv": lines every 0.1 uv. "angular": lines every gridAngularDeg
+		// of visual angle. "sboys": the camera-calibration pattern from
+		// sboys3/camera-calibration — per-axis visual-angle lines every
+		// gridAngularDeg, HUE-CODED by their absolute angular index so a
+		// calibrated camera (and the fit script) can identify every line
+		// without counting from center, plus a bright axis cross. render
+		// with overlayWarped ON so the pattern passes through the
+		// distortion correction like game content does.
 		std::string gridMode = "uv";
 		double gridAngularDeg = 2.5;
+		// sboys mode only: replace game content with a dim grey
+		// background so the camera sees nothing but the pattern
+		bool gridOpaque = false;
 		// world-locked fixation dot for VOR-based swim probing: latched to
 		// the current view direction when enabled (toggle off/on to
 		// re-center). the user fixates the dot and slowly rotates their
@@ -385,6 +428,14 @@ struct StreamFrameConfig{
 	// surface for the black-floor work. modifies nothing. enable BEFORE
 	// launching SteamVR so the encoder creation is not missed.
 	bool nvencTap = false;
+	// 5 = kalmanCAM ("kalmanCAM"): mode 4 with the fast magnitude channel
+	// replaced by a constant-acceleration (Singer) estimator — the
+	// low-risk arm of the CA experiment (calm direction untouched).
+	// 6 = kalmanCA ("kalmanCA"): one CA estimator per axis carries pose,
+	// velocity AND acceleration (angular gains an angular-accel state);
+	// the ramp-lag magnitude deficit is removed by the model instead of
+	// rescaled away. both CA modes skip the legacy blend/peak-hold
+	// stack entirely (clean state reporting).
 	int velocityFixMode = 4; // kalman: consolidation default 2026-08-11
 	// derive-mode speed-adaptive smoothing: the estimator is a low lag
 	// endpoint derivative, so its noise shows fully in derive mode (the
@@ -638,6 +689,33 @@ struct StreamFrameConfig{
 	// two-estimate fusion: stored forward state at t-L fused with the
 	// current state backcast to t-L.
 	double kalmanSmoothLagMs = 0.0;
+	// ==== constant-acceleration (Singer) experiment knobs ====
+	// the CV model treats the throw ramp as noise and structurally lags
+	// its peak (the measured ~80% magnitude deficit); a CA state tracks
+	// a ramp with zero steady-state velocity lag while R stays at the
+	// sensor floor — smoothing is NOT loosened to buy magnitude. jerk
+	// (m/s^3) is the responsiveness knob of a CA channel, replacing
+	// process accel. the acceleration state decays toward zero with
+	// tau (Singer model), bounding phantom integration across dup
+	// coasts and stops; tau -> inf recovers pure CA for A/B honesty.
+	// CA-full responsiveness (linear jerk, angular jerk)
+	double kalmanCaJerk = 800.0;
+	double kalmanCaAngJerk = 4000.0;
+	// CA-full measurement noise, separate from the CV knobs so tuning
+	// one mode never disturbs the other's field-proven values
+	double kalmanCaPosNoiseMm = 2.7;
+	double kalmanCaOriNoiseDeg = 1.25;
+	// shared acceleration decay time constant (CA-full, both channels)
+	double kalmanCaAccelTauMs = 150.0;
+	// CA-M fast magnitude channel knobs
+	double kalmanCaMagJerk = 800.0;
+	double kalmanCaMagAccelTauMs = 150.0;
+	// CA-full only: also report the acceleration states in
+	// vecAcceleration / vecAngularAcceleration. the runtime's forward
+	// prediction integrates them, so honest accel can cut rendered-hand
+	// latency — but it doubles prediction overshoot risk, hence its own
+	// toggle, off for the first clean A/B.
+	bool kalmanCaReportAccel = false;
 	// experimental throw/velocity fix. vrlink's reported controller velocity
 	// is heavily smoothed (field data: peaks read ~50-65% of position-derived
 	// velocity during throws, ratio varies with motion phase = filter lag,

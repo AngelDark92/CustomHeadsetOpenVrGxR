@@ -180,7 +180,16 @@ export type StreamFrameConfig = {
   kalmanGazeMaxDeg: number;
   kalmanGazeMinSpeed: number;
   kalmanSmoothLagMs: number;
-  eyeGaze: { debugRing: boolean, tanHalfFovX: number, tanHalfFovY: number, predictionMs: number, debugGrid: boolean, gridMode: string, gridAngularDeg: number, calibDot: boolean, swimProbe: boolean, overlayWarped: boolean, probeCapture: boolean, gridWorldLocked: boolean };
+  kalmanCaJerk: number;
+  kalmanCaAngJerk: number;
+  kalmanCaPosNoiseMm: number;
+  kalmanCaOriNoiseDeg: number;
+  kalmanCaAccelTauMs: number;
+  kalmanCaMagJerk: number;
+  kalmanCaMagAccelTauMs: number;
+  kalmanCaReportAccel: boolean;
+  eyeGaze: { debugRing: boolean, tanHalfFovX: number, tanHalfFovY: number, predictionMs: number, debugGrid: boolean, gridMode: string, gridAngularDeg: number, calibDot: boolean, swimProbe: boolean, overlayWarped: boolean, probeCapture: boolean, gridWorldLocked: boolean, gridOpaque: boolean };
+  blackFloor: { rampBar: boolean, rangeMode: string, shadowLift: boolean, floorCode: number, kneeCode: number };
   pupilSwim: { centerStrengthX: number, centerStrengthY: number };
   poseLogging: boolean;
 };

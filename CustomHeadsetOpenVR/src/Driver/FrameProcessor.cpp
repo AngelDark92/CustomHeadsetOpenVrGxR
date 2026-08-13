@@ -218,6 +218,11 @@ struct FrameProcessorConstants{
 	// per-band layouts: the CURRENT band's segment count for the sector
 	// highlight (the sampling row count above may be larger)
 	float tuneSegCount, fxaaEnable, padI, padJ;
+	// black floor: ramp bar enable, range remap mode (0/1/2), shadow
+	// lift floor in sRGB code units (-1 = lift disabled), knee code
+	float bfRampBar, bfRangeMode, bfShadowFloor, bfKnee;
+	// sboys camera grid: opaque background flag
+	float gridOpaque, padK, padL, padM;
 };
 
 // map a layer texture format to the scratch format and shader mode used to
@@ -1201,6 +1206,10 @@ bool FrameProcessor::ProcessEye(ID3D11Texture2D* texture, const vr::VRTextureBou
 	constants.annulusMax = (float)config.distortion.annulus.rMax;
 	constants.annulusFeather = (float)config.distortion.annulus.feather;
 	constants.ditherEnable = config.dither ? 1.0f : 0.0f;
+	constants.bfRampBar = config.blackFloor.rampBar ? 1.0f : 0.0f;
+	constants.bfRangeMode = (float)config.blackFloor.rangeMode;
+	constants.bfShadowFloor = config.blackFloor.shadowLift ? (float)config.blackFloor.floorCode : -1.0f;
+	constants.bfKnee = (float)config.blackFloor.kneeCode;
 	constants.lutMaxR = lutMaxRadius;
 	// row order is eye major, axis minor
 	int axisCount = config.distortion.perAxis ? 2 : 1;
@@ -1293,13 +1302,18 @@ bool FrameProcessor::ProcessEye(ID3D11Texture2D* texture, const vr::VRTextureBou
 	constants.headXx = settings.headBasis[0][0]; constants.headXy = settings.headBasis[0][1]; constants.headXz = settings.headBasis[0][2];
 	constants.headYx = settings.headBasis[1][0]; constants.headYy = settings.headBasis[1][1]; constants.headYz = settings.headBasis[1][2];
 	constants.headZx = settings.headBasis[2][0]; constants.headZy = settings.headBasis[2][1]; constants.headZz = settings.headBasis[2][2];
-	// grid: 0 off, 1 uv mode, 2 angular mode (needs real frusta; falls
-	// back to uv mode without them)
+	// grid: 0 off, 1 uv mode, 2 angular mode, 3 sboys camera pattern
+	// (angular + sboys need real frusta; fall back to uv without them)
 	float gridMode = 0.0f;
 	if(settings.config.eyeGaze.debugGrid){
-		gridMode = (settings.config.eyeGaze.gridMode == "angular" && settings.gazeProjValid) ? 2.0f : 1.0f;
+		if(settings.config.eyeGaze.gridMode == "sboys" && settings.gazeProjValid){
+			gridMode = 3.0f;
+		}else{
+			gridMode = (settings.config.eyeGaze.gridMode == "angular" && settings.gazeProjValid) ? 2.0f : 1.0f;
+		}
 	}
 	constants.pad2 = gridMode;
+	constants.gridOpaque = settings.config.eyeGaze.gridOpaque ? 1.0f : 0.0f;
 	if(settings.gazeProjValid){
 		constants.projL = settings.gazeProj[eye][0];
 		constants.projR = settings.gazeProj[eye][1];

@@ -275,14 +275,45 @@ private:
 		double vSlow[3] = {};
 		double wSlow[3] = {};
 		bool haveSlow = false;
-		// knob echo, so live tuning re-announces in the log
+		// knob echo, so live tuning re-announces in the log (CA knobs
+		// carry their own sig: summing them into lastQa would vanish
+		// below double epsilon next to the 1e16-scale legacy terms)
 		double lastQa = -1;
+		double lastCaSig = -1;
 		// parallel fast velocity estimator (magnitude channel): per-axis
 		// CV kalman over the same measurements with its own accel
 		double pF[3] = {};
 		double vF[3] = {};
 		double PF[3][3] = {};
 		bool haveFast = false;
+		// mode echo: switching between the CV and CA layouts mid-session
+		// forces a clean reinit (the covariance layouts differ)
+		int lastMode = 0;
+		// constant-acceleration (Singer) states + covariances for the
+		// CA experiment modes. covariance layout per axis:
+		// [P00 P01 P02 P11 P12 P22] (symmetric upper triangle)
+		double ca[3] = {};      // linear acceleration state (CA-full)
+		double P6[3][6] = {};   // linear CA covariance (CA-full)
+		double caW[3] = {};     // angular acceleration state (CA-full)
+		double Pa6[3][6] = {};  // angular CA covariance (CA-full)
+		double caF[3] = {};     // fast-channel acceleration state (CA-M)
+		double PF6[3][6] = {};  // fast-channel CA covariance (CA-M)
+		// per-window peak of the CA acceleration state magnitudes
+		// (KALDIAG: watch for phantom accel during coasts/stops)
+		double caAccPk = 0;
+		double caWAccPk = 0;
+		// PEAKDIAG per-gesture scorer: peak of the reported output, the
+		// calm and magnitude channels and the ring secant (displacement
+		// ground truth), plus the direction vectors at each peak
+		bool pkActive = false;
+		double pkOut = 0, pkSec = 0, pkCalm = 0, pkMag = 0;
+		double pkAngOut = 0, pkAngSec = 0;
+		double pkOutVec[3] = {};
+		double pkSecVec[3] = {};
+		// this frame's channel speeds, written under deriveFilterLock in
+		// the kalman block and read by the scorer after DeriveMotion
+		double diagCalmSp = 0;
+		double diagMagSp = 0;
 	};
 	std::map<uint32_t, KalState> kalStates;
 	// latest HMD orientation, for rotating the head-space gaze ray into

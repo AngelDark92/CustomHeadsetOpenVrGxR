@@ -392,6 +392,25 @@ void ConfigLoader::ParseConfig(){
 			if(streamFrameData["dither"].is_boolean()){
 				newConfig.streamFrame.dither = streamFrameData["dither"].get<bool>();
 			}
+			if(streamFrameData["blackFloor"].is_object()){
+				json blackFloorData = streamFrameData["blackFloor"];
+				if(blackFloorData["rampBar"].is_boolean()){
+					newConfig.streamFrame.blackFloor.rampBar = blackFloorData["rampBar"].get<bool>();
+				}
+				if(blackFloorData["rangeMode"].is_string()){
+					std::string rm = blackFloorData["rangeMode"].get<std::string>();
+					newConfig.streamFrame.blackFloor.rangeMode = rm == "expand" ? 2 : (rm == "compress" ? 1 : 0);
+				}
+				if(blackFloorData["shadowLift"].is_boolean()){
+					newConfig.streamFrame.blackFloor.shadowLift = blackFloorData["shadowLift"].get<bool>();
+				}
+				if(blackFloorData["floorCode"].is_number()){
+					newConfig.streamFrame.blackFloor.floorCode = blackFloorData["floorCode"].get<double>();
+				}
+				if(blackFloorData["kneeCode"].is_number()){
+					newConfig.streamFrame.blackFloor.kneeCode = blackFloorData["kneeCode"].get<double>();
+				}
+			}
 			if(streamFrameData["stationaryDimming"].is_object()){
 				json dimmingData = streamFrameData["stationaryDimming"];
 				if(dimmingData["enable"].is_boolean()){
@@ -588,7 +607,7 @@ void ConfigLoader::ParseConfig(){
 			}
 			if(streamFrameData["velocityFixMode"].is_string()){
 				std::string mode = streamFrameData["velocityFixMode"].get<std::string>();
-				newConfig.streamFrame.velocityFixMode = mode == "kalman" ? 4 : (mode == "derive" ? 3 : (mode == "full" ? 2 : (mode == "classic" ? 1 : 0)));
+				newConfig.streamFrame.velocityFixMode = mode == "kalmanCA" ? 6 : (mode == "kalmanCAM" ? 5 : (mode == "kalman" ? 4 : (mode == "derive" ? 3 : (mode == "full" ? 2 : (mode == "classic" ? 1 : 0)))));
 			}
 			// mode provenance (2x incident 2026-08-11): a round-trip
 			// preserved legacy "velocityFix" bool with no
@@ -755,6 +774,30 @@ void ConfigLoader::ParseConfig(){
 			if(streamFrameData["kalmanSmoothLagMs"].is_number()){
 				newConfig.streamFrame.kalmanSmoothLagMs = streamFrameData["kalmanSmoothLagMs"].get<double>();
 			}
+			if(streamFrameData["kalmanCaJerk"].is_number()){
+				newConfig.streamFrame.kalmanCaJerk = streamFrameData["kalmanCaJerk"].get<double>();
+			}
+			if(streamFrameData["kalmanCaAngJerk"].is_number()){
+				newConfig.streamFrame.kalmanCaAngJerk = streamFrameData["kalmanCaAngJerk"].get<double>();
+			}
+			if(streamFrameData["kalmanCaPosNoiseMm"].is_number()){
+				newConfig.streamFrame.kalmanCaPosNoiseMm = streamFrameData["kalmanCaPosNoiseMm"].get<double>();
+			}
+			if(streamFrameData["kalmanCaOriNoiseDeg"].is_number()){
+				newConfig.streamFrame.kalmanCaOriNoiseDeg = streamFrameData["kalmanCaOriNoiseDeg"].get<double>();
+			}
+			if(streamFrameData["kalmanCaAccelTauMs"].is_number()){
+				newConfig.streamFrame.kalmanCaAccelTauMs = streamFrameData["kalmanCaAccelTauMs"].get<double>();
+			}
+			if(streamFrameData["kalmanCaMagJerk"].is_number()){
+				newConfig.streamFrame.kalmanCaMagJerk = streamFrameData["kalmanCaMagJerk"].get<double>();
+			}
+			if(streamFrameData["kalmanCaMagAccelTauMs"].is_number()){
+				newConfig.streamFrame.kalmanCaMagAccelTauMs = streamFrameData["kalmanCaMagAccelTauMs"].get<double>();
+			}
+			if(streamFrameData["kalmanCaReportAccel"].is_boolean()){
+				newConfig.streamFrame.kalmanCaReportAccel = streamFrameData["kalmanCaReportAccel"].get<bool>();
+			}
 			if(streamFrameData["eyeGaze"].is_object()){
 				json eyeGazeData = streamFrameData["eyeGaze"];
 				if(eyeGazeData["debugRing"].is_boolean()){
@@ -786,6 +829,9 @@ void ConfigLoader::ParseConfig(){
 				}
 				if(eyeGazeData["gridWorldLocked"].is_boolean()){
 					newConfig.streamFrame.eyeGaze.gridWorldLocked = eyeGazeData["gridWorldLocked"].get<bool>();
+				}
+				if(eyeGazeData["gridOpaque"].is_boolean()){
+					newConfig.streamFrame.eyeGaze.gridOpaque = eyeGazeData["gridOpaque"].get<bool>();
 				}
 				if(eyeGazeData["swimProbe"].is_boolean()){
 					newConfig.streamFrame.eyeGaze.swimProbe = eyeGazeData["swimProbe"].get<bool>();
@@ -1087,6 +1133,13 @@ void ConfigLoader::WriteInfo(){
 					{"strengthRight", defaultSettings.streamFrame.cas.strengthRight},
 				}},
 				{"dither", defaultSettings.streamFrame.dither},
+				{"blackFloor", {
+					{"rampBar", defaultSettings.streamFrame.blackFloor.rampBar},
+					{"rangeMode", defaultSettings.streamFrame.blackFloor.rangeMode == 2 ? "expand" : (defaultSettings.streamFrame.blackFloor.rangeMode == 1 ? "compress" : "off")},
+					{"shadowLift", defaultSettings.streamFrame.blackFloor.shadowLift},
+					{"floorCode", defaultSettings.streamFrame.blackFloor.floorCode},
+					{"kneeCode", defaultSettings.streamFrame.blackFloor.kneeCode},
+				}},
 				{"stationaryDimming", {
 					{"enable", defaultSettings.streamFrame.stationaryDimming.enable},
 					{"movementThreshold", defaultSettings.streamFrame.stationaryDimming.movementThreshold},
@@ -1154,6 +1207,7 @@ void ConfigLoader::WriteInfo(){
 					{"calibDot", defaultSettings.streamFrame.eyeGaze.calibDot},
 					{"probeCapture", defaultSettings.streamFrame.eyeGaze.probeCapture},
 					{"gridWorldLocked", defaultSettings.streamFrame.eyeGaze.gridWorldLocked},
+					{"gridOpaque", defaultSettings.streamFrame.eyeGaze.gridOpaque},
 					{"swimProbe", defaultSettings.streamFrame.eyeGaze.swimProbe},
 					{"overlayWarped", defaultSettings.streamFrame.eyeGaze.overlayWarped},
 				}},
@@ -1163,7 +1217,7 @@ void ConfigLoader::WriteInfo(){
 				}},
 				{"zeroCopyV3", defaultSettings.streamFrame.zeroCopyV3},
 				{"nvencTap", defaultSettings.streamFrame.nvencTap},
-				{"velocityFixMode", defaultSettings.streamFrame.velocityFixMode == 4 ? "kalman" : (defaultSettings.streamFrame.velocityFixMode == 3 ? "derive" : (defaultSettings.streamFrame.velocityFixMode == 2 ? "full" : (defaultSettings.streamFrame.velocityFixMode == 1 ? "classic" : "off")))},
+				{"velocityFixMode", defaultSettings.streamFrame.velocityFixMode == 6 ? "kalmanCA" : (defaultSettings.streamFrame.velocityFixMode == 5 ? "kalmanCAM" : (defaultSettings.streamFrame.velocityFixMode == 4 ? "kalman" : (defaultSettings.streamFrame.velocityFixMode == 3 ? "derive" : (defaultSettings.streamFrame.velocityFixMode == 2 ? "full" : (defaultSettings.streamFrame.velocityFixMode == 1 ? "classic" : "off")))))},
 				{"deriveSmoothTauSlowMs", defaultSettings.streamFrame.deriveSmoothTauSlowMs},
 				{"deriveSmoothTauFastMs", defaultSettings.streamFrame.deriveSmoothTauFastMs},
 				{"deriveSmoothSpeedLow", defaultSettings.streamFrame.deriveSmoothSpeedLow},
@@ -1212,6 +1266,14 @@ void ConfigLoader::WriteInfo(){
 				{"kalmanGazeMaxDeg", defaultSettings.streamFrame.kalmanGazeMaxDeg},
 				{"kalmanGazeMinSpeed", defaultSettings.streamFrame.kalmanGazeMinSpeed},
 				{"kalmanSmoothLagMs", defaultSettings.streamFrame.kalmanSmoothLagMs},
+				{"kalmanCaJerk", defaultSettings.streamFrame.kalmanCaJerk},
+				{"kalmanCaAngJerk", defaultSettings.streamFrame.kalmanCaAngJerk},
+				{"kalmanCaPosNoiseMm", defaultSettings.streamFrame.kalmanCaPosNoiseMm},
+				{"kalmanCaOriNoiseDeg", defaultSettings.streamFrame.kalmanCaOriNoiseDeg},
+				{"kalmanCaAccelTauMs", defaultSettings.streamFrame.kalmanCaAccelTauMs},
+				{"kalmanCaMagJerk", defaultSettings.streamFrame.kalmanCaMagJerk},
+				{"kalmanCaMagAccelTauMs", defaultSettings.streamFrame.kalmanCaMagAccelTauMs},
+				{"kalmanCaReportAccel", defaultSettings.streamFrame.kalmanCaReportAccel},
 			}},
 			{"takeCompositorScreenshots", defaultSettings.takeCompositorScreenshots},
 			{"onlyHandlePrivateFunctionality", defaultSettings.onlyHandlePrivateFunctionality},

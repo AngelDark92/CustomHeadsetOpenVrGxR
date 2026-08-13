@@ -100,7 +100,16 @@ function defaultStreamFrame(): StreamFrameConfig {
     kalmanGazeMaxDeg: 30,
     kalmanGazeMinSpeed: 1.2,
     kalmanSmoothLagMs: 0,
-    eyeGaze: { debugRing: false, tanHalfFovX: 1.19, tanHalfFovY: 1.19, predictionMs: 30, debugGrid: false, gridMode: 'uv', gridAngularDeg: 2.5, calibDot: false, swimProbe: false, overlayWarped: false, probeCapture: false, gridWorldLocked: false },
+    kalmanCaJerk: 800,
+    kalmanCaAngJerk: 4000,
+    kalmanCaPosNoiseMm: 2.7,
+    kalmanCaOriNoiseDeg: 1.25,
+    kalmanCaAccelTauMs: 150,
+    kalmanCaMagJerk: 800,
+    kalmanCaMagAccelTauMs: 150,
+    kalmanCaReportAccel: false,
+    eyeGaze: { debugRing: false, tanHalfFovX: 1.19, tanHalfFovY: 1.19, predictionMs: 30, debugGrid: false, gridMode: 'uv', gridAngularDeg: 2.5, calibDot: false, swimProbe: false, overlayWarped: false, probeCapture: false, gridWorldLocked: false, gridOpaque: false },
+    blackFloor: { rampBar: false, rangeMode: 'off', shadowLift: false, floorCode: 2, kneeCode: 8 },
     pupilSwim: { centerStrengthX: 0, centerStrengthY: 0 },
     poseLogging: false,
     graveyardEnable: false
@@ -268,7 +277,7 @@ export class StreamFrameComponent {
     return a.leftH != d.leftH || a.leftV != d.leftV || a.rightH != d.rightH || a.rightV != d.rightV;
   }
 
-  velocityFixTip = 'Off: pass the native runtime velocities through untouched. Kalman (recommended): a single estimator produces position, rotation, velocity and spin as one coherent state, the same architecture native tracked controllers use; all tuning lives in Advanced.';
+  velocityFixTip = 'Off: pass the native runtime velocities through untouched. Kalman (recommended): a single estimator produces position, rotation, velocity and spin as one coherent state, the same architecture native tracked controllers use; all tuning lives in Advanced. Kalman CA (experimental): constant-acceleration variants that track the throw ramp itself instead of rescaling it away - Magnitude swaps only the throw-strength channel (low risk), Full replaces the whole estimator. Turn on Pose Logging and compare PEAKDIAG lines to score them.';
   velocityFixTipFull = 'Off: pass the native runtime velocities through untouched. Kalman (recommended): a single estimator produces position, rotation, velocity and spin as one coherent state, the same architecture native tracked controllers use; all tuning lives in Advanced. Classic/Full: first-generation fixes, superseded. Derive: the legacy pose-derivation pipeline; retired after field testing, kept intact for reproducibility.';
 
   resetGraveyard() {
@@ -300,6 +309,12 @@ export class StreamFrameComponent {
   sections = { color: true, enhance: true, distortion: true, share: true, advanced: true, debug: false, eyeAlign: false, graveyard: false };
   // any calibration overlay/mode that would be visible or disruptive in a
   // normal play session — drives the warning banner at the top of the page
+  // the CA experiment modes share the mode-4 machinery (dup handling,
+  // device time), so those rows show for any kalman-family mode
+  isKalmanMode(): boolean {
+    const m = this.settings?.velocityFixMode;
+    return m == 'kalman' || m == 'kalmanCAM' || m == 'kalmanCA';
+  }
   calibrationActive(): boolean {
     const s = this.settings;
     const c = this.controllerSettings;
