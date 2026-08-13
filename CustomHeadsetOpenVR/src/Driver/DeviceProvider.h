@@ -232,6 +232,29 @@ private:
 		double fdtSumMs = 0;
 		int fdtN = 0;
 		double fdtMaxMs = 0;
+		// acceleration field probe (2026-08-12, observe-only): does
+		// vrlink populate DriverPose_t vecAcceleration /
+		// vecAngularAcceleration? if yes, acceleration as a CONTROL
+		// INPUT to the predict step is the first internal door onto
+		// the ramp-lag deficit (attacks the 30x model-honesty gap of
+		// the throw ramp WITHOUT raising process noise). per-window
+		// max magnitudes + count of nonzero samples, measured on the
+		// raw stream before any accept/drop decision. zero across a
+		// moving session = fields unpopulated, door closed for free.
+		double accMax = 0;
+		double wAccMax = 0;
+		int accNZ = 0;
+		// flagged-loss + teleport bookkeeping (2026-08-12): vrlink
+		// zero-fills result during hard losses; the estimator gate
+		// (raw status) already skips those samples, this records them
+		// and pins a clean reinit on reacquire. teleports counts
+		// physically impossible accepted steps (unflagged reacquires)
+		// converted to reinits by the teleport guard.
+		bool lost = false;
+		double lossStartT = 0;
+		int lossRuns = 0;
+		double lossMsSum = 0;
+		int teleports = 0;
 		int gazeBends = 0;
 		double gazeBendSum = 0;
 		double gazeBendMax = 0;

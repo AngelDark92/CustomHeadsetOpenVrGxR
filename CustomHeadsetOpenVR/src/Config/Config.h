@@ -585,6 +585,12 @@ struct StreamFrameConfig{
 	// repeats sustained past it are accepted at full weight.
 	int kalmanDupMode = 3;
 	double kalmanDupRScale = 3.0;
+	// teleport guard: reinit instead of innovating when an accepted step
+	// exceeds this floor AND implies >25 m/s (physically impossible hand
+	// speed = unflagged tracking reacquire). floor ignores freeze
+	// catch-ups (~0.1m). 0 disables. config-only this slice; GUI knob
+	// rides the next GUI-touching slice.
+	double kalmanTeleportM = 0.75;
 	// measurement timestamping (estimator correctness pass 2026-08-10):
 	// vrlink stamps every pose with poseTimeOffset, and this session's
 	// field data shows it is real and VARYING — median +13.8ms, stdev

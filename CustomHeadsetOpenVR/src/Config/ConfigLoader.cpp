@@ -731,6 +731,9 @@ void ConfigLoader::ParseConfig(){
 			if(streamFrameData["kalmanDupRScale"].is_number()){
 				newConfig.streamFrame.kalmanDupRScale = streamFrameData["kalmanDupRScale"].get<double>();
 			}
+			if(streamFrameData["kalmanTeleportM"].is_number()){
+				newConfig.streamFrame.kalmanTeleportM = streamFrameData["kalmanTeleportM"].get<double>();
+			}
 			if(streamFrameData["graveyardEnable"].is_boolean()){
 				newConfig.streamFrame.graveyardEnable = streamFrameData["graveyardEnable"].get<bool>();
 			}
@@ -1201,6 +1204,7 @@ void ConfigLoader::WriteInfo(){
 				{"kalmanAngMagScale", defaultSettings.streamFrame.kalmanAngMagScale},
 				{"kalmanDupMode", defaultSettings.streamFrame.kalmanDupMode == 3 ? "soft" : (defaultSettings.streamFrame.kalmanDupMode == 2 ? "drop" : (defaultSettings.streamFrame.kalmanDupMode == 1 ? "coast" : "off"))},
 				{"kalmanDupRScale", defaultSettings.streamFrame.kalmanDupRScale},
+				{"kalmanTeleportM", defaultSettings.streamFrame.kalmanTeleportM},
 				{"graveyardEnable", defaultSettings.streamFrame.graveyardEnable},
 				{"kalmanDeviceTime", defaultSettings.streamFrame.kalmanDeviceTime},
 				{"kalmanDupCoastMaxMs", defaultSettings.streamFrame.kalmanDupCoastMaxMs},
