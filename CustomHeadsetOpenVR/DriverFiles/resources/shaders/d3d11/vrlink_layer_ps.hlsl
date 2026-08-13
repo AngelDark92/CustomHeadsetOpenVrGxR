@@ -97,8 +97,9 @@ cbuffer Params : register(b0){
 	// black floor: ramp bar enable, range remap mode (0/1/2), shadow
 	// lift floor in sRGB code units (-1 = lift disabled), knee code
 	float bfRampBar; float bfRangeMode; float bfShadowFloor; float bfKnee;
-	// sboys camera grid: opaque background flag
-	float gridOpaque; float padK; float padL; float padM;
+	// sboys camera grid: opaque background flag; bfBlackPoint =
+	// adjustable black point in sRGB code units (0 = off)
+	float gridOpaque; float bfBlackPoint; float padL; float padM;
 };
 Texture2D<float4> tex : register(t0);
 Texture2D<float4> lut : register(t1);
@@ -286,21 +287,27 @@ float4 main(float4 pos : SV_Position, float2 uv : TEXCOORD0) : SV_Target0{
 	// and near the bottom (peripheral region); comparing them isolates
 	// the foveated encoder's per-region quantization floor. ----
 	if(bfRampBar > 0.5){
-		bool stripA = uv.y > 0.46 && uv.y < 0.53;   // foveal
-		bool stripB = uv.y > 0.86 && uv.y < 0.93;   // peripheral
-		if((stripA || stripB) && uv.x > 0.1 && uv.x < 0.9){
-			float fx = (uv.x - 0.1) / 0.8;
+		// strips are SCREEN-locked on purpose: the encoder's QP regions
+		// are screen-space, so a world-locked bar would wander across
+		// region boundaries and confound the reading. horizontally
+		// centered (x 0.30-0.70) so the whole ramp sits inside the
+		// lens sweet spot; the peripheral strip rides at y ~0.8, below
+		// the foveal encode square but still comfortably visible.
+		bool stripA = uv.y > 0.47 && uv.y < 0.53;   // foveal
+		bool stripB = uv.y > 0.78 && uv.y < 0.84;   // peripheral
+		if((stripA || stripB) && uv.x > 0.30 && uv.x < 0.70){
+			float fx = (uv.x - 0.30) / 0.40;
 			float patch = min(floor(fx * 17.0), 16.0);
 			float g = patch * 2.0 / 255.0; // sRGB codes 0..32 step 2
 			color.rgb = SrgbToLinear(float3(g, g, g));
 			// white tick row at the strip top marking codes 0/8/16/24/32
-			float stripTop = stripA ? 0.46 : 0.86;
+			float stripTop = stripA ? 0.47 : 0.78;
 			if(uv.y - stripTop < 0.006 && fmod(patch, 4.0) < 0.5){
 				color.rgb = 1.0;
 			}
 		}
 	}
-	if(bfRangeMode > 0.5 || bfShadowFloor >= 0.0){
+	if(bfRangeMode > 0.5 || bfShadowFloor >= 0.0 || bfBlackPoint > 0.01){
 		float3 g = LinearToSrgb(color.rgb);
 		if(bfShadowFloor >= 0.0){
 			// shadow-only lift: linear squeeze below the knee mapping
@@ -310,6 +317,15 @@ float4 main(float4 pos : SV_Position, float2 uv : TEXCOORD0) : SV_Target0{
 			float fl = bfShadowFloor / 255.0;
 			float3 low = fl + g * ((knee - fl) / knee);
 			g = lerp(low, g, step(knee, g));
+		}
+		if(bfBlackPoint > 0.01){
+			// adjustable black point: remap [bp, 255] -> [0, 255].
+			// calibrate with the ramp bar: raise until the two darkest
+			// patches just merge, then back off one notch. same math
+			// as rangeMode expand but with a CHOSEN pivot instead of
+			// the fixed 16-code chop.
+			float bp = min(bfBlackPoint, 48.0) / 255.0;
+			g = saturate((g - bp) / (1.0 - bp));
 		}
 		if(bfRangeMode > 1.5){
 			// expand: decode as if limited range (fix for grey blacks /

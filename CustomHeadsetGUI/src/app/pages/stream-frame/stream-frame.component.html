@@ -653,7 +653,7 @@
         <app-reset-button [canReset]="settings.kalmanCaJerk != defaults.kalmanCaJerk || settings.kalmanCaAngJerk != defaults.kalmanCaAngJerk || settings.kalmanCaPosNoiseMm != defaults.kalmanCaPosNoiseMm || settings.kalmanCaOriNoiseDeg != defaults.kalmanCaOriNoiseDeg || settings.kalmanLeadMs != defaults.kalmanLeadMs" (resetClick)="reset('kalmanCaJerk'); reset('kalmanCaAngJerk'); reset('kalmanCaPosNoiseMm'); reset('kalmanCaOriNoiseDeg'); reset('kalmanLeadMs')"></app-reset-button>
     </div>
     <div class="control">
-        <span>J</span><input matInput [(ngModel)]="settings.kalmanCaJerk" step="50" min="10" max="50000" (ngModelChange)="save()" type="number">
+        <span>J</span><input matInput [(ngModel)]="settings.kalmanCaJerk" step="50" min="1" max="50000" (ngModelChange)="save()" type="number">
         <span>Wj</span><input matInput [(ngModel)]="settings.kalmanCaAngJerk" step="250" min="50" max="500000" (ngModelChange)="save()" type="number">
         <span>P</span><input matInput [(ngModel)]="settings.kalmanCaPosNoiseMm" step="0.5" min="0.2" max="20" (ngModelChange)="save()" type="number">
         <span>O</span><input matInput [(ngModel)]="settings.kalmanCaOriNoiseDeg" step="0.1" min="0.05" max="10" (ngModelChange)="save()" type="number">
@@ -682,7 +682,7 @@
         <app-reset-button [canReset]="settings.kalmanCaMagJerk != defaults.kalmanCaMagJerk || settings.kalmanCaMagAccelTauMs != defaults.kalmanCaMagAccelTauMs" (resetClick)="reset('kalmanCaMagJerk'); reset('kalmanCaMagAccelTauMs')"></app-reset-button>
     </div>
     <div class="control">
-        <span>J</span><input matInput [(ngModel)]="settings.kalmanCaMagJerk" step="50" min="10" max="50000" (ngModelChange)="save()" type="number">
+        <span>J</span><input matInput [(ngModel)]="settings.kalmanCaMagJerk" step="50" min="1" max="50000" (ngModelChange)="save()" type="number">
         <span>&tau;</span><input matInput [(ngModel)]="settings.kalmanCaMagAccelTauMs" step="25" min="20" max="10000" (ngModelChange)="save()" type="number">
     </div>
 </div>
@@ -833,6 +833,16 @@
         <mat-slide-toggle [(ngModel)]="settings.blackFloor.shadowLift" (ngModelChange)="save()"></mat-slide-toggle>
         <span>F</span><input matInput [(ngModel)]="settings.blackFloor.floorCode" step="0.5" min="0" max="16" (ngModelChange)="save()" type="number">
         <span>K</span><input matInput [(ngModel)]="settings.blackFloor.kneeCode" step="1" min="2" max="48" (ngModelChange)="save()" type="number">
+    </div>
+</div>
+
+<div class="field">
+    <div class="title">
+        <span>Black Floor: Black Point (sRGB code)</span>
+        <app-field-tip info="Adjustable black level: remaps [BP, 255] onto [0, 255], darkening blacks by exactly as much as the chain can carry. Calibration recipe: turn the Ramp Bar on, raise BP until the two darkest patches just merge into one black, then back off one notch - that is maximum contrast with zero crushed detail. This is the tunable version of Range Remap Expand (which is a fixed 16-code chop, measured crushing most of the ramp); leave Range Remap off when using this. 0 disables." />
+    </div>
+    <div class="control">
+        <input matInput [(ngModel)]="settings.blackFloor.blackPointCode" step="0.5" min="0" max="24" (ngModelChange)="save()" type="number">
     </div>
 </div>
 

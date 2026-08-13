@@ -189,7 +189,7 @@ export type StreamFrameConfig = {
   kalmanCaMagAccelTauMs: number;
   kalmanCaReportAccel: boolean;
   eyeGaze: { debugRing: boolean, tanHalfFovX: number, tanHalfFovY: number, predictionMs: number, debugGrid: boolean, gridMode: string, gridAngularDeg: number, calibDot: boolean, swimProbe: boolean, overlayWarped: boolean, probeCapture: boolean, gridWorldLocked: boolean, gridOpaque: boolean };
-  blackFloor: { rampBar: boolean, rangeMode: string, shadowLift: boolean, floorCode: number, kneeCode: number };
+  blackFloor: { rampBar: boolean, rangeMode: string, shadowLift: boolean, floorCode: number, kneeCode: number, blackPointCode: number };
   pupilSwim: { centerStrengthX: number, centerStrengthY: number };
   poseLogging: boolean;
 };

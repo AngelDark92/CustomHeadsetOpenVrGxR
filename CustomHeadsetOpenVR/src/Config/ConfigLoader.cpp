@@ -410,6 +410,9 @@ void ConfigLoader::ParseConfig(){
 				if(blackFloorData["kneeCode"].is_number()){
 					newConfig.streamFrame.blackFloor.kneeCode = blackFloorData["kneeCode"].get<double>();
 				}
+				if(blackFloorData["blackPointCode"].is_number()){
+					newConfig.streamFrame.blackFloor.blackPointCode = blackFloorData["blackPointCode"].get<double>();
+				}
 			}
 			if(streamFrameData["stationaryDimming"].is_object()){
 				json dimmingData = streamFrameData["stationaryDimming"];
@@ -1139,6 +1142,7 @@ void ConfigLoader::WriteInfo(){
 					{"shadowLift", defaultSettings.streamFrame.blackFloor.shadowLift},
 					{"floorCode", defaultSettings.streamFrame.blackFloor.floorCode},
 					{"kneeCode", defaultSettings.streamFrame.blackFloor.kneeCode},
+					{"blackPointCode", defaultSettings.streamFrame.blackFloor.blackPointCode},
 				}},
 				{"stationaryDimming", {
 					{"enable", defaultSettings.streamFrame.stationaryDimming.enable},

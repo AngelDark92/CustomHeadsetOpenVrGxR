@@ -221,8 +221,9 @@ struct FrameProcessorConstants{
 	// black floor: ramp bar enable, range remap mode (0/1/2), shadow
 	// lift floor in sRGB code units (-1 = lift disabled), knee code
 	float bfRampBar, bfRangeMode, bfShadowFloor, bfKnee;
-	// sboys camera grid: opaque background flag
-	float gridOpaque, padK, padL, padM;
+	// sboys camera grid: opaque background flag; bfBlackPoint =
+	// adjustable black point in sRGB code units (0 = off)
+	float gridOpaque, bfBlackPoint, padL, padM;
 };
 
 // map a layer texture format to the scratch format and shader mode used to
@@ -1210,6 +1211,7 @@ bool FrameProcessor::ProcessEye(ID3D11Texture2D* texture, const vr::VRTextureBou
 	constants.bfRangeMode = (float)config.blackFloor.rangeMode;
 	constants.bfShadowFloor = config.blackFloor.shadowLift ? (float)config.blackFloor.floorCode : -1.0f;
 	constants.bfKnee = (float)config.blackFloor.kneeCode;
+	constants.bfBlackPoint = (float)config.blackFloor.blackPointCode;
 	constants.lutMaxR = lutMaxRadius;
 	// row order is eye major, axis minor
 	int axisCount = config.distortion.perAxis ? 2 : 1;

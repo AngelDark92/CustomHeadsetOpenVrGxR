@@ -517,6 +517,70 @@ void CustomHeadsetDeviceProvider::LogReleaseSnapshot(vr::PropertyContainerHandle
 		lastReleaseLogTime = now;
 	}
 	uint32_t id = ResolveContainerId(container);
+	// RELDIAG (kalman modes, poseLogging): the missing half of PEAKDIAG.
+	// PEAKDIAG scores the estimator's PEAK tracking; the game reads the
+	// velocity at the RELEASE INSTANT, which sits on the post-peak
+	// downslope. this logs, at the tap's release edge: reported speed
+	// at release, the peak over the previous 150ms of the history ring,
+	// their ratio (1.0 = release got the full peak; low = the filter
+	// already followed the hand's decel/recoil), the angle between the
+	// release-instant and peak velocity vectors, and how long before
+	// release the peak happened. high-J configs are expected to score
+	// clean on PEAKDIAG and scatter here — this line adjudicates the
+	// felt-vs-tracked J paradox directly.
+	if(driverConfig.streamFrame.velocityFixMode >= 4
+			&& driverConfig.streamFrame.poseLogging
+			&& IsStreamedController(id)){
+		double relSp = 0, pkSp = 0, relOff = 0, dtPkMs = 0;
+		double wRel = 0, wPk = 0;
+		bool haveRel = false;
+		{
+			std::lock_guard<std::mutex> rdGuard(deriveFilterLock);
+			KalState &krs = kalStates[id];
+			if(krs.histCount > 2){
+				int newest = (krs.histHead - 1 + KalState::histSize) % KalState::histSize;
+				double tNow = krs.histT[newest];
+				double relV[3] = { krs.histV[newest][0], krs.histV[newest][1], krs.histV[newest][2] };
+				relSp = sqrt(relV[0]*relV[0] + relV[1]*relV[1] + relV[2]*relV[2]);
+				wRel = sqrt(krs.histW[newest][0]*krs.histW[newest][0]
+					+ krs.histW[newest][1]*krs.histW[newest][1]
+					+ krs.histW[newest][2]*krs.histW[newest][2]);
+				double pkV[3] = { relV[0], relV[1], relV[2] };
+				double tPk = tNow;
+				for(int i = 0; i < krs.histCount; i++){
+					int idx = (krs.histHead - 1 - i + 2 * KalState::histSize) % KalState::histSize;
+					if(tNow - krs.histT[idx] > 0.15){ break; }
+					double sp = sqrt(krs.histV[idx][0]*krs.histV[idx][0]
+						+ krs.histV[idx][1]*krs.histV[idx][1]
+						+ krs.histV[idx][2]*krs.histV[idx][2]);
+					if(sp > pkSp){
+						pkSp = sp;
+						tPk = krs.histT[idx];
+						for(int a2 = 0; a2 < 3; a2++){ pkV[a2] = krs.histV[idx][a2]; }
+					}
+					double wsp = sqrt(krs.histW[idx][0]*krs.histW[idx][0]
+						+ krs.histW[idx][1]*krs.histW[idx][1]
+						+ krs.histW[idx][2]*krs.histW[idx][2]);
+					if(wsp > wPk){ wPk = wsp; }
+				}
+				dtPkMs = (tNow - tPk) * 1000.0;
+				double d = relV[0]*pkV[0] + relV[1]*pkV[1] + relV[2]*pkV[2];
+				if(relSp > 1e-3 && pkSp > 1e-3){
+					double c = d / (relSp * pkSp);
+					if(c > 1.0){ c = 1.0; }
+					if(c < -1.0){ c = -1.0; }
+					relOff = acos(c) * 180.0 / 3.14159265358979323846;
+				}
+				haveRel = relSp > 0.5 || pkSp > 1.0;
+			}
+		}
+		// log outside the lock; bounded by the caller's 20Hz cap
+		if(haveRel){
+			DriverLog("PoseLog: RELDIAG id=%u mode=%d rel=%.2f pk150=%.2f rel/pk=%.2f relOffPk=%.1fdeg dtPk=%.0fms wRel=%.1f wPk=%.1f",
+				id, driverConfig.streamFrame.velocityFixMode, relSp, pkSp,
+				pkSp > 0.01 ? relSp / pkSp : 0.0, relOff, dtPkMs, wRel, wPk);
+		}
+	}
 	// release latch trigger: arm the peak replay for this device the moment
 	// the input tap reports the release. identity resolved ABOVE, outside
 	// any lock; deriveFilterLock taken alone here (leaf, never nested)
@@ -674,10 +738,21 @@ void CustomHeadsetDeviceProvider::AnchorReleaseGesture(uint32_t openVRID){
 // exp(-dt/tau)): pure CA at tau -> inf; the decay is what bounds phantom
 // integration across dup coasts and abrupt stops. covariance layout:
 // [P00 P01 P02 P11 P12 P22] (symmetric upper triangle).
-static void CaStatePredict(double dt, double beta, double &p, double &v, double &a){
-	p += v * dt + 0.5 * a * dt * dt;
-	v += a * dt;
-	a *= beta;
+static void CaStatePredict(double dt, double tau, double &p, double &v, double &a){
+	// exact Singer discretization: the acceleration decays DURING the
+	// interval, so position/velocity integrate its true average
+	// a * (tau/dt)(1 - e^(-dt/tau)) rather than the full initial value.
+	// for dt << tau this matches the naive form; for the long-dt case
+	// (a gap of missed samples resuming with a hot accel state) the
+	// naive form applies the whole stale acceleration across the whole
+	// gap and can overshoot position by a meter — the field-observed
+	// "hand sits wrong for a moment after a throw" transient.
+	if(dt <= 0){ return; }
+	double e = exp(-dt / tau);
+	double aAvg = a * (tau / dt) * (1.0 - e);
+	p += v * dt + 0.5 * aAvg * dt * dt;
+	v += aAvg * dt;
+	a *= e;
 }
 static void CaCovPredict(double dt, double sigmaJ, double beta, double P[6]){
 	double q = sigmaJ * sigmaJ;
@@ -908,7 +983,11 @@ bool CustomHeadsetDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 				Ra = ro * ro;
 			}
 			double caJ = driverConfig.streamFrame.kalmanCaJerk;
-			if(caJ < 10.0){ caJ = 10.0; }
+			// floor lowered 10 -> 1 after the first field session pinned
+			// J at the old clamp: at low jerk the CA filter degrades
+			// gracefully into "very smooth CV + slow accel tracker",
+			// which is a legitimate corner of the tuning space
+			if(caJ < 1.0){ caJ = 1.0; }
 			if(caJ > 50000.0){ caJ = 50000.0; }
 			double caJA = driverConfig.streamFrame.kalmanCaAngJerk;
 			if(caJA < 50.0){ caJA = 50.0; }
@@ -917,7 +996,7 @@ bool CustomHeadsetDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 			if(caTau < 0.02){ caTau = 0.02; }
 			if(caTau > 10.0){ caTau = 10.0; }
 			double caMagJ = driverConfig.streamFrame.kalmanCaMagJerk;
-			if(caMagJ < 10.0){ caMagJ = 10.0; }
+			if(caMagJ < 1.0){ caMagJ = 1.0; }
 			if(caMagJ > 50000.0){ caMagJ = 50000.0; }
 			double caMagTau = driverConfig.streamFrame.kalmanCaMagAccelTauMs / 1000.0;
 			if(caMagTau < 0.02){ caMagTau = 0.02; }
@@ -1023,6 +1102,19 @@ bool CustomHeadsetDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 						ks.dupSkipped++;
 						double cMs = coastLen * 1000.0;
 						if(cMs > ks.coastMaxMs){ ks.coastMaxMs = cMs; }
+					}else if(caM || caFull){
+						// a repeat sustained past the cap IS stillness by
+						// this gate's own definition — so the CA accel
+						// states go to zero with it. a live acceleration
+						// here is exactly the phantom that keeps fighting
+						// the stale position through the post-throw repeat
+						// runs (field: hand parked off-position for a
+						// beat after hard throws).
+						for(int zi = 0; zi < 3; zi++){
+							ks.ca[zi] = 0;
+							ks.caF[zi] = 0;
+							ks.caW[zi] = 0;
+						}
 					}
 				}
 			}
@@ -1129,7 +1221,7 @@ bool CustomHeadsetDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 					double caMagBetaC = exp(-dt / caMagTau);
 					for(int a2 = 0; a2 < 3; a2++){
 						if(caFull){
-							CaStatePredict(dt, caBetaC, ks.p[a2], ks.v[a2], ks.ca[a2]);
+							CaStatePredict(dt, caTau, ks.p[a2], ks.v[a2], ks.ca[a2]);
 							CaCovPredict(dt, caJ, caBetaC, ks.P6[a2]);
 						}else{
 							ks.p[a2] += ks.v[a2] * dt;
@@ -1138,7 +1230,7 @@ bool CustomHeadsetDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 							ks.P[a2][2] += qa * qa * dt2;
 						}
 						if(ks.haveFast && caM){
-							CaStatePredict(dt, caMagBetaC, ks.pF[a2], ks.vF[a2], ks.caF[a2]);
+							CaStatePredict(dt, caMagTau, ks.pF[a2], ks.vF[a2], ks.caF[a2]);
 							CaCovPredict(dt, caMagJ, caMagBetaC, ks.PF6[a2]);
 						}else if(ks.haveFast){
 							ks.pF[a2] += ks.vF[a2] * dt;
@@ -1156,11 +1248,12 @@ bool CustomHeadsetDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 					vr::HmdQuaternion_t dqc = {1.0, ks.w[0] * halfDtC, ks.w[1] * halfDtC, ks.w[2] * halfDtC};
 					if(caFull){
 						double caBetaCq = exp(-dt / caTau);
-						dqc.x = (ks.w[0] + 0.5 * ks.caW[0] * dt) * halfDtC;
-						dqc.y = (ks.w[1] + 0.5 * ks.caW[1] * dt) * halfDtC;
-						dqc.z = (ks.w[2] + 0.5 * ks.caW[2] * dt) * halfDtC;
+						double aAvgFacC = (caTau / dt) * (1.0 - caBetaCq);
+						dqc.x = (ks.w[0] + 0.5 * ks.caW[0] * aAvgFacC * dt) * halfDtC;
+						dqc.y = (ks.w[1] + 0.5 * ks.caW[1] * aAvgFacC * dt) * halfDtC;
+						dqc.z = (ks.w[2] + 0.5 * ks.caW[2] * aAvgFacC * dt) * halfDtC;
 						for(int a2 = 0; a2 < 3; a2++){
-							ks.w[a2] += ks.caW[a2] * dt;
+							ks.w[a2] += ks.caW[a2] * aAvgFacC * dt;
 							ks.caW[a2] *= caBetaCq;
 							CaCovPredict(dt, caJA, caBetaCq, ks.Pa6[a2]);
 						}
@@ -1177,7 +1270,7 @@ bool CustomHeadsetDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 				double nisAccum = 0;
 				if(caFull){
 					for(int a2 = 0; a2 < 3; a2++){
-						CaStatePredict(dt, caBeta, ks.p[a2], ks.v[a2], ks.ca[a2]);
+						CaStatePredict(dt, caTau, ks.p[a2], ks.v[a2], ks.ca[a2]);
 						CaCovPredict(dt, caJ, caBeta, ks.P6[a2]);
 						nisAccum += CaUpdate(pose.vecPosition[a2] - ks.p[a2], R,
 							ks.p[a2], ks.v[a2], ks.ca[a2], ks.P6[a2]);
@@ -1255,7 +1348,7 @@ bool CustomHeadsetDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 						}
 					}else{
 						for(int a2 = 0; a2 < 3; a2++){
-							CaStatePredict(dt, caMagBeta, ks.pF[a2], ks.vF[a2], ks.caF[a2]);
+							CaStatePredict(dt, caMagTau, ks.pF[a2], ks.vF[a2], ks.caF[a2]);
 							CaCovPredict(dt, caMagJ, caMagBeta, ks.PF6[a2]);
 							CaUpdate(pose.vecPosition[a2] - ks.pF[a2], R,
 								ks.pF[a2], ks.vF[a2], ks.caF[a2], ks.PF6[a2]);
@@ -1298,11 +1391,14 @@ bool CustomHeadsetDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 				double halfDt = 0.5 * dt;
 				vr::HmdQuaternion_t dq = {1.0, ks.w[0] * halfDt, ks.w[1] * halfDt, ks.w[2] * halfDt};
 				if(caFull){
-					dq.x = (ks.w[0] + 0.5 * ks.caW[0] * dt) * halfDt;
-					dq.y = (ks.w[1] + 0.5 * ks.caW[1] * dt) * halfDt;
-					dq.z = (ks.w[2] + 0.5 * ks.caW[2] * dt) * halfDt;
+					// exact Singer average for the angular accel too:
+					// bounds the same long-gap overshoot on orientation
+					double aAvgFacA = (caTau / dt) * (1.0 - caBeta);
+					dq.x = (ks.w[0] + 0.5 * ks.caW[0] * aAvgFacA * dt) * halfDt;
+					dq.y = (ks.w[1] + 0.5 * ks.caW[1] * aAvgFacA * dt) * halfDt;
+					dq.z = (ks.w[2] + 0.5 * ks.caW[2] * aAvgFacA * dt) * halfDt;
 					for(int a2 = 0; a2 < 3; a2++){
-						ks.w[a2] += ks.caW[a2] * dt;
+						ks.w[a2] += ks.caW[a2] * aAvgFacA * dt;
 						ks.caW[a2] *= caBeta;
 						CaCovPredict(dt, caJA, caBeta, ks.Pa6[a2]);
 					}

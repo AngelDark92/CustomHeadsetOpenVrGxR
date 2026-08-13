@@ -248,6 +248,15 @@ struct StreamFrameConfig{
 		bool shadowLift = false;
 		double floorCode = 2.0;
 		double kneeCode = 8.0;
+		// adjustable black point (field session 2): remap [bp, 255] ->
+		// [0, 255] in sRGB code space. the calibration recipe: ramp bar
+		// on, raise bp until the two darkest patches just merge, then
+		// back off one notch — maximum contrast the chain can carry
+		// without crushing real shadow detail. this supersedes
+		// rangeMode "expand" for taste-darkening: expand is a fixed
+		// 16-code chop (measured crushing ~15 of 17 ramp patches);
+		// the black point is the same operation with a chosen pivot.
+		double blackPointCode = 0.0;
 	};
 	BlackFloorConfig blackFloor = {};
 	StreamFrameDimmingConfig stationaryDimming = {};
@@ -698,12 +707,20 @@ struct StreamFrameConfig{
 	// process accel. the acceleration state decays toward zero with
 	// tau (Singer model), bounding phantom integration across dup
 	// coasts and stops; tau -> inf recovers pure CA for A/B honesty.
-	// CA-full responsiveness (linear jerk, angular jerk)
-	double kalmanCaJerk = 800.0;
-	double kalmanCaAngJerk = 4000.0;
+	// CA-full responsiveness (linear jerk, angular jerk). field-derived
+	// defaults (sessions 1-4, 2026-08-13): RELDIAG showed the release
+	// instant reads the post-peak downslope, so low jerk — whose decel
+	// lag acts as an accidental peak hold — beats high jerk at the only
+	// instant the game samples (J=10: rel/pk 1.00, relOff 0deg median;
+	// J=51: rel/pk down to 0.72, relOff 8deg median).
+	double kalmanCaJerk = 10.0;
+	double kalmanCaAngJerk = 1500.0;
 	// CA-full measurement noise, separate from the CV knobs so tuning
-	// one mode never disturbs the other's field-proven values
-	double kalmanCaPosNoiseMm = 2.7;
+	// one mode never disturbs the other's field-proven values.
+	// field-derived: 5.7mm deliberately overstates the sensor (NIS
+	// ~0.02) — it is the smoothness dial of this mode, and P=3 was
+	// measured pathological (7/22 throws >30deg off).
+	double kalmanCaPosNoiseMm = 5.7;
 	double kalmanCaOriNoiseDeg = 1.25;
 	// shared acceleration decay time constant (CA-full, both channels)
 	double kalmanCaAccelTauMs = 150.0;
