@@ -120,7 +120,7 @@ cbuffer Params : register(b0){
 	float4 colorMultiplier;
 	float4 matR; float4 matG; float4 matB;
 	float lutRowBase; float lutRowCount; float perAxisEnable; float dimAmount;
-	float manualSrgb; float ditherLsb; float pad0; float pad1;
+	float manualSrgb; float ditherLsb; float vibrance; float pad1;
 	float gazeU; float gazeV; float gazeRing; float debugGrid;
 	float projL; float projR; float projT; float projB;
 	float gridSpacingRad; float dotU; float dotV; float dotMode;
@@ -199,7 +199,9 @@ struct FrameProcessorConstants{
 	float colorMultiplier[4];
 	float matR[4]; float matG[4]; float matB[4];
 	float lutRowBase; float lutRowCountF; float perAxisEnable; float dimAmount;
-	float manualSrgb; float ditherLsb; float pad0; float pad1;
+	// vibrance promoted from pad0 (cbuffer size and every prior offset
+	// unchanged): -1..1, 0 = off, saturation weighted by (1 - hsv sat)
+	float manualSrgb; float ditherLsb; float vibrance; float pad1;
 	float gazeU; float gazeV; float gazeRing; float pad2;
 	float projL; float projR; float projT; float projB;
 	float gridSpacingRad; float dotU; float dotV; float dotMode;
@@ -1173,6 +1175,12 @@ bool FrameProcessor::ProcessEye(ID3D11Texture2D* texture, const vr::VRTextureBou
 	}
 	FrameProcessorConstants constants = {};
 	constants.saturation = (float)(config.saturation / 50.0);
+	// -100..100 config -> -1..1, clamped so a hand-edited settings.json
+	// cannot push the lerp into wild extrapolation
+	double vib = config.vibrance / 100.0;
+	if(vib < -1.0){ vib = -1.0; }
+	if(vib > 1.0){ vib = 1.0; }
+	constants.vibrance = (float)vib;
 	constants.applyColor = settings.applyColor ? 1.0f : 0.0f;
 	// contrast precomputed like the compositor shader: col * mult + offset
 	double contrastMult = config.contrast / 50.0;

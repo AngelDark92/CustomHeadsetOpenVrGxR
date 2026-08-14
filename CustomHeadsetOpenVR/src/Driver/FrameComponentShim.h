@@ -53,6 +53,9 @@ private:
 	bool GetActiveSettings(FrameProcessSettings &settings, bool &processAtSubmit);
 	// gaze prediction state (recent gaze angular motion, EMA smoothed)
 	bool gazePrevValid = false;
+	// one-shot projection tangent log flags (per eye), for the camera
+	// distortion fit workflow (tools/gxr_distortion_fit.py)
+	bool projLogged[2] = {false, false};
 	double gazePrevDir[3] = {0, 0, -1};
 	double gazePrevTime = 0;
 	double gazeVelEma[3] = {0, 0, 0};

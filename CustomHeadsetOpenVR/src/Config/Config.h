@@ -194,6 +194,12 @@ struct StreamFrameConfig{
 	bool enable = false;
 	// saturation with 50 being normal, same semantics as customShader.saturation
 	double saturation = 50;
+	// vibrance from -100 to 100 with 0 being off: saturation change weighted
+	// toward the least saturated pixels (positive enriches muted colors while
+	// leaving already vivid ones nearly untouched, so it clips much later than
+	// raw saturation; negative pushes muted colors toward gray while vivid
+	// accents survive). applied after saturation, stacks with it.
+	double vibrance = 0;
 	// contrast with 50 being normal, same semantics as customShader.contrast
 	double contrast = 50;
 	// the point from 0-100% of white that the contrast is centered around
@@ -816,6 +822,15 @@ struct StreamFrameConfig{
 	// latency — but it doubles prediction overshoot risk, hence its own
 	// toggle, off for the first clean A/B.
 	bool kalmanCaReportAccel = false;
+	// A/B experiment: propagate the CA covariance with the SAME Singer
+	// transition the state actually uses (F12 = tau(1-e^(-dt/tau)) instead
+	// of dt, F02 = dt*F12/2 instead of dt^2/2). the legacy covariance
+	// (this knob off) uses the naive CA transition, which at tau near the
+	// 20ms floor over-weights measurements by up to ~25% relative to the
+	// model — consistent gains recalibrate NIS and shift the effective
+	// meaning of the tuned J/P/O knobs slightly. off = bit-identical to
+	// the field-tuned 8.5 behavior.
+	bool kalmanCaExactCov = false;
 	// ==== grip-point velocity compensator ====
 	// the estimator honestly reports the TRACKED ORIGIN's velocity; during
 	// a wrist snap that includes the origin's tangential velocity w x r

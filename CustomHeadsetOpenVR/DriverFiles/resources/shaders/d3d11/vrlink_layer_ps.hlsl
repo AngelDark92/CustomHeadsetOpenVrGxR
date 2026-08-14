@@ -42,7 +42,7 @@ cbuffer Params : register(b0){
 	float manualSrgb;      // 1 = views are not srgb typed (e.g. 10 bit layers):
 	                       // decode after sampling, re-encode before output
 	float ditherLsb;       // quantization steps of the output encode (255 or 1023)
-	float pad0;
+	float vibrance;        // -1..1, 0 = off (promoted from pad0, offsets unchanged)
 	float pad1;
 	float gazeU;           // mapped gaze point for THIS eye, output uv space
 	float gazeV;
@@ -262,6 +262,21 @@ float4 main(float4 pos : SV_Position, float2 uv : TEXCOORD0) : SV_Target0{
 		}
 		float gray = dot(color.rgb, float3(0.299, 0.587, 0.114));
 		color.rgb = lerp(gray.xxx, color.rgb, saturation);
+		// vibrance: saturation change weighted toward the LEAST saturated
+		// pixels. positive enriches muted colors while already vivid ones
+		// (HSV sat ~ 1) are nearly untouched — clips far later than raw
+		// saturation. negative pushes muted colors toward gray while vivid
+		// accents survive. the (mx-mn)/mx mask is scale invariant, so
+		// evaluating it on linear values only softens the mask curve vs a
+		// gamma space evaluation; the op itself matches the saturation
+		// lerp above and stacks with it.
+		if(abs(vibrance) > 0.001){
+			float vmx = max(color.r, max(color.g, color.b));
+			float vmn = min(color.r, min(color.g, color.b));
+			float vsat = saturate((vmx - vmn) / max(vmx, 0.0001));
+			float vgray = dot(color.rgb, float3(0.299, 0.587, 0.114));
+			color.rgb = lerp(vgray.xxx, color.rgb, 1.0 + vibrance * (1.0 - vsat));
+		}
 		color.rgb *= colorMultiplier.rgb;
 		if(contrastLinear > 0.5){
 			color.rgb = color.rgb * contrastMult + contrastOffset;

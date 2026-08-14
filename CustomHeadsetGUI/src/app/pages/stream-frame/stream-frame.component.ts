@@ -18,6 +18,7 @@ function defaultStreamFrame(): StreamFrameConfig {
   return {
     enable: false,
     saturation: 50,
+    vibrance: 0,
     contrast: 50,
     contrastMidpoint: 50,
     contrastLinear: false,
@@ -119,6 +120,7 @@ function defaultStreamFrame(): StreamFrameConfig {
     kalmanCaMagJerk: 800,
     kalmanCaMagAccelTauMs: 150,
     kalmanCaReportAccel: false,
+    kalmanCaExactCov: false,
     kalmanGripEnable: false,
     kalmanGripBlend: 1,
     kalmanGripLeftCm: { x: 0, y: 0, z: 0 },

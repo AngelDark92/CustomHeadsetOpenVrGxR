@@ -107,6 +107,7 @@ export type StreamFrameDimmingConfig = {
 export type StreamFrameConfig = {
   enable: boolean;
   saturation: number;
+  vibrance: number;
   contrast: number;
   contrastMidpoint: number;
   contrastLinear: boolean;
@@ -196,6 +197,7 @@ export type StreamFrameConfig = {
   kalmanCaMagJerk: number;
   kalmanCaMagAccelTauMs: number;
   kalmanCaReportAccel: boolean;
+  kalmanCaExactCov: boolean;
   kalmanGripEnable: boolean;
   kalmanGripBlend: number;
   kalmanGripLeftCm: { x: number, y: number, z: number };

@@ -47,6 +47,20 @@
 
 <div class="field">
     <div class="title">
+        <span>Vibrance</span>
+        <app-field-tip info="Smart saturation: changes muted colors the most and already vivid colors the least. Positive enriches dull colors with far less clipping and skin tone blowout than raw saturation; negative fades muted colors toward gray while vivid accents remain. 0 is off, stacks with Saturation." />
+        <app-reset-button [canReset]="settings.vibrance != defaults.vibrance" (resetClick)="reset('vibrance')"></app-reset-button>
+    </div>
+    <div class="control">
+        <input matInput [(ngModel)]="settings.vibrance" step="1" (ngModelChange)="save()" type="number">
+        <mat-slider max="100" min="-100" step="1">
+            <input matSliderThumb [(ngModel)]="settings.vibrance" (ngModelChange)="save()">
+        </mat-slider>
+    </div>
+</div>
+
+<div class="field">
+    <div class="title">
         <span>Contrast</span>
         <app-field-tip info="Contrast around the midpoint. 50 is neutral." />
         <app-reset-button [canReset]="settings.contrast != defaults.contrast" (resetClick)="reset('contrast')"></app-reset-button>
@@ -672,6 +686,19 @@
     <div class="control">
         <span>&tau;</span><input matInput [(ngModel)]="settings.kalmanCaAccelTauMs" step="25" min="20" max="10000" (ngModelChange)="save()" type="number">
         <mat-slide-toggle [(ngModel)]="settings.kalmanCaReportAccel" (ngModelChange)="save()"></mat-slide-toggle>
+    </div>
+</div>
+}
+
+@if(settings.velocityFixMode == 'kalmanCA' || settings.velocityFixMode == 'kalmanCAM'){
+<div class="field">
+    <div class="title">
+        <span>Exact Covariance Transition (A/B)</span>
+        <app-field-tip info="Experiment: propagate the filter's uncertainty with the same Singer transition the state prediction actually uses, instead of the simpler approximation. Makes the filter's self-model consistent, which matters most at low Accel Decay tau values (in CA-Magnitude mode it applies to the fast magnitude channel). Changes effective gains slightly, so NIS and the J/P/O tuning shift a little; off reproduces the previously tuned behavior exactly." />
+        <app-reset-button [canReset]="settings.kalmanCaExactCov != defaults.kalmanCaExactCov" (resetClick)="reset('kalmanCaExactCov')"></app-reset-button>
+    </div>
+    <div class="control">
+        <mat-slide-toggle [(ngModel)]="settings.kalmanCaExactCov" (ngModelChange)="save()"></mat-slide-toggle>
     </div>
 </div>
 }

@@ -1589,6 +1589,15 @@ bool DirectModeComponentShim::GetActiveSettings(FrameProcessSettings &settings, 
 			settings.gazeProjValid = true;
 			settings.gazeProj[e][0] = l; settings.gazeProj[e][1] = r;
 			settings.gazeProj[e][2] = t; settings.gazeProj[e][3] = b;
+			// one-shot: the camera distortion fit script
+			// (tools/gxr_distortion_fit.py) needs these exact tangents;
+			// logging them here means the calibration guide is just
+			// "copy this line from vrserver.txt"
+			if(!projLogged[e]){
+				projLogged[e] = true;
+				DriverLog("FrameProcessor: proj eye=%d l=%.6f r=%.6f t=%.6f b=%.6f",
+					e, l, r, t, b);
+			}
 		}
 	}
 	{

@@ -331,6 +331,9 @@ void ConfigLoader::ParseConfig(){
 			if(streamFrameData["saturation"].is_number()){
 				newConfig.streamFrame.saturation = streamFrameData["saturation"].get<double>();
 			}
+			if(streamFrameData["vibrance"].is_number()){
+				newConfig.streamFrame.vibrance = streamFrameData["vibrance"].get<double>();
+			}
 			if(streamFrameData["contrast"].is_number()){
 				newConfig.streamFrame.contrast = streamFrameData["contrast"].get<double>();
 			}
@@ -825,6 +828,9 @@ void ConfigLoader::ParseConfig(){
 			if(streamFrameData["kalmanCaReportAccel"].is_boolean()){
 				newConfig.streamFrame.kalmanCaReportAccel = streamFrameData["kalmanCaReportAccel"].get<bool>();
 			}
+			if(streamFrameData["kalmanCaExactCov"].is_boolean()){
+				newConfig.streamFrame.kalmanCaExactCov = streamFrameData["kalmanCaExactCov"].get<bool>();
+			}
 			if(streamFrameData["kalmanGripEnable"].is_boolean()){
 				newConfig.streamFrame.kalmanGripEnable = streamFrameData["kalmanGripEnable"].get<bool>();
 			}
@@ -1194,6 +1200,7 @@ void ConfigLoader::WriteInfo(){
 			{"streamFrame", {
 				{"enable", defaultSettings.streamFrame.enable},
 				{"saturation", defaultSettings.streamFrame.saturation},
+				{"vibrance", defaultSettings.streamFrame.vibrance},
 				{"contrast", defaultSettings.streamFrame.contrast},
 				{"contrastMidpoint", defaultSettings.streamFrame.contrastMidpoint},
 				{"contrastLinear", defaultSettings.streamFrame.contrastLinear},
@@ -1363,6 +1370,7 @@ void ConfigLoader::WriteInfo(){
 				{"kalmanCaMagJerk", defaultSettings.streamFrame.kalmanCaMagJerk},
 				{"kalmanCaMagAccelTauMs", defaultSettings.streamFrame.kalmanCaMagAccelTauMs},
 				{"kalmanCaReportAccel", defaultSettings.streamFrame.kalmanCaReportAccel},
+				{"kalmanCaExactCov", defaultSettings.streamFrame.kalmanCaExactCov},
 				{"kalmanGripEnable", defaultSettings.streamFrame.kalmanGripEnable},
 				{"kalmanGripBlend", defaultSettings.streamFrame.kalmanGripBlend},
 				{"kalmanGripLeftCm", {
