@@ -310,6 +310,7 @@ void DirectModeComponentShim::UpdateInteractiveModes(FrameProcessSettings &setti
 	if(aligner.active){
 		aligner.active = false;
 		deviceProvider.SetAlignerOffsets(false, aligner.rotDeg, aligner.posCm);
+		deviceProvider.SetAlignerGrip(false, aligner.gripCm);
 		DriverLog("Aligner: disabled (configured offsets apply again; unsaved edits dropped)");
 	}
 	if(centerOn){
@@ -529,15 +530,22 @@ void DirectModeComponentShim::UpdateAligner(FrameProcessSettings &settings){
 	if(!aligner.active){
 		aligner.active = true;
 		ControllersConfig controllers;
+		double gripL[3], gripR[3];
 		{
 			std::lock_guard<std::mutex> configGuard(driverConfigLock);
 			controllers = driverConfig.controllers;
+			for(int i = 0; i < 3; i++){
+				gripL[i] = driverConfig.streamFrame.kalmanGripLeftCm[i];
+				gripR[i] = driverConfig.streamFrame.kalmanGripRightCm[i];
+			}
 		}
 		for(int i = 0; i < 3; i++){
 			aligner.rotDeg[i] = controllers.rotationOffsetDeg[i];
 			aligner.posCm[i] = controllers.positionOffsetCm[i];
 			aligner.initRot[i] = aligner.rotDeg[i];
 			aligner.initPos[i] = aligner.posCm[i];
+			aligner.gripCm[0][i] = gripL[i];
+			aligner.gripCm[1][i] = gripR[i];
 		}
 		aligner.hand = 1;
 		aligner.group = 0;
@@ -550,11 +558,15 @@ void DirectModeComponentShim::UpdateAligner(FrameProcessSettings &settings){
 		aligner.capturing = false;
 		aligner.sampleQ.clear();
 		aligner.sampleP.clear();
-		DriverLog("Aligner: ACTIVE rot=(%.1f, %.1f, %.1f)deg pos=(%.2f, %.2f, %.2f)cm. "
-			"Controls: X = hand, Y = position/rotation, A/B = axis, stick = adjust, "
-			"TRIGGER HELD + tip planted + swirl = auto position solve, hold grip 1.5s = save",
+		DriverLog("Aligner: ACTIVE rot=(%.1f, %.1f, %.1f)deg pos=(%.2f, %.2f, %.2f)cm "
+			"gripL=(%.2f, %.2f, %.2f)cm gripR=(%.2f, %.2f, %.2f)cm. "
+			"Controls: X = hand, Y = position/rotation/GRIP, A/B = axis, stick = adjust, "
+			"TRIGGER HELD + swirl = auto solve (pos: tip planted on a surface; "
+			"grip: palm held still, pure wrist swirl), hold grip 1.5s = save",
 			aligner.rotDeg[0], aligner.rotDeg[1], aligner.rotDeg[2],
-			aligner.posCm[0], aligner.posCm[1], aligner.posCm[2]);
+			aligner.posCm[0], aligner.posCm[1], aligner.posCm[2],
+			aligner.gripCm[0][0], aligner.gripCm[0][1], aligner.gripCm[0][2],
+			aligner.gripCm[1][0], aligner.gripCm[1][1], aligner.gripCm[1][2]);
 		CustomHeadsetDeviceProvider::AlignControllerState stateL, stateR;
 		deviceProvider.GetAlignController(0, stateL);
 		deviceProvider.GetAlignController(1, stateR);
@@ -574,21 +586,24 @@ void DirectModeComponentShim::UpdateAligner(FrameProcessSettings &settings){
 		return rising;
 	};
 	static const char* axisNames[3] = {"x", "y", "z"};
+	auto groupName = [](int group){
+		return group == 0 ? "POSITION (cm)" : (group == 1 ? "ROTATION (deg)" : "GRIP r (cm, per hand)");
+	};
 	if(edge(in.eyeToggle, aligner.prevHandToggle)){
 		aligner.hand = 1 - aligner.hand;
 		DriverLog("Aligner: %s controller selected", aligner.hand == 0 ? "LEFT" : "RIGHT");
 	}
 	if(edge(in.resetBand, aligner.prevGroupToggle)){
-		aligner.group = 1 - aligner.group;
-		DriverLog("Aligner: adjusting %s, axis %s", aligner.group == 0 ? "POSITION (cm)" : "ROTATION (deg)", axisNames[aligner.axis]);
+		aligner.group = (aligner.group + 1) % 3;
+		DriverLog("Aligner: adjusting %s, axis %s", groupName(aligner.group), axisNames[aligner.axis]);
 	}
 	if(edge(in.bandOut, aligner.prevAxisUp)){
 		aligner.axis = (aligner.axis + 1) % 3;
-		DriverLog("Aligner: axis %s (%s)", axisNames[aligner.axis], aligner.group == 0 ? "position" : "rotation");
+		DriverLog("Aligner: axis %s (%s)", axisNames[aligner.axis], groupName(aligner.group));
 	}
 	if(edge(in.bandIn, aligner.prevAxisDown)){
 		aligner.axis = (aligner.axis + 2) % 3;
-		DriverLog("Aligner: axis %s (%s)", axisNames[aligner.axis], aligner.group == 0 ? "position" : "rotation");
+		DriverLog("Aligner: axis %s (%s)", axisNames[aligner.axis], groupName(aligner.group));
 	}
 	// stick Y adjusts the selected axis: position 2 cm/s, rotation 10 deg/s
 	// at full deflection, squared response
@@ -597,18 +612,26 @@ void DirectModeComponentShim::UpdateAligner(FrameProcessSettings &settings){
 	if(magnitude > deadzone && dt > 0){
 		double normalized = (magnitude - deadzone) / (1.0 - deadzone);
 		if(normalized > 1.0){ normalized = 1.0; }
-		double rate = aligner.group == 0 ? 2.0 : 10.0;
+		double rate = aligner.group == 1 ? 10.0 : 2.0;
 		double delta = (in.stickY > 0 ? 1.0 : -1.0) * normalized * normalized * rate * dt;
-		double* target = aligner.group == 0 ? aligner.posCm : aligner.rotDeg;
+		double* target = aligner.group == 0 ? aligner.posCm
+			: (aligner.group == 1 ? aligner.rotDeg : aligner.gripCm[aligner.hand]);
 		target[aligner.axis] += delta;
-		double limit = aligner.group == 0 ? 20.0 : 90.0;
+		double limit = aligner.group == 1 ? 90.0 : 20.0;
 		if(target[aligner.axis] < -limit){ target[aligner.axis] = -limit; }
 		if(target[aligner.axis] > limit){ target[aligner.axis] = limit; }
 		if(now - aligner.lastLogTime > 0.3){
 			aligner.lastLogTime = now;
-			DriverLog("Aligner: rot=(%.1f, %.1f, %.1f)deg pos=(%.2f, %.2f, %.2f)cm",
-				aligner.rotDeg[0], aligner.rotDeg[1], aligner.rotDeg[2],
-				aligner.posCm[0], aligner.posCm[1], aligner.posCm[2]);
+			if(aligner.group == 2){
+				DriverLog("Aligner: grip %s r=(%.2f, %.2f, %.2f)cm",
+					aligner.hand == 0 ? "LEFT" : "RIGHT",
+					aligner.gripCm[aligner.hand][0], aligner.gripCm[aligner.hand][1],
+					aligner.gripCm[aligner.hand][2]);
+			}else{
+				DriverLog("Aligner: rot=(%.1f, %.1f, %.1f)deg pos=(%.2f, %.2f, %.2f)cm",
+					aligner.rotDeg[0], aligner.rotDeg[1], aligner.rotDeg[2],
+					aligner.posCm[0], aligner.posCm[1], aligner.posCm[2]);
+			}
 		}
 	}
 	// pivot capture on the trigger
@@ -620,8 +643,13 @@ void DirectModeComponentShim::UpdateAligner(FrameProcessSettings &settings){
 			aligner.capturing = true;
 			aligner.sampleQ.clear();
 			aligner.sampleP.clear();
-			DriverLog("Aligner: pivot capture STARTED (%s hand) - keep the tip planted, swirl a wide slow cone",
-				aligner.hand == 0 ? "left" : "right");
+			if(aligner.group == 2){
+				DriverLog("Aligner: GRIP capture STARTED (%s hand) - brace the forearm on an armrest or grip your wrist with the other hand, then swirl a wide slow cone with the controller (pure wrist rotation, no arm travel). hold ~4s",
+					aligner.hand == 0 ? "left" : "right");
+			}else{
+				DriverLog("Aligner: pivot capture STARTED (%s hand) - keep the tip planted, swirl a wide slow cone",
+					aligner.hand == 0 ? "left" : "right");
+			}
 		}
 		if(poseFresh && now - aligner.lastSampleTime > 0.02 && aligner.sampleQ.size() < 4 * 600){
 			aligner.lastSampleTime = now;
@@ -650,9 +678,120 @@ void DirectModeComponentShim::UpdateAligner(FrameProcessSettings &settings){
 				if(angle > maxSpreadDeg){ maxSpreadDeg = angle; }
 			}
 		}
+		// residual gate for the TIP solve (desk-planted, near rigid). the
+		// grip solve no longer uses a whole-capture gate: field 2026-08-14
+		// showed a free-space "hold the palm still" gesture fails a global
+		// solve at 34mm residual — the wrist center DRIFTS slowly (arm sway,
+		// carpal translation) even when deliberately held. drift is slow,
+		// so short windows are still locally rigid: solve per-window and
+		// take the median r. each window gets its own world pivot c, so
+		// inter-window drift costs nothing.
+		bool gripSolve = aligner.group == 2;
 		double pivot[3], residual;
 		if(count < 60){
 			DriverLog("Aligner: pivot capture too short (%zu samples, need 60+ / ~2s) - discarded", count);
+		}else if(gripSolve){
+			const size_t win = 40;   // ~0.8s at capture cadence
+			const size_t stride = 20;
+			int tried = 0, accepted = 0;
+			double rAcc[64][3];
+			double worstRes = 0, bestRes = 1e9;
+			for(size_t start = 0; start + win <= count && accepted < 64; start += stride){
+				tried++;
+				std::vector<double> wq(aligner.sampleQ.begin() + start * 4,
+					aligner.sampleQ.begin() + (start + win) * 4);
+				std::vector<double> wp(aligner.sampleP.begin() + start * 3,
+					aligner.sampleP.begin() + (start + win) * 3);
+				// per-window spread: 8 deg (windows are short; the 12 deg
+				// whole-capture bar would reject honest slow swirls)
+				double spread = 0;
+				double w0 = wq[0], x0 = wq[1], y0 = wq[2], z0 = wq[3];
+				for(size_t s = 1; s < win; s++){
+					double dot = fabs(w0 * wq[s * 4] + x0 * wq[s * 4 + 1]
+						+ y0 * wq[s * 4 + 2] + z0 * wq[s * 4 + 3]);
+					if(dot > 1.0){ dot = 1.0; }
+					double ang = 2.0 * acos(dot) * 180.0 / 3.14159265358979;
+					if(ang > spread){ spread = ang; }
+				}
+				if(spread < 8.0){ continue; }
+				double wPivot[3], wRes;
+				if(!SolvePivot(wq, wp, wPivot, wRes)){ continue; }
+				if(wRes > 0.008){
+					if(wRes < bestRes){ bestRes = wRes; }
+					continue;
+				}
+				if(wRes < bestRes){ bestRes = wRes; }
+				if(wRes > worstRes){ worstRes = wRes; }
+				for(int i = 0; i < 3; i++){ rAcc[accepted][i] = wPivot[i]; }
+				accepted++;
+			}
+			double rSolved[3];
+			bool haveR = false;
+			const char* how = "";
+			if(accepted >= 3){
+				// per-component median (robust to a stray window)
+				for(int i = 0; i < 3; i++){
+					double vals[64];
+					for(int k = 0; k < accepted; k++){ vals[k] = rAcc[k][i]; }
+					for(int a = 1; a < accepted; a++){
+						double key = vals[a]; int b = a - 1;
+						while(b >= 0 && vals[b] > key){ vals[b + 1] = vals[b]; b--; }
+						vals[b + 1] = key;
+					}
+					rSolved[i] = (accepted & 1) ? vals[accepted / 2]
+						: 0.5 * (vals[accepted / 2 - 1] + vals[accepted / 2]);
+				}
+				// window consistency: rms deviation from the median. wide
+				// scatter = the windows saw different pivots = arm travel,
+				// not wrist rotation — the median would be meaningless
+				double devSum = 0;
+				for(int k = 0; k < accepted; k++){
+					for(int i = 0; i < 3; i++){
+						double d = rAcc[k][i] - rSolved[i];
+						devSum += d * d;
+					}
+				}
+				double scatter = sqrt(devSum / accepted);
+				if(scatter <= 0.015){
+					haveR = true;
+					how = "windowed";
+					residual = worstRes;
+					DriverLog("Aligner: grip windows %d/%d accepted, scatter %.1fmm, window residuals %.1f-%.1fmm",
+						accepted, tried, scatter * 1000.0, bestRes * 1000.0, worstRes * 1000.0);
+				}else{
+					DriverLog("Aligner: grip windows inconsistent (%d/%d accepted but r scatter %.1fmm > 15mm) - arm travelled during the swirl. brace the forearm and retry",
+						accepted, tried, scatter * 1000.0);
+				}
+			}else if(SolvePivot(aligner.sampleQ, aligner.sampleP, pivot, residual)
+					&& residual <= 0.015 && maxSpreadDeg >= 12.0){
+				// full-capture fallback: a genuinely still palm can pass
+				// the old gate outright even when windows were data-starved
+				for(int i = 0; i < 3; i++){ rSolved[i] = pivot[i]; }
+				haveR = true;
+				how = "full-capture";
+			}else{
+				DriverLog("Aligner: grip solve FAILED (%d/%d windows accepted, best window residual %.1fmm, spread %.0fdeg) - hold the wrist stiller: brace the forearm on an armrest or grip your wrist with the other hand",
+					accepted, tried, bestRes < 1e8 ? bestRes * 1000.0 : -1.0, maxSpreadDeg);
+			}
+			if(haveR){
+				double rCm[3];
+				double rMagCm = 0;
+				for(int i = 0; i < 3; i++){
+					rCm[i] = rSolved[i] * 100.0;
+					rMagCm += rCm[i] * rCm[i];
+				}
+				rMagCm = sqrt(rMagCm);
+				if(rMagCm > 20.0){
+					DriverLog("Aligner: grip solve REJECTED - |r|=%.1fcm implausible for origin->hand (arm travel leaked in?). solve logged only: r=(%.2f, %.2f, %.2f)cm",
+						rMagCm, rCm[0], rCm[1], rCm[2]);
+				}else{
+					for(int i = 0; i < 3; i++){ aligner.gripCm[aligner.hand][i] = rCm[i]; }
+					DriverLog("Aligner: GRIP SOLVED (%s hand, %s, %zu samples): r = (%.2f, %.2f, %.2f)cm |r|=%.1fcm - live now, hold grip 1.5s to save",
+						aligner.hand == 0 ? "left" : "right", how, count,
+						rCm[0], rCm[1], rCm[2], rMagCm);
+					DriverLog("Aligner: verify with PEAKDIAG flick unit test - a pure wrist snap should now log gOut near zero (shadow) and dirOff collapse when the compensator is enabled");
+				}
+			}
 		}else if(maxSpreadDeg < 12.0){
 			DriverLog("Aligner: swirl cone too narrow (%.0f deg spread, need 12+) - tilt the controller further around the planted tip and retry", maxSpreadDeg);
 		}else if(!SolvePivot(aligner.sampleQ, aligner.sampleP, pivot, residual)){
@@ -689,8 +828,10 @@ void DirectModeComponentShim::UpdateAligner(FrameProcessSettings &settings){
 	}else if(in.grip < 0.5){
 		aligner.gripWasHigh = false;
 	}
-	// push the working offsets into the pose path (live)
+	// push the working offsets into the pose path (live) - grip too, so a
+	// fresh solve is scoreable by the very next PEAKDIAG gesture
 	deviceProvider.SetAlignerOffsets(true, aligner.rotDeg, aligner.posCm);
+	deviceProvider.SetAlignerGrip(true, aligner.gripCm);
 	// tip marker for the selected hand, in head space (y up, -z forward)
 	if(poseFresh && controller.tipValid && headBasisValid){
 		double tipWorld[3];
@@ -710,10 +851,16 @@ void DirectModeComponentShim::UpdateAligner(FrameProcessSettings &settings){
 
 void DirectModeComponentShim::SaveControllerOffsets(){
 	using nlohmann::json;
-	json block = {{"controllers", {
-		{"rotationOffsetDeg", {{"x", aligner.rotDeg[0]}, {"y", aligner.rotDeg[1]}, {"z", aligner.rotDeg[2]}}},
-		{"positionOffsetCm", {{"x", aligner.posCm[0]}, {"y", aligner.posCm[1]}, {"z", aligner.posCm[2]}}},
-	}}};
+	json block = {
+		{"controllers", {
+			{"rotationOffsetDeg", {{"x", aligner.rotDeg[0]}, {"y", aligner.rotDeg[1]}, {"z", aligner.rotDeg[2]}}},
+			{"positionOffsetCm", {{"x", aligner.posCm[0]}, {"y", aligner.posCm[1]}, {"z", aligner.posCm[2]}}},
+		}},
+		{"streamFrame", {
+			{"kalmanGripLeftCm", {{"x", aligner.gripCm[0][0]}, {"y", aligner.gripCm[0][1]}, {"z", aligner.gripCm[0][2]}}},
+			{"kalmanGripRightCm", {{"x", aligner.gripCm[1][0]}, {"y", aligner.gripCm[1][1]}, {"z", aligner.gripCm[1][2]}}},
+		}},
+	};
 	char stamp[32];
 	time_t rawTime = time(nullptr);
 	struct tm timeInfo;

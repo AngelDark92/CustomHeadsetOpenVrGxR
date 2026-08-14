@@ -531,7 +531,7 @@ void CustomHeadsetDeviceProvider::LogReleaseSnapshot(vr::PropertyContainerHandle
 	if(driverConfig.streamFrame.velocityFixMode >= 4
 			&& driverConfig.streamFrame.poseLogging
 			&& IsStreamedController(id)){
-		double relSp = 0, pkSp = 0, relOff = 0, dtPkMs = 0;
+		double relSp = 0, pkSp = 0, relOff = 0, dtPkMs = 0, dtWPkMs = 0;
 		double wRel = 0, wPk = 0;
 		bool haveRel = false;
 		{
@@ -547,6 +547,7 @@ void CustomHeadsetDeviceProvider::LogReleaseSnapshot(vr::PropertyContainerHandle
 					+ krs.histW[newest][2]*krs.histW[newest][2]);
 				double pkV[3] = { relV[0], relV[1], relV[2] };
 				double tPk = tNow;
+				double tWPk = tNow;
 				for(int i = 0; i < krs.histCount; i++){
 					int idx = (krs.histHead - 1 - i + 2 * KalState::histSize) % KalState::histSize;
 					if(tNow - krs.histT[idx] > 0.15){ break; }
@@ -561,9 +562,10 @@ void CustomHeadsetDeviceProvider::LogReleaseSnapshot(vr::PropertyContainerHandle
 					double wsp = sqrt(krs.histW[idx][0]*krs.histW[idx][0]
 						+ krs.histW[idx][1]*krs.histW[idx][1]
 						+ krs.histW[idx][2]*krs.histW[idx][2]);
-					if(wsp > wPk){ wPk = wsp; }
+					if(wsp > wPk){ wPk = wsp; tWPk = krs.histT[idx]; }
 				}
 				dtPkMs = (tNow - tPk) * 1000.0;
+				dtWPkMs = (tWPk - tPk) * 1000.0;
 				double d = relV[0]*pkV[0] + relV[1]*pkV[1] + relV[2]*pkV[2];
 				if(relSp > 1e-3 && pkSp > 1e-3){
 					double c = d / (relSp * pkSp);
@@ -576,9 +578,9 @@ void CustomHeadsetDeviceProvider::LogReleaseSnapshot(vr::PropertyContainerHandle
 		}
 		// log outside the lock; bounded by the caller's 20Hz cap
 		if(haveRel){
-			DriverLog("PoseLog: RELDIAG id=%u mode=%d rel=%.2f pk150=%.2f rel/pk=%.2f relOffPk=%.1fdeg dtPk=%.0fms wRel=%.1f wPk=%.1f",
+			DriverLog("PoseLog: RELDIAG id=%u mode=%d rel=%.2f pk150=%.2f rel/pk=%.2f relOffPk=%.1fdeg dtPk=%.0fms dtWPk=%.0fms wRel=%.1f wPk=%.1f",
 				id, driverConfig.streamFrame.velocityFixMode, relSp, pkSp,
-				pkSp > 0.01 ? relSp / pkSp : 0.0, relOff, dtPkMs, wRel, wPk);
+				pkSp > 0.01 ? relSp / pkSp : 0.0, relOff, dtPkMs, dtWPkMs, wRel, wPk);
 		}
 	}
 	// release latch trigger: arm the peak replay for this device the moment
@@ -956,6 +958,43 @@ bool CustomHeadsetDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 						gazeFresh = true;
 					}
 				}
+			}
+			// grip-point compensator knob resolution, BEFORE the filter
+			// lock (openVRIDHand and the aligner grip override live under
+			// poseLogLock — never nested under deriveFilterLock). unknown
+			// hand = no compensation for that device, honestly.
+			bool gripEnable = driverConfig.streamFrame.kalmanGripEnable;
+			double gripBlend = driverConfig.streamFrame.kalmanGripBlend;
+			if(gripBlend < 0.0){ gripBlend = 0.0; }
+			if(gripBlend > 2.0){ gripBlend = 2.0; }
+			double gripLocal[3] = {0, 0, 0};
+			bool gripHave = false;
+			{
+				int gripHand = -1;
+				{
+					std::lock_guard<std::mutex> handGuard(poseLogLock);
+					auto handIt = openVRIDHand.find(openVRID);
+					if(handIt != openVRIDHand.end()){ gripHand = handIt->second; }
+					if(gripHand == 0 || gripHand == 1){
+						if(alignerGripActive.load(std::memory_order_relaxed)){
+							for(int i = 0; i < 3; i++){
+								gripLocal[i] = alignerGripCm[gripHand][i] / 100.0;
+							}
+						}else{
+							const double* cm = gripHand == 0
+								? driverConfig.streamFrame.kalmanGripLeftCm
+								: driverConfig.streamFrame.kalmanGripRightCm;
+							for(int i = 0; i < 3; i++){ gripLocal[i] = cm[i] / 100.0; }
+						}
+					}
+				}
+				double rMag = sqrt(gripLocal[0] * gripLocal[0]
+					+ gripLocal[1] * gripLocal[1] + gripLocal[2] * gripLocal[2]);
+				// 1mm floor: below it the compensation is numerically
+				// meaningless and the shadow instrumentation just repeats
+				// the main channel. 30cm cap: a wildly wrong r is worse
+				// than none (w=20 rad/s at 0.3m fabricates 6 m/s).
+				gripHave = rMag > 0.001 && rMag < 0.3;
 			}
 			double qa = driverConfig.streamFrame.kalmanProcessAccel;
 			if(qa < 1.0){ qa = 1.0; }
@@ -1445,13 +1484,47 @@ bool CustomHeadsetDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 				if(qn2 > 1e-9){ ks.q.w /= qn2; ks.q.x /= qn2; ks.q.y /= qn2; ks.q.z /= qn2; }
 				}
 			}
+			// grip-point velocity transport: the state's v is the TRACKED
+			// ORIGIN's velocity; the palm's is v + w x r with r the
+			// origin->grip vector rotated into world by the filtered q.
+			// rigid-body identity, so the same w serves every point — the
+			// angular channel is untouched. shadow-computed whenever r is
+			// set (PEAKDIAG scores it against the same secant, and the
+			// flick unit test is |vGrip| collapsing to ~0 on pure wrist
+			// snaps); REPORTED only when the enable knob is on. ks.v/ks.w
+			// are never written: the estimator keeps tracking the origin
+			// the measurements actually describe.
+			double vOutState[3] = { ks.v[0], ks.v[1], ks.v[2] };
+			ks.diagGripHave = gripHave;
+			ks.diagGripWr = 0;
+			if(gripHave){
+				double rWorld[3];
+				QuatRotateVector(ks.q, gripLocal, rWorld);
+				double wxr[3] = {
+					ks.w[1] * rWorld[2] - ks.w[2] * rWorld[1],
+					ks.w[2] * rWorld[0] - ks.w[0] * rWorld[2],
+					ks.w[0] * rWorld[1] - ks.w[1] * rWorld[0],
+				};
+				ks.diagGripWr = gripBlend * sqrt(wxr[0] * wxr[0] + wxr[1] * wxr[1] + wxr[2] * wxr[2]);
+				for(int a2 = 0; a2 < 3; a2++){
+					ks.diagGripV[a2] = ks.v[a2] + gripBlend * wxr[a2];
+				}
+				if(gripEnable){
+					// compensated velocity feeds the history ring too, so
+					// the rewind blend, the fixed-lag smoother and RELDIAG
+					// all see the channel the game sees
+					for(int a2 = 0; a2 < 3; a2++){ vOutState[a2] = ks.diagGripV[a2]; }
+				}
+			}else{
+				for(int a2 = 0; a2 < 3; a2++){ ks.diagGripV[a2] = ks.v[a2]; }
+			}
 			// report THE STATE, whole and self consistent (optional fixed
 			// forward lead, as native drivers use against transport lag)
 			// history push (cheap, always on: keeps the rewind warm so
 			// enabling the experiment mid-session works immediately)
 			ks.histT[ks.histHead] = now;
 			for(int a2 = 0; a2 < 3; a2++){
-				ks.histV[ks.histHead][a2] = ks.v[a2];
+				ks.histV[ks.histHead][a2] = vOutState[a2];
 				ks.histW[ks.histHead][a2] = ks.w[a2];
 				ks.histP[ks.histHead][a2] = ks.p[a2];
 			}
@@ -1464,7 +1537,7 @@ bool CustomHeadsetDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 			ks.diagMagSp = ks.haveFast
 				? sqrt(ks.vF[0] * ks.vF[0] + ks.vF[1] * ks.vF[1] + ks.vF[2] * ks.vF[2])
 				: ks.diagCalmSp;
-			double vRep[3] = { ks.v[0], ks.v[1], ks.v[2] };
+			double vRep[3] = { vOutState[0], vOutState[1], vOutState[2] };
 			double wRep[3] = { ks.w[0], ks.w[1], ks.w[2] };
 			double ksOutP[3] = {0, 0, 0};
 			vr::HmdQuaternion_t ksOutQ = {1, 0, 0, 0};
@@ -1725,10 +1798,17 @@ bool CustomHeadsetDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 					+ driverConfig.streamFrame.kalmanCaMagJerk * 1e-3
 					+ driverConfig.streamFrame.kalmanCaMagAccelTauMs * 1e-7
 					+ (driverConfig.streamFrame.kalmanCaReportAccel ? 0.1 : 0);
-				if(!ks.announced || ks.lastQa != sig || ks.lastCaSig != sigCa){
+				// grip sig: cm-scale terms would vanish below the CA sig's
+				// epsilon floor (~1e-2 next to its 1e13-scale terms)
+				double sigGrip = (gripEnable ? 1000.0 : 0.0) + gripBlend * 100.0
+					+ gripLocal[0] * 1.0 + gripLocal[1] * 7.0 + gripLocal[2] * 13.0
+					+ (gripHave ? 0.001 : 0.0);
+				if(!ks.announced || ks.lastQa != sig || ks.lastCaSig != sigCa
+						|| ks.lastGripSig != sigGrip){
 					ks.announced = true;
 					ks.lastQa = sig;
 					ks.lastCaSig = sigCa;
+					ks.lastGripSig = sigGrip;
 					announceKalman = true;
 				}
 			}
@@ -1806,6 +1886,16 @@ bool CustomHeadsetDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 					driverConfig.streamFrame.kalmanCaMagJerk,
 					driverConfig.streamFrame.kalmanCaMagAccelTauMs,
 					driverConfig.streamFrame.kalmanCaReportAccel ? 1 : 0);
+			}
+			if(gripHave || driverConfig.streamFrame.kalmanGripEnable){
+				DriverLog("VelocityFix: GRIP compensator id=%u %s blend=%.2f r=(%.2f, %.2f, %.2f)cm |r|=%.1fcm%s",
+					openVRID,
+					driverConfig.streamFrame.kalmanGripEnable ? "ENABLED" : "shadow-only",
+					gripBlend,
+					gripLocal[0] * 100.0, gripLocal[1] * 100.0, gripLocal[2] * 100.0,
+					sqrt(gripLocal[0] * gripLocal[0] + gripLocal[1] * gripLocal[1]
+						+ gripLocal[2] * gripLocal[2]) * 100.0,
+					gripHave ? "" : " [INERT: r outside 0.1-30cm or hand unknown]");
 			}
 			}
 			if(announceGaze){
@@ -2361,6 +2451,8 @@ bool CustomHeadsetDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 					+ secantAng[1] * secantAng[1] + secantAng[2] * secantAng[2]);
 				bool logPk = false;
 				double pkOut = 0, pkSec = 0, pkCalm = 0, pkMag = 0, pkDirOff = 0, pkAngOut = 0, pkAngSec = 0;
+				double pkGrip = 0, pkWr = 0, pkDirOffG = 0;
+				double pkLagLin = 0, pkLagAng = 0, pkDtW = 0;
 				{
 					std::lock_guard<std::mutex> pkGuard(deriveFilterLock);
 					KalState &pks = kalStates[openVRID];
@@ -2368,32 +2460,62 @@ bool CustomHeadsetDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 						pks.pkActive = true;
 						pks.pkOut = 0; pks.pkSec = 0; pks.pkCalm = 0; pks.pkMag = 0;
 						pks.pkAngOut = 0; pks.pkAngSec = 0;
-						for(int a2 = 0; a2 < 3; a2++){ pks.pkOutVec[a2] = 0; pks.pkSecVec[a2] = 0; }
+						pks.pkGrip = 0; pks.pkWr = 0;
+						pks.pkOutT = now; pks.pkSecT = now; pks.pkAngOutT = now; pks.pkAngSecT = now;
+						for(int a2 = 0; a2 < 3; a2++){ pks.pkOutVec[a2] = 0; pks.pkSecVec[a2] = 0; pks.pkGripVec[a2] = 0; }
 					}
 					if(pks.pkActive){
 						if(outSp > pks.pkOut){
 							pks.pkOut = outSp;
+							pks.pkOutT = now;
 							for(int a2 = 0; a2 < 3; a2++){ pks.pkOutVec[a2] = pose.vecVelocity[a2]; }
 						}
 						if(secSp > pks.pkSec){
 							pks.pkSec = secSp;
+							pks.pkSecT = now;
 							for(int a2 = 0; a2 < 3; a2++){ pks.pkSecVec[a2] = secantVel[a2]; }
 						}
 						if(pks.diagCalmSp > pks.pkCalm){ pks.pkCalm = pks.diagCalmSp; }
 						if(pks.diagMagSp > pks.pkMag){ pks.pkMag = pks.diagMagSp; }
-						if(outAngSp > pks.pkAngOut){ pks.pkAngOut = outAngSp; }
-						if(secAngSp > pks.pkAngSec){ pks.pkAngSec = secAngSp; }
+						if(outAngSp > pks.pkAngOut){ pks.pkAngOut = outAngSp; pks.pkAngOutT = now; }
+						if(secAngSp > pks.pkAngSec){ pks.pkAngSec = secAngSp; pks.pkAngSecT = now; }
+						// grip shadow channel: peak of the transported
+						// velocity (and of the removed w x r itself).
+						// with the compensator DISABLED this is the
+						// what-if channel; with it ENABLED out and grip
+						// coincide and dirOffG==dirOff.
+						if(pks.diagGripHave){
+							double gSp = sqrt(pks.diagGripV[0] * pks.diagGripV[0]
+								+ pks.diagGripV[1] * pks.diagGripV[1]
+								+ pks.diagGripV[2] * pks.diagGripV[2]);
+							if(gSp > pks.pkGrip){
+								pks.pkGrip = gSp;
+								for(int a2 = 0; a2 < 3; a2++){ pks.pkGripVec[a2] = pks.diagGripV[a2]; }
+							}
+							if(pks.diagGripWr > pks.pkWr){ pks.pkWr = pks.diagGripWr; }
+						}
 						if(outSp < 0.8){
 							pks.pkActive = false;
 							logPk = pks.pkSec > 0.5;
 							pkOut = pks.pkOut; pkSec = pks.pkSec;
 							pkCalm = pks.pkCalm; pkMag = pks.pkMag;
 							pkAngOut = pks.pkAngOut; pkAngSec = pks.pkAngSec;
-							double d = 0, no = 0, ns = 0;
+							pkGrip = pks.pkGrip; pkWr = pks.pkWr;
+							// channel lags vs own secant (+ = output peaked
+							// after the secant = filter lag); dtW = angular
+							// output peak vs linear output peak (+ = wrist
+							// peaked after arm: kinematic sequencing + any
+							// remaining lag mismatch)
+							pkLagLin = (pks.pkOutT - pks.pkSecT) * 1000.0;
+							pkLagAng = (pks.pkAngOutT - pks.pkAngSecT) * 1000.0;
+							pkDtW = (pks.pkAngOutT - pks.pkOutT) * 1000.0;
+							double d = 0, no = 0, ns = 0, dg = 0, ng = 0;
 							for(int a2 = 0; a2 < 3; a2++){
 								d += pks.pkOutVec[a2] * pks.pkSecVec[a2];
 								no += pks.pkOutVec[a2] * pks.pkOutVec[a2];
 								ns += pks.pkSecVec[a2] * pks.pkSecVec[a2];
+								dg += pks.pkGripVec[a2] * pks.pkSecVec[a2];
+								ng += pks.pkGripVec[a2] * pks.pkGripVec[a2];
 							}
 							if(no > 1e-9 && ns > 1e-9){
 								double c = d / sqrt(no * ns);
@@ -2401,15 +2523,32 @@ bool CustomHeadsetDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 								if(c < -1.0){ c = -1.0; }
 								pkDirOff = acos(c) * 180.0 / 3.14159265358979323846;
 							}
+							// grip peak direction vs the SAME origin secant:
+							// legitimate reference because the w x r spike
+							// moves the origin only centimeters over the
+							// gesture — displacement stays palm-dominated
+							// even when instantaneous velocity does not
+							if(ng > 1e-9 && ns > 1e-9){
+								double cg = dg / sqrt(ng * ns);
+								if(cg > 1.0){ cg = 1.0; }
+								if(cg < -1.0){ cg = -1.0; }
+								pkDirOffG = acos(cg) * 180.0 / 3.14159265358979323846;
+							}
 						}
 					}
 				}
 				// log OUTSIDE the lock
 				if(logPk){
-					DriverLog("PoseLog: PEAKDIAG id=%u mode=%d out=%.2f sec=%.2f out/sec=%.2f calm=%.2f mag=%.2f dirOff=%.1fdeg angOut=%.1f angSec=%.1f",
+					// grip fields: gOut = peak transported speed (flick
+					// unit test: collapses toward 0 on a pure wrist snap
+					// when r is right), gDirOff = its direction vs the
+					// same secant, wr = peak removed |w x r| (the
+					// contamination magnitude). all zero when r unset.
+					DriverLog("PoseLog: PEAKDIAG id=%u mode=%d out=%.2f sec=%.2f out/sec=%.2f calm=%.2f mag=%.2f dirOff=%.1fdeg angOut=%.1f angSec=%.1f gOut=%.2f gDirOff=%.1fdeg wr=%.2f lagLin=%.0fms lagAng=%.0fms dtW=%.0fms",
 						openVRID, velocityFixMode, pkOut, pkSec,
 						pkSec > 0.01 ? pkOut / pkSec : 0.0,
-						pkCalm, pkMag, pkDirOff, pkAngOut, pkAngSec);
+						pkCalm, pkMag, pkDirOff, pkAngOut, pkAngSec,
+						pkGrip, pkDirOffG, pkWr, pkLagLin, pkLagAng, pkDtW);
 				}
 			}
 		}
@@ -3036,4 +3175,16 @@ void CustomHeadsetDeviceProvider::SetAlignerOffsets(bool active, const double ro
 		}
 	}
 	alignerOverrideActive.store(active, std::memory_order_relaxed);
+}
+
+void CustomHeadsetDeviceProvider::SetAlignerGrip(bool active, const double gripCm[2][3]){
+	{
+		std::lock_guard<std::mutex> guard(poseLogLock);
+		for(int hand = 0; hand < 2; hand++){
+			for(int i = 0; i < 3; i++){
+				alignerGripCm[hand][i] = gripCm[hand][i];
+			}
+		}
+	}
+	alignerGripActive.store(active, std::memory_order_relaxed);
 }

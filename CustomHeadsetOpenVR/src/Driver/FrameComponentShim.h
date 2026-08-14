@@ -141,10 +141,13 @@ private:
 	struct AlignerState {
 		bool active = false;
 		int hand = 1;      // start on the right controller
-		int group = 0;     // 0 position (cm), 1 rotation (deg)
+		int group = 0;     // 0 position (cm), 1 rotation (deg), 2 grip (cm, per hand)
 		int axis = 0;      // 0 x, 1 y, 2 z
 		double rotDeg[3] = {0, 0, 0};
 		double posCm[3] = {0, 0, 0};
+		// grip-point compensator working offsets, PER HAND (local frame
+		// cm) — unlike the shared pose offsets above, r is anatomical
+		double gripCm[2][3] = {};
 		double initRot[3] = {0, 0, 0};
 		double initPos[3] = {0, 0, 0};
 		bool prevHandToggle = false, prevGroupToggle = false;

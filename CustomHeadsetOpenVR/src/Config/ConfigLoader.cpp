@@ -801,6 +801,29 @@ void ConfigLoader::ParseConfig(){
 			if(streamFrameData["kalmanCaReportAccel"].is_boolean()){
 				newConfig.streamFrame.kalmanCaReportAccel = streamFrameData["kalmanCaReportAccel"].get<bool>();
 			}
+			if(streamFrameData["kalmanGripEnable"].is_boolean()){
+				newConfig.streamFrame.kalmanGripEnable = streamFrameData["kalmanGripEnable"].get<bool>();
+			}
+			if(streamFrameData["kalmanGripBlend"].is_number()){
+				newConfig.streamFrame.kalmanGripBlend = streamFrameData["kalmanGripBlend"].get<double>();
+			}
+			{
+				const char* gripAxes[3] = {"x", "y", "z"};
+				if(streamFrameData["kalmanGripLeftCm"].is_object()){
+					for(int i = 0; i < 3; i++){
+						if(streamFrameData["kalmanGripLeftCm"][gripAxes[i]].is_number()){
+							newConfig.streamFrame.kalmanGripLeftCm[i] = streamFrameData["kalmanGripLeftCm"][gripAxes[i]].get<double>();
+						}
+					}
+				}
+				if(streamFrameData["kalmanGripRightCm"].is_object()){
+					for(int i = 0; i < 3; i++){
+						if(streamFrameData["kalmanGripRightCm"][gripAxes[i]].is_number()){
+							newConfig.streamFrame.kalmanGripRightCm[i] = streamFrameData["kalmanGripRightCm"][gripAxes[i]].get<double>();
+						}
+					}
+				}
+			}
 			if(streamFrameData["eyeGaze"].is_object()){
 				json eyeGazeData = streamFrameData["eyeGaze"];
 				if(eyeGazeData["debugRing"].is_boolean()){
@@ -1278,6 +1301,18 @@ void ConfigLoader::WriteInfo(){
 				{"kalmanCaMagJerk", defaultSettings.streamFrame.kalmanCaMagJerk},
 				{"kalmanCaMagAccelTauMs", defaultSettings.streamFrame.kalmanCaMagAccelTauMs},
 				{"kalmanCaReportAccel", defaultSettings.streamFrame.kalmanCaReportAccel},
+				{"kalmanGripEnable", defaultSettings.streamFrame.kalmanGripEnable},
+				{"kalmanGripBlend", defaultSettings.streamFrame.kalmanGripBlend},
+				{"kalmanGripLeftCm", {
+					{"x", defaultSettings.streamFrame.kalmanGripLeftCm[0]},
+					{"y", defaultSettings.streamFrame.kalmanGripLeftCm[1]},
+					{"z", defaultSettings.streamFrame.kalmanGripLeftCm[2]},
+				}},
+				{"kalmanGripRightCm", {
+					{"x", defaultSettings.streamFrame.kalmanGripRightCm[0]},
+					{"y", defaultSettings.streamFrame.kalmanGripRightCm[1]},
+					{"z", defaultSettings.streamFrame.kalmanGripRightCm[2]},
+				}},
 			}},
 			{"takeCompositorScreenshots", defaultSettings.takeCompositorScreenshots},
 			{"onlyHandlePrivateFunctionality", defaultSettings.onlyHandlePrivateFunctionality},

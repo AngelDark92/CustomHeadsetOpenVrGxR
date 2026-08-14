@@ -310,10 +310,31 @@ private:
 		double pkAngOut = 0, pkAngSec = 0;
 		double pkOutVec[3] = {};
 		double pkSecVec[3] = {};
+		// peak TIMES (channel-lag instrument): when each channel's peak
+		// happened. lagLin/lagAng = each channel's filter lag vs its own
+		// secant; the linear and angular secants share one ring window,
+		// so their windowing delay is common-mode and cancels in the
+		// lagAng - lagLin mismatch — the number that decides whether the
+		// angular channel peaks in phase with the linear one.
+		double pkOutT = 0, pkSecT = 0, pkAngOutT = 0, pkAngSecT = 0;
 		// this frame's channel speeds, written under deriveFilterLock in
 		// the kalman block and read by the scorer after DeriveMotion
 		double diagCalmSp = 0;
 		double diagMagSp = 0;
+		// grip-point compensator: this frame's grip-transported velocity
+		// (shadow-computed whenever rGrip is nonzero, reported only when
+		// enabled) and the w x r contamination magnitude, plus the
+		// per-gesture peaks the PEAKDIAG scorer accumulates from them
+		bool diagGripHave = false;
+		double diagGripV[3] = {};
+		double diagGripWr = 0;
+		double pkGrip = 0;
+		double pkGripVec[3] = {};
+		double pkWr = 0;
+		// grip knob echo (own sig: the CA sig's epsilon floor sits at
+		// ~1e-2 next to its 1e13-scale terms — cm-resolution grip values
+		// would vanish there)
+		double lastGripSig = -1;
 	};
 	std::map<uint32_t, KalState> kalStates;
 	// latest HMD orientation, for rotating the head-space gaze ray into
@@ -462,6 +483,7 @@ public:
 	// while the aligner is active its WORKING offsets replace the configured
 	// controller offsets in the pose path, so edits are live
 	void SetAlignerOffsets(bool active, const double rotDeg[3], const double posCm[3]);
+	void SetAlignerGrip(bool active, const double gripCm[2][3]);
 private:
 	// controller aligner state (guarded by poseLogLock): per-hand pose/tip
 	// capture, container->hand classification, live offset override
@@ -477,6 +499,12 @@ private:
 	std::atomic<bool> alignerOverrideActive {false};
 	double alignerRotDeg[3] = {0, 0, 0};
 	double alignerPosCm[3] = {0, 0, 0};
+	// aligner working grip offsets (per hand, cm, controller local frame):
+	// while the aligner is active these replace the configured
+	// kalmanGrip*Cm so grip captures and stick edits are live in the very
+	// next pose (guarded by poseLogLock, same as the pose offsets above)
+	std::atomic<bool> alignerGripActive {false};
+	double alignerGripCm[2][3] = {};
 public:
 	void OnInputComponentCreated(vr::PropertyContainerHandle_t container, const char* name, vr::VRInputComponentHandle_t handle);
 	void OnBooleanComponentUpdated(vr::VRInputComponentHandle_t handle, bool value);

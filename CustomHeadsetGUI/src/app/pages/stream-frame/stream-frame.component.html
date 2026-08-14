@@ -691,6 +691,36 @@
 @if(isKalmanMode()){
 <div class="field">
     <div class="title">
+        <span>Grip-Point Velocity Compensator</span>
+        <app-field-tip info="The estimator honestly reports the tracked origin's velocity; during a wrist snap that includes the origin's tangential speed around your hand (w x r) - physics, not filter error, and the measured cause of combined linear+wrist throws bending off while pure linear and pure flick throws feel right. When enabled, reported velocity is transported to the grip point: v + blend x (w x r). Set r via the in-headset Aligner's GRIP capture (hold the palm still, swirl a pure wrist cone with the trigger held) or type it below. With r set but Enable OFF the driver runs shadow-only: PEAKDIAG logs gOut/gDirOff/wr showing what compensation WOULD have reported - verify a session like that first. Leave OFF for games/engines that already transport velocity to their own attach point (they would double-apply). Blend 1 = full physics; below 1 under-corrects deliberately." />
+        <app-reset-button [canReset]="settings.kalmanGripEnable != defaults.kalmanGripEnable || settings.kalmanGripBlend != defaults.kalmanGripBlend" (resetClick)="reset('kalmanGripEnable'); reset('kalmanGripBlend')"></app-reset-button>
+    </div>
+    <div class="control">
+        <mat-slide-toggle [(ngModel)]="settings.kalmanGripEnable" (ngModelChange)="save()"></mat-slide-toggle>
+        <span>Blend</span><input matInput [(ngModel)]="settings.kalmanGripBlend" step="0.1" min="0" max="2" (ngModelChange)="save()" type="number">
+    </div>
+</div>
+
+<div class="field">
+    <div class="title">
+        <span>Grip Point r - Left / Right (cm, controller local frame)</span>
+        <app-field-tip info="Per-hand vector from the tracked origin to the hand's rotation center, in the controller's local frame. The Aligner's GRIP capture solves this automatically (it is the same least-squares pivot solve as the tip capture, aimed at your wrist instead of a desk) and saving from the Aligner writes these fields. Typical magnitude a few cm; values are ignored (compensator inert) below 0.1cm or above 30cm. Field data 2026-08-14: per-throw inversion of the direction error clusters at |r| ~ 5cm." />
+        <app-reset-button [canReset]="settings.kalmanGripLeftCm.x != defaults.kalmanGripLeftCm.x || settings.kalmanGripLeftCm.y != defaults.kalmanGripLeftCm.y || settings.kalmanGripLeftCm.z != defaults.kalmanGripLeftCm.z || settings.kalmanGripRightCm.x != defaults.kalmanGripRightCm.x || settings.kalmanGripRightCm.y != defaults.kalmanGripRightCm.y || settings.kalmanGripRightCm.z != defaults.kalmanGripRightCm.z" (resetClick)="reset('kalmanGripLeftCm'); reset('kalmanGripRightCm')"></app-reset-button>
+    </div>
+    <div class="control">
+        <span>Lx</span><input matInput [(ngModel)]="settings.kalmanGripLeftCm.x" step="0.5" min="-20" max="20" (ngModelChange)="save()" type="number">
+        <span>Ly</span><input matInput [(ngModel)]="settings.kalmanGripLeftCm.y" step="0.5" min="-20" max="20" (ngModelChange)="save()" type="number">
+        <span>Lz</span><input matInput [(ngModel)]="settings.kalmanGripLeftCm.z" step="0.5" min="-20" max="20" (ngModelChange)="save()" type="number">
+        <span>Rx</span><input matInput [(ngModel)]="settings.kalmanGripRightCm.x" step="0.5" min="-20" max="20" (ngModelChange)="save()" type="number">
+        <span>Ry</span><input matInput [(ngModel)]="settings.kalmanGripRightCm.y" step="0.5" min="-20" max="20" (ngModelChange)="save()" type="number">
+        <span>Rz</span><input matInput [(ngModel)]="settings.kalmanGripRightCm.z" step="0.5" min="-20" max="20" (ngModelChange)="save()" type="number">
+    </div>
+</div>
+}
+
+@if(isKalmanMode()){
+<div class="field">
+    <div class="title">
         <span>Kalman Duplicate-Sample Handling</span>
         <app-field-tip info="The streamer repeats the last pose whenever fresh tracking hasn&#39;t arrived (~2 of 3 samples during fast throws). Off: Repeats believed as measurements; smooth, slight speed drag. Coast (not recommended): Skip repeats and extrapolate through them. Drop (not recommended): Repeats are ignored entirely. Soft (default): repeats processed but distrusted by the scale below; measured equal to Off on strength, halves motion jitter. Sustained repeats are always accepted as genuine stillness." />
         <app-reset-button [canReset]="settings.kalmanDupMode != defaults.kalmanDupMode" (resetClick)="reset('kalmanDupMode')"></app-reset-button>

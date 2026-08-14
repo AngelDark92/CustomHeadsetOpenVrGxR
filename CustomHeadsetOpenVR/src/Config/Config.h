@@ -735,6 +735,26 @@ struct StreamFrameConfig{
 	// latency — but it doubles prediction overshoot risk, hence its own
 	// toggle, off for the first clean A/B.
 	bool kalmanCaReportAccel = false;
+	// ==== grip-point velocity compensator ====
+	// the estimator honestly reports the TRACKED ORIGIN's velocity; during
+	// a wrist snap that includes the origin's tangential velocity w x r
+	// about the hand's rotation center — physics, not filter error (field
+	// 2026-08-13/14: linear throws 1-3deg dirOff, real throws 4-15deg,
+	// flick-only gestures 1.1-1.7x linear speed with scattered direction;
+	// per-throw inversion of the lever hypothesis clusters at r ~ 5cm).
+	// when enabled the reported linear velocity is transported to the
+	// grip point: v_out = v + blend * (w x R(q) rGrip), rGrip per hand in
+	// the controller's LOCAL frame (cm). the shadow instrumentation in
+	// PEAKDIAG (gOut/gDirOff/wr fields) runs whenever rGrip is nonzero,
+	// even with enable off — verify on a session before flipping it on.
+	// DEFAULT OFF: engines that transport velocity to their own attach
+	// point would double-apply. rGrip comes from the aligner's grip
+	// capture (pure wrist swirl with the palm held still — the pivot
+	// solve's stationary point IS the rotation center) or manual entry.
+	bool kalmanGripEnable = false;
+	double kalmanGripBlend = 1.0;
+	double kalmanGripLeftCm[3] = {0, 0, 0};
+	double kalmanGripRightCm[3] = {0, 0, 0};
 	// experimental throw/velocity fix. vrlink's reported controller velocity
 	// is heavily smoothed (field data: peaks read ~50-65% of position-derived
 	// velocity during throws, ratio varies with motion phase = filter lag,
