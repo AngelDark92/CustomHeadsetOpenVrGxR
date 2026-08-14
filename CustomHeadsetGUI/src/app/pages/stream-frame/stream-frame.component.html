@@ -691,6 +691,17 @@
 @if(isKalmanMode()){
 <div class="field">
     <div class="title">
+        <span>Kalman Direction Lead (ms) - combined throws</span>
+        <app-field-tip info="Fixes throws that combine arm movement WITH a wrist flick bending off target while pure linear throws and pure flicks feel right. A smooth filter reports the throw direction from a few tens of ms ago; on a straight path that only costs strength, but when your wrist is also rotating the path is curved, so old direction = wrong direction (roughly rotation speed x filter delay - easily 15-40 degrees). This rotates the reported throw direction forward along your current wrist rotation by this many ms. It does nothing on straight throws (no rotation = no change) and nothing on pure flicks (no linear speed to bend), and never touches strength, spin or the rendered hand. Start around 10-20 with low J; too high overshoots the bend the other way. 0 = off." />
+        <app-reset-button [canReset]="settings.kalmanDirLeadMs != defaults.kalmanDirLeadMs" (resetClick)="reset('kalmanDirLeadMs')"></app-reset-button>
+    </div>
+    <div class="control">
+        <span>Td</span><input matInput [(ngModel)]="settings.kalmanDirLeadMs" step="5" min="0" max="50" (ngModelChange)="save()" type="number">
+    </div>
+</div>
+
+<div class="field">
+    <div class="title">
         <span>Grip-Point Velocity Compensator</span>
         <app-field-tip info="The estimator honestly reports the tracked origin's velocity; during a wrist snap that includes the origin's tangential speed around your hand (w x r) - physics, not filter error, and the measured cause of combined linear+wrist throws bending off while pure linear and pure flick throws feel right. When enabled, reported velocity is transported to the grip point: v + blend x (w x r). Set r via the in-headset Aligner's GRIP capture (hold the palm still, swirl a pure wrist cone with the trigger held) or type it below. With r set but Enable OFF the driver runs shadow-only: PEAKDIAG logs gOut/gDirOff/wr showing what compensation WOULD have reported - verify a session like that first. Leave OFF for games/engines that already transport velocity to their own attach point (they would double-apply). Blend 1 = full physics; below 1 under-corrects deliberately." />
         <app-reset-button [canReset]="settings.kalmanGripEnable != defaults.kalmanGripEnable || settings.kalmanGripBlend != defaults.kalmanGripBlend" (resetClick)="reset('kalmanGripEnable'); reset('kalmanGripBlend')"></app-reset-button>

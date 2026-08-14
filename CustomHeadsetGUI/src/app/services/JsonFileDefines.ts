@@ -180,6 +180,7 @@ export type StreamFrameConfig = {
   kalmanGazeMaxDeg: number;
   kalmanGazeMinSpeed: number;
   kalmanSmoothLagMs: number;
+  kalmanDirLeadMs: number;
   kalmanCaJerk: number;
   kalmanCaAngJerk: number;
   kalmanCaPosNoiseMm: number;

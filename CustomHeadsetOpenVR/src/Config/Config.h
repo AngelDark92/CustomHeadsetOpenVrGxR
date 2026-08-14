@@ -604,6 +604,23 @@ struct StreamFrameConfig{
 	// picking. 0 = off. pose untouched.
 	double kalmanDirSmoothMs = 0.0;
 	double kalmanAngDirSmoothMs = 0.0;
+	// direction derotation lead (2026-08-14, the combined-throw fix): a
+	// filter with velocity group delay L reports the path tangent from L
+	// ago. on a STRAIGHT path that is a pure magnitude deficit; on a
+	// CURVED path — exactly what linear + wrist combined produces — it
+	// is a DIRECTION error of ~omega*L (at low-J group delays of tens of
+	// ms and throw omega of 8-20 rad/s: 15-40deg, present only when both
+	// channels are active; matches the field triad of linear-fine /
+	// flick-fine / combined-bent). this rotates the reported velocity
+	// forward about the filter's own w-hat by |w| * dirLead (Rodrigues)
+	// — the direction-space analog of kalmanLeadMs. continuous, always
+	// on, no gating: identity when w ~ 0 (linear throws untouched),
+	// nothing to bend when |v| ~ 0 (pure flicks untouched). magnitude,
+	// spin and pose are never touched, so it composes cleanly with low
+	// J's release-instant peak-hold — the two J pressures decouple.
+	// tune: start ~ the felt group delay (10-30ms at J=10-17), watch
+	// PEAKDIAG dirOff on combined throws. 0 = off.
+	double kalmanDirLeadMs = 0.0;
 	// magnitude channel (field 2026-08-10: A=1 + raised P/O is the user
 	// verified sweet spot for DIRECTION, but that configuration's lag
 	// under-reports throw SPEED — "strength feels low", items falling out.

@@ -302,6 +302,17 @@ private:
 		// (KALDIAG: watch for phantom accel during coasts/stops)
 		double caAccPk = 0;
 		double caWAccPk = 0;
+		// STUCKDIAG state-vs-measurement divergence watchdog (2026-08-14):
+		// the stuck-hand adjudicator. |state p - measurement| > 0.25m
+		// opens a run, closing under 0.10m logs duration + max + entry
+		// speed. a STUCKDIAG line = the FILTER diverged (state momentum
+		// gliding past a frozen/true measurement); a stuck moment with
+		// KALLOSS but no STUCKDIAG = raw-pose passthrough during a
+		// flagged tracking loss. the two partition the failure space.
+		bool stuckRun = false;
+		double stuckStartT = 0;
+		double stuckMax = 0;
+		double stuckV0 = 0;
 		// PEAKDIAG per-gesture scorer: peak of the reported output, the
 		// calm and magnitude channels and the ring secant (displacement
 		// ground truth), plus the direction vectors at each peak

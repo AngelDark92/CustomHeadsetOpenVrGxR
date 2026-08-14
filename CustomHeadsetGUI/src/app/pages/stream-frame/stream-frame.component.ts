@@ -87,6 +87,7 @@ function defaultStreamFrame(): StreamFrameConfig {
     kalmanReleaseRewindMs: 0,
     kalmanRewindHoldMs: 100,
     kalmanDirSmoothMs: 0,
+    kalmanDirLeadMs: 0,
     kalmanAngDirSmoothMs: 0,
     kalmanMagSource: 'state',
     kalmanMagAccel: 60,

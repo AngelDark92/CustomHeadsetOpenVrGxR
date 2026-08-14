@@ -1043,6 +1043,10 @@ bool CustomHeadsetDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 			bool announceKalman = false;
 			bool announceGaze = false;
 			bool logKalDiag = false;
+			// STUCKDIAG edge flags (log outside the lock)
+			bool stuckEnterLog = false;
+			bool stuckExitLog = false;
+			double stuckLogDiv = 0, stuckLogMs = 0, stuckLogMax = 0, stuckLogV0 = 0;
 			double diagNis = 0;
 			double diagStepMax = 0;
 			int diagFrozen = 0;
@@ -1118,6 +1122,18 @@ bool CustomHeadsetDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 			// prediction and re-introduce the stale-stillness drag.)
 			int dupMode = driverConfig.streamFrame.kalmanDupMode;
 			bool dupHit = false;
+			// dupRepeat = this sample IS a gate-qualifying repeat (frozen
+			// payload while the state moves), independent of whether the
+			// run cap still down-weights it. the run clock must be keyed
+			// on THIS, not on dupHit (bug fix 2026-08-14: past the cap a
+			// repeat has dupHit=false, and the old !dupHit reset restarted
+			// the run — so a sustained post-throw freeze alternated one
+			// full-weight sample per ~cap of re-inflated ones, stretching
+			// the velocity kill ~10x. field symptom: hand parked ~1m out
+			// for 0.5-2s after hard throws. the cap's own rationale says a
+			// repeat sustained past it IS stillness — so every repeat past
+			// the cap must stay full weight until a FRESH sample arrives.)
+			bool dupRepeat = false;
 			if(!dropSample && ks.have && dt > 0 && dt <= 0.2 && dupMode != 0 && ks.haveMeas){
 				double ddx = pose.vecPosition[0] - ks.lastMeas[0];
 				double ddy = pose.vecPosition[1] - ks.lastMeas[1];
@@ -1125,6 +1141,7 @@ bool CustomHeadsetDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 				double stepD = sqrt(ddx * ddx + ddy * ddy + ddz * ddz);
 				double stSpd = sqrt(ks.v[0] * ks.v[0] + ks.v[1] * ks.v[1] + ks.v[2] * ks.v[2]);
 				if(stepD < 0.0003 && stSpd > 0.5){
+					dupRepeat = true;
 					// run cap (bug fix, caught live: NIS 570 for 8+s).
 					// skipping repeats blocks the very measurements that
 					// update the speed this gate tests, so an abrupt
@@ -1242,11 +1259,14 @@ bool CustomHeadsetDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 				// dup decision was made above (coast and soft reach
 				// here; drop never does — it exits via the drop path)
 				bool dupCoast = dupHit && dupMode == 1;
-				if(!dupHit){
-					// any non-repeat sample ends the dup run. keyed on
-					// dupHit, not dupCoast: soft-mode repeats are
-					// processed but must still accumulate toward the
-					// cap, or sustained stillness would stay distrusted
+				if(!dupRepeat){
+					// only a genuinely FRESH sample ends the dup run.
+					// keyed on dupRepeat, not dupHit: soft-mode repeats
+					// are processed but must still accumulate toward the
+					// cap, AND repeats past the cap must keep the run
+					// alive so they stay at full weight (see the
+					// dupRepeat bug-fix note above) instead of
+					// restarting the soft-inflation cycle.
 					ks.coastStart = -1.0;
 				}
 				if(dupCoast){
@@ -1484,6 +1504,39 @@ bool CustomHeadsetDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 				if(qn2 > 1e-9){ ks.q.w /= qn2; ks.q.x /= qn2; ks.q.y /= qn2; ks.q.z /= qn2; }
 				}
 			}
+			// STUCKDIAG watchdog: state position vs THIS measurement (pose
+			// is still the raw measurement here — the report block below
+			// overwrites it). a divergence run opening means the filter's
+			// carried momentum is gliding past what the tracker reports —
+			// the filter-side stuck-hand mechanism, as opposed to the
+			// KALLOSS raw-passthrough freeze. pure telemetry: no state is
+			// touched, no behavior changes.
+			if(driverConfig.streamFrame.poseLogging && !dropSample && !dupDrop && ks.have){
+				double sdx = ks.p[0] - pose.vecPosition[0];
+				double sdy = ks.p[1] - pose.vecPosition[1];
+				double sdz = ks.p[2] - pose.vecPosition[2];
+				double sdiv = sqrt(sdx * sdx + sdy * sdy + sdz * sdz);
+				if(!ks.stuckRun){
+					if(sdiv > 0.25){
+						ks.stuckRun = true;
+						ks.stuckStartT = now;
+						ks.stuckMax = sdiv;
+						ks.stuckV0 = sqrt(ks.v[0] * ks.v[0] + ks.v[1] * ks.v[1] + ks.v[2] * ks.v[2]);
+						stuckEnterLog = true;
+						stuckLogDiv = sdiv;
+						stuckLogV0 = ks.stuckV0;
+					}
+				}else{
+					if(sdiv > ks.stuckMax){ ks.stuckMax = sdiv; }
+					if(sdiv < 0.10){
+						ks.stuckRun = false;
+						stuckExitLog = true;
+						stuckLogMs = (now - ks.stuckStartT) * 1000.0;
+						stuckLogMax = ks.stuckMax;
+						stuckLogV0 = ks.stuckV0;
+					}
+				}
+			}
 			// grip-point velocity transport: the state's v is the TRACKED
 			// ORIGIN's velocity; the palm's is v + w x r with r the
 			// origin->grip vector rotated into world by the filtered q.
@@ -1629,6 +1682,38 @@ bool CustomHeadsetDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 				for(int a2 = 0; a2 < 3; a2++){
 					vRep[a2] *= mS;
 					wRep[a2] *= mSA;
+				}
+			}
+			// direction derotation lead: a lagged velocity estimate points
+			// along the tangent from L ago; on a curved (combined linear +
+			// wrist) path that is a direction error of ~|w|*L. rotate the
+			// reported v FORWARD about the reported w-hat by |w|*dirLead
+			// (Rodrigues). continuous and gate-free: identity at w ~ 0,
+			// inert at |v| ~ 0. magnitude preserved exactly (rotation);
+			// pose and w untouched. uses wRep — the same physical rate
+			// the game reads, direction-stabilized by any angular dir
+			// smoothing already applied.
+			{
+				double dLead = driverConfig.streamFrame.kalmanDirLeadMs / 1000.0;
+				if(dLead > 0.0){
+					if(dLead > 0.05){ dLead = 0.05; }
+					double wm = sqrt(wRep[0] * wRep[0] + wRep[1] * wRep[1] + wRep[2] * wRep[2]);
+					double mV = sqrt(vRep[0] * vRep[0] + vRep[1] * vRep[1] + vRep[2] * vRep[2]);
+					if(wm > 1e-3 && mV > 0.05){
+						double ax = wRep[0] / wm, ay = wRep[1] / wm, az = wRep[2] / wm;
+						double ang = wm * dLead;
+						double c = cos(ang), s = sin(ang);
+						double adotv = ax * vRep[0] + ay * vRep[1] + az * vRep[2];
+						double cr[3] = {
+							ay * vRep[2] - az * vRep[1],
+							az * vRep[0] - ax * vRep[2],
+							ax * vRep[1] - ay * vRep[0],
+						};
+						for(int a2 = 0; a2 < 3; a2++){
+							double axc[3] = { ax, ay, az };
+							vRep[a2] = vRep[a2] * c + cr[a2] * s + axc[a2] * adotv * (1.0 - c);
+						}
+					}
 				}
 			}
 			// gaze aim assist: bend the reported direction toward where
@@ -1797,7 +1882,12 @@ bool CustomHeadsetDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 					+ driverConfig.streamFrame.kalmanCaAccelTauMs * 1e11
 					+ driverConfig.streamFrame.kalmanCaMagJerk * 1e-3
 					+ driverConfig.streamFrame.kalmanCaMagAccelTauMs * 1e-7
-					+ (driverConfig.streamFrame.kalmanCaReportAccel ? 0.1 : 0);
+					+ (driverConfig.streamFrame.kalmanCaReportAccel ? 0.1 : 0)
+					// dirLead rides the CA sig (applies to every kalman
+					// mode, but this sum's epsilon floor ~1.5e-3 leaves
+					// ms-scale terms fully representable, unlike the
+					// 1e16-scale legacy sig)
+					+ driverConfig.streamFrame.kalmanDirLeadMs * 17.0;
 				// grip sig: cm-scale terms would vanish below the CA sig's
 				// epsilon floor (~1e-2 next to its 1e13-scale terms)
 				double sigGrip = (gripEnable ? 1000.0 : 0.0) + gripBlend * 100.0
@@ -1861,14 +1951,23 @@ bool CustomHeadsetDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 				logKalDiag = true;
 			}
 			}
+			if(stuckEnterLog){
+				DriverLog("PoseLog: STUCKDIAG id=%u OPEN div=%.2fm v=%.2fm/s (state gliding past measurement)",
+					openVRID, stuckLogDiv, stuckLogV0);
+			}
+			if(stuckExitLog){
+				DriverLog("PoseLog: STUCKDIAG id=%u CLOSE dur=%.0fms maxDiv=%.2fm vEntry=%.2fm/s",
+					openVRID, stuckLogMs, stuckLogMax, stuckLogV0);
+			}
 			if(announceKalman){
 			// outside the lock — lock discipline
-			DriverLog("VelocityFix: kalman mode active id=%u qa=%.0f rp=%.1fmm qaA=%.0f ro=%.2fdeg lead=%.0fms dup=%d dupR=%.0f devT=%d cap=%.0f log=%d",
+			DriverLog("VelocityFix: kalman mode active id=%u qa=%.0f rp=%.1fmm qaA=%.0f ro=%.2fdeg lead=%.0fms dirLead=%.0fms dup=%d dupR=%.0f devT=%d cap=%.0f log=%d",
 				openVRID, driverConfig.streamFrame.kalmanProcessAccel,
 				driverConfig.streamFrame.kalmanPosNoiseMm,
 				driverConfig.streamFrame.kalmanProcessAngAccel,
 				driverConfig.streamFrame.kalmanOriNoiseDeg,
 				driverConfig.streamFrame.kalmanLeadMs,
+				driverConfig.streamFrame.kalmanDirLeadMs,
 				driverConfig.streamFrame.kalmanDupMode,
 				driverConfig.streamFrame.kalmanDupRScale,
 				driverConfig.streamFrame.kalmanDeviceTime ? 1 : 0,
