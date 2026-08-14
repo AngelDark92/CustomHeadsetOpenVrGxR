@@ -756,6 +756,12 @@ void ConfigLoader::ParseConfig(){
 			if(streamFrameData["kalmanTeleportM"].is_number()){
 				newConfig.streamFrame.kalmanTeleportM = streamFrameData["kalmanTeleportM"].get<double>();
 			}
+			if(streamFrameData["kalmanLossCoastMs"].is_number()){
+				newConfig.streamFrame.kalmanLossCoastMs = streamFrameData["kalmanLossCoastMs"].get<double>();
+			}
+			if(streamFrameData["streamFrameSchema"].is_number()){
+				newConfig.streamFrame.streamFrameSchema = streamFrameData["streamFrameSchema"].get<int>();
+			}
 			if(streamFrameData["graveyardEnable"].is_boolean()){
 				newConfig.streamFrame.graveyardEnable = streamFrameData["graveyardEnable"].get<bool>();
 			}
@@ -779,6 +785,21 @@ void ConfigLoader::ParseConfig(){
 			}
 			if(streamFrameData["kalmanDirLeadMs"].is_number()){
 				newConfig.streamFrame.kalmanDirLeadMs = streamFrameData["kalmanDirLeadMs"].get<double>();
+			}
+			if(streamFrameData["kalmanDirLeadAdaptive"].is_boolean()){
+				newConfig.streamFrame.kalmanDirLeadAdaptive = streamFrameData["kalmanDirLeadAdaptive"].get<bool>();
+			}
+			if(streamFrameData["kalmanDirLeadBaseMs"].is_number()){
+				newConfig.streamFrame.kalmanDirLeadBaseMs = streamFrameData["kalmanDirLeadBaseMs"].get<double>();
+			}
+			if(streamFrameData["kalmanDirLeadWMs"].is_number()){
+				newConfig.streamFrame.kalmanDirLeadWMs = streamFrameData["kalmanDirLeadWMs"].get<double>();
+			}
+			if(streamFrameData["kalmanAdaptiveR"].is_boolean()){
+				newConfig.streamFrame.kalmanAdaptiveR = streamFrameData["kalmanAdaptiveR"].get<bool>();
+			}
+			if(streamFrameData["kalmanAdaptiveRMaxDiv"].is_number()){
+				newConfig.streamFrame.kalmanAdaptiveRMaxDiv = streamFrameData["kalmanAdaptiveRMaxDiv"].get<double>();
 			}
 			if(streamFrameData["kalmanCaJerk"].is_number()){
 				newConfig.streamFrame.kalmanCaJerk = streamFrameData["kalmanCaJerk"].get<double>();
@@ -934,6 +955,36 @@ void ConfigLoader::ParseConfig(){
 		// if(data["watchDistortionProfiles"].is_boolean()){
 		// 	newConfig.watchDistortionProfiles = data["watchDistortionProfiles"].get<bool>();
 		// }
+		// version-gated migration to schema 2 (2026-08-15 release):
+		// upgrade ONLY configs still on the exact old defaults — explicit
+		// CV mode with untouched CV knobs, or a CA mode with the old
+		// pre-ratification CA tuning — to the ratified CA-Full defaults.
+		// any custom tuning or non-default mode choice is respected
+		// untouched. idempotent: runs in-memory every load until the GUI
+		// persists streamFrameSchema=2; post-migration states no longer
+		// match the old-default patterns, so re-running is a no-op.
+		if(newConfig.streamFrame.streamFrameSchema < 2){
+			auto &sf = newConfig.streamFrame;
+			bool cvDefaults = sf.kalmanProcessAccel == 1.0
+				&& sf.kalmanPosNoiseMm == 2.7
+				&& sf.kalmanProcessAngAccel == 400.0
+				&& sf.kalmanOriNoiseDeg == 1.25;
+			bool caOldDefaults = sf.kalmanCaJerk == 10.0
+				&& sf.kalmanCaAngJerk == 1500.0
+				&& sf.kalmanCaPosNoiseMm == 4.2
+				&& sf.kalmanCaOriNoiseDeg == 1.25;
+			if(sf.velocityFixMode == 4 && cvDefaults){
+				sf.velocityFixMode = 6;
+				DriverLog("Config: schema migration - default-tuned Kalman CV upgraded to Kalman CA (ratified defaults)");
+			}else if((sf.velocityFixMode == 5 || sf.velocityFixMode == 6) && caOldDefaults){
+				sf.velocityFixMode = 6;
+				sf.kalmanCaJerk = 17.0;
+				sf.kalmanCaPosNoiseMm = 5.7;
+				sf.kalmanCaOriNoiseDeg = 5.75;
+				DriverLog("Config: schema migration - old CA default tuning upgraded to ratified J=17 P=5.7 O=5.75");
+			}
+			sf.streamFrameSchema = 2;
+		}
 		// write to global config
 		{
 			std::lock_guard<std::mutex> lock(driverConfigLock);
@@ -1289,6 +1340,8 @@ void ConfigLoader::WriteInfo(){
 				{"kalmanDupMode", defaultSettings.streamFrame.kalmanDupMode == 3 ? "soft" : (defaultSettings.streamFrame.kalmanDupMode == 2 ? "drop" : (defaultSettings.streamFrame.kalmanDupMode == 1 ? "coast" : "off"))},
 				{"kalmanDupRScale", defaultSettings.streamFrame.kalmanDupRScale},
 				{"kalmanTeleportM", defaultSettings.streamFrame.kalmanTeleportM},
+				{"kalmanLossCoastMs", defaultSettings.streamFrame.kalmanLossCoastMs},
+				{"streamFrameSchema", defaultSettings.streamFrame.streamFrameSchema},
 				{"graveyardEnable", defaultSettings.streamFrame.graveyardEnable},
 				{"kalmanDeviceTime", defaultSettings.streamFrame.kalmanDeviceTime},
 				{"kalmanDupCoastMaxMs", defaultSettings.streamFrame.kalmanDupCoastMaxMs},
@@ -1297,6 +1350,11 @@ void ConfigLoader::WriteInfo(){
 				{"kalmanGazeMinSpeed", defaultSettings.streamFrame.kalmanGazeMinSpeed},
 				{"kalmanSmoothLagMs", defaultSettings.streamFrame.kalmanSmoothLagMs},
 				{"kalmanDirLeadMs", defaultSettings.streamFrame.kalmanDirLeadMs},
+				{"kalmanDirLeadAdaptive", defaultSettings.streamFrame.kalmanDirLeadAdaptive},
+				{"kalmanDirLeadBaseMs", defaultSettings.streamFrame.kalmanDirLeadBaseMs},
+				{"kalmanDirLeadWMs", defaultSettings.streamFrame.kalmanDirLeadWMs},
+				{"kalmanAdaptiveR", defaultSettings.streamFrame.kalmanAdaptiveR},
+				{"kalmanAdaptiveRMaxDiv", defaultSettings.streamFrame.kalmanAdaptiveRMaxDiv},
 				{"kalmanCaJerk", defaultSettings.streamFrame.kalmanCaJerk},
 				{"kalmanCaAngJerk", defaultSettings.streamFrame.kalmanCaAngJerk},
 				{"kalmanCaPosNoiseMm", defaultSettings.streamFrame.kalmanCaPosNoiseMm},

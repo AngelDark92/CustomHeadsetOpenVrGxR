@@ -313,6 +313,44 @@ private:
 		double stuckStartT = 0;
 		double stuckMax = 0;
 		double stuckV0 = 0;
+		// corrupt-payload gate telemetry (field 2026-08-14, the stuck-hand
+		// kill chain): vrlink occasionally delivers POSITION GARBAGE
+		// (~4e18m coordinates, bursts at a constant ~2.7ms dt) while
+		// flagged Running_OK. before the gate, the teleport guard
+		// "handled" these by REINITIALIZING AT THE GARBAGE, then
+		// haveMeas=false disarmed the guard for one sample, so the next
+		// real measurement innovated across ~1e18m and kicked the
+		// velocity state into orbit — the measured lagLin=1264ms /
+		// dirOff=92deg post-throw park. garbageN counts rejects per
+		// KALDIAG window; garbageRun throttles the burst log to one
+		// line per run.
+		int garbageN = 0;
+		bool garbageRun = false;
+		// reported-velocity insanity clamp count (belt and suspenders)
+		int vClampN = 0;
+		// release-instant direction snapshot (2026-08-15): RELDIAG's
+		// relOffPk compares release-vs-peak OUTPUT — both post-shaping,
+		// so a direction transform like the derotation lead CANCELS in
+		// it and the instrument is blind to Td. these store, per frame,
+		// the SHAPED output (what the game reads) and the ring secant
+		// (displacement ground truth); at the release edge RELDIAG then
+		// scores output-vs-truth at the one instant the game samples —
+		// the direction analog of rel/pk, and the Td/O adjudicator.
+		bool relSnapHave = false;
+		double relOutV[3] = {};
+		double relOutW[3] = {};
+		double relSecV[3] = {};
+		double relSecW[3] = {};
+		// adaptive-R scheduler state: FAST EMA (~25ms) of the BASE-R
+		// normalized NIS per channel — the control statistic, separate
+		// from the slower telemetry nisEma, and normalized against the
+		// unadapted R so shrinking R cannot latch the very statistic
+		// that shrinks it. divisor window peaks feed KALDIAG so a
+		// session can verify the trust ramp engages on whips only.
+		double schedNis = 1.0;
+		double schedANis = 1.0;
+		double rDivPk = 1.0;
+		double rADivPk = 1.0;
 		// PEAKDIAG per-gesture scorer: peak of the reported output, the
 		// calm and magnitude channels and the ring secant (displacement
 		// ground truth), plus the direction vectors at each peak

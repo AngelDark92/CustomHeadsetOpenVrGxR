@@ -616,14 +616,16 @@
     <div class="control">
         <mat-select [(ngModel)]="settings.velocityFixMode" (ngModelChange)="save()">
             <mat-option value="off">Off</mat-option>
+            <mat-option value="kalman">Kalman</mat-option>
+            <mat-option value="kalmanCA">Kalman CA (recommended)</mat-option>
             @if(settings.graveyardEnable){
             <mat-option value="classic">Classic (legacy)</mat-option>
             <mat-option value="full">Full (legacy)</mat-option>
             <mat-option value="derive">Derive (legacy, retired)</mat-option>
+            <mat-option value="kalmanCAM">Kalman CA &mdash; Magnitude (retired)</mat-option>
+            } @else if(isRetiredVelocityMode(settings.velocityFixMode)){
+            <mat-option [value]="settings.velocityFixMode">{{retiredVelocityModeLabels[settings.velocityFixMode]}}</mat-option>
             }
-            <mat-option value="kalman">Kalman (recommended)</mat-option>
-            <mat-option value="kalmanCAM">Kalman CA &mdash; Magnitude (experimental)</mat-option>
-            <mat-option value="kalmanCA">Kalman CA &mdash; Full (experimental)</mat-option>
         </mat-select>
     </div>
 </div>
@@ -649,7 +651,7 @@
 <div class="field">
     <div class="title">
         <span>Kalman CA Tuning (jerk m/s&#179;, ang jerk, pos mm, ori deg, lead ms)</span>
-        <app-field-tip info="Constant-acceleration estimation: the standard Kalman treats a throw's speed ramp as noise and lags its peak (the ~80% magnitude deficit); the CA state tracks the ramp itself, so magnitude comes from the model instead of a rescale. J is the responsiveness knob (jerk, replaces A): higher follows snappier motion, lower is calmer. Wj is the same for rotation. P/O are the sensor noise levels (own copies, so tuning here never disturbs the standard mode). L leads the report to counter streaming latency." />
+        <app-field-tip info="Constant-acceleration estimation: the standard Kalman treats a throw's speed ramp as noise and lags its peak (the ~80% magnitude deficit). The CA state tracks the ramp itself, so magnitude comes from the model instead of a rescale. J(jerk) adjusts responsiveness: higher follows snappier motion, lower is calmer. Wj is the same for rotation. P/O are the sensor noise levels. L leads the report to counter streaming latency." />
         <app-reset-button [canReset]="settings.kalmanCaJerk != defaults.kalmanCaJerk || settings.kalmanCaAngJerk != defaults.kalmanCaAngJerk || settings.kalmanCaPosNoiseMm != defaults.kalmanCaPosNoiseMm || settings.kalmanCaOriNoiseDeg != defaults.kalmanCaOriNoiseDeg || settings.kalmanLeadMs != defaults.kalmanLeadMs" (resetClick)="reset('kalmanCaJerk'); reset('kalmanCaAngJerk'); reset('kalmanCaPosNoiseMm'); reset('kalmanCaOriNoiseDeg'); reset('kalmanLeadMs')"></app-reset-button>
     </div>
     <div class="control">
@@ -664,7 +666,7 @@
 <div class="field">
     <div class="title">
         <span>Kalman CA Accel Decay &tau; (ms) / Report Acceleration</span>
-        <app-field-tip info="The acceleration state decays toward zero with this time constant (Singer model). It bounds phantom speed during repeated-sample coasts and abrupt stops; ~150ms matches how long a real throw sustains acceleration. Very large values approach pure constant-acceleration. Report Acceleration also hands the runtime's forward prediction the acceleration states - honest accel can cut rendered-hand latency but doubles overshoot risk. Leave off for a clean A/B first." />
+        <app-field-tip info="The acceleration state decays toward zero with this time constant (Singer model). It bounds phantom speed during repeated-sample coasts and abrupt stops." />
         <app-reset-button [canReset]="settings.kalmanCaAccelTauMs != defaults.kalmanCaAccelTauMs || settings.kalmanCaReportAccel != defaults.kalmanCaReportAccel" (resetClick)="reset('kalmanCaAccelTauMs'); reset('kalmanCaReportAccel')"></app-reset-button>
     </div>
     <div class="control">
@@ -691,8 +693,8 @@
 @if(isKalmanMode()){
 <div class="field">
     <div class="title">
-        <span>Kalman Direction Lead (ms) - combined throws</span>
-        <app-field-tip info="Fixes throws that combine arm movement WITH a wrist flick bending off target while pure linear throws and pure flicks feel right. A smooth filter reports the throw direction from a few tens of ms ago; on a straight path that only costs strength, but when your wrist is also rotating the path is curved, so old direction = wrong direction (roughly rotation speed x filter delay - easily 15-40 degrees). This rotates the reported throw direction forward along your current wrist rotation by this many ms. It does nothing on straight throws (no rotation = no change) and nothing on pure flicks (no linear speed to bend), and never touches strength, spin or the rendered hand. Start around 10-20 with low J; too high overshoots the bend the other way. 0 = off." />
+        <span>Kalman Direction Lead (ms)</span>
+        <app-field-tip info="Fixes throws that combine arm movement WITH a wrist flick bending off target. Rotates the reported throw direction forward along your current wrist rotation by this many ms." />
         <app-reset-button [canReset]="settings.kalmanDirLeadMs != defaults.kalmanDirLeadMs" (resetClick)="reset('kalmanDirLeadMs')"></app-reset-button>
     </div>
     <div class="control">
@@ -700,33 +702,20 @@
     </div>
 </div>
 
-<div class="field">
-    <div class="title">
-        <span>Grip-Point Velocity Compensator</span>
-        <app-field-tip info="The estimator honestly reports the tracked origin's velocity; during a wrist snap that includes the origin's tangential speed around your hand (w x r) - physics, not filter error, and the measured cause of combined linear+wrist throws bending off while pure linear and pure flick throws feel right. When enabled, reported velocity is transported to the grip point: v + blend x (w x r). Set r via the in-headset Aligner's GRIP capture (hold the palm still, swirl a pure wrist cone with the trigger held) or type it below. With r set but Enable OFF the driver runs shadow-only: PEAKDIAG logs gOut/gDirOff/wr showing what compensation WOULD have reported - verify a session like that first. Leave OFF for games/engines that already transport velocity to their own attach point (they would double-apply). Blend 1 = full physics; below 1 under-corrects deliberately." />
-        <app-reset-button [canReset]="settings.kalmanGripEnable != defaults.kalmanGripEnable || settings.kalmanGripBlend != defaults.kalmanGripBlend" (resetClick)="reset('kalmanGripEnable'); reset('kalmanGripBlend')"></app-reset-button>
-    </div>
-    <div class="control">
-        <mat-slide-toggle [(ngModel)]="settings.kalmanGripEnable" (ngModelChange)="save()"></mat-slide-toggle>
-        <span>Blend</span><input matInput [(ngModel)]="settings.kalmanGripBlend" step="0.1" min="0" max="2" (ngModelChange)="save()" type="number">
-    </div>
-</div>
+
 
 <div class="field">
     <div class="title">
-        <span>Grip Point r - Left / Right (cm, controller local frame)</span>
-        <app-field-tip info="Per-hand vector from the tracked origin to the hand's rotation center, in the controller's local frame. The Aligner's GRIP capture solves this automatically (it is the same least-squares pivot solve as the tip capture, aimed at your wrist instead of a desk) and saving from the Aligner writes these fields. Typical magnitude a few cm; values are ignored (compensator inert) below 0.1cm or above 30cm. Field data 2026-08-14: per-throw inversion of the direction error clusters at |r| ~ 5cm." />
-        <app-reset-button [canReset]="settings.kalmanGripLeftCm.x != defaults.kalmanGripLeftCm.x || settings.kalmanGripLeftCm.y != defaults.kalmanGripLeftCm.y || settings.kalmanGripLeftCm.z != defaults.kalmanGripLeftCm.z || settings.kalmanGripRightCm.x != defaults.kalmanGripRightCm.x || settings.kalmanGripRightCm.y != defaults.kalmanGripRightCm.y || settings.kalmanGripRightCm.z != defaults.kalmanGripRightCm.z" (resetClick)="reset('kalmanGripLeftCm'); reset('kalmanGripRightCm')"></app-reset-button>
+        <span>Kalman Loss Coast (ms)</span>
+        <app-field-tip info="When the controller briefly leaves tracking (hand out of camera view), the stream freezes the hand in place with zero velocity until it is seen again. For up to this many ms of tracking loss, the driver instead keeps the hand moving along the filter's last known motion (with the usual acceleration decay so it cannot run away)." />
+        <app-reset-button [canReset]="settings.kalmanLossCoastMs != defaults.kalmanLossCoastMs" (resetClick)="reset('kalmanLossCoastMs')"></app-reset-button>
     </div>
     <div class="control">
-        <span>Lx</span><input matInput [(ngModel)]="settings.kalmanGripLeftCm.x" step="0.5" min="-20" max="20" (ngModelChange)="save()" type="number">
-        <span>Ly</span><input matInput [(ngModel)]="settings.kalmanGripLeftCm.y" step="0.5" min="-20" max="20" (ngModelChange)="save()" type="number">
-        <span>Lz</span><input matInput [(ngModel)]="settings.kalmanGripLeftCm.z" step="0.5" min="-20" max="20" (ngModelChange)="save()" type="number">
-        <span>Rx</span><input matInput [(ngModel)]="settings.kalmanGripRightCm.x" step="0.5" min="-20" max="20" (ngModelChange)="save()" type="number">
-        <span>Ry</span><input matInput [(ngModel)]="settings.kalmanGripRightCm.y" step="0.5" min="-20" max="20" (ngModelChange)="save()" type="number">
-        <span>Rz</span><input matInput [(ngModel)]="settings.kalmanGripRightCm.z" step="0.5" min="-20" max="20" (ngModelChange)="save()" type="number">
+        <input matInput [(ngModel)]="settings.kalmanLossCoastMs" step="50" min="0" max="1000" (ngModelChange)="save()" type="number">
     </div>
 </div>
+
+
 }
 
 @if(isKalmanMode()){
@@ -844,43 +833,19 @@
 <div class="field">
     <div class="title">
         <span>Black Floor: Diagnostic Ramp Bar</span>
-        <app-field-tip info="Draws two near-black test strips per eye (17 patches, sRGB codes 0 to 32 in steps of 2, white ticks over codes 0/8/16/24/32): one across screen center (inside the foveated encoder's high-quality region when looking straight ahead) and one near the bottom (peripheral region). The bar is injected before the fixes, the dither and the encoder, so what you see is the honest end-to-end near-black response. See Docs/BlackFloorProtocol.md for how to read it." />
+        <app-field-tip info="Draws two near-black test strips per eye (17 patches, sRGB codes 0 to 32 in steps of 2, white ticks over codes 0/8/16/24/32): one across screen center and one near the bottom." />
     </div>
     <div class="control">
         <mat-slide-toggle [(ngModel)]="settings.blackFloor.rampBar" (ngModelChange)="save()"></mat-slide-toggle>
     </div>
 </div>
 
-<div class="field">
-    <div class="title">
-        <span>Black Floor: Range Remap</span>
-        <app-field-tip info="Fix for a full-vs-limited video range mismatch in the stream chain. Compress: pre-maps into limited range (16-235) before encode - the fix when the first ~8 ramp patches are indistinguishable black (display decoding full as limited). Expand: the inverse - the fix when black looks grey and highlights clip. Leave off unless the ramp bar diagnosed one of the two." />
-    </div>
-    <div class="control">
-        <mat-select [(ngModel)]="settings.blackFloor.rangeMode" (ngModelChange)="save()">
-            <mat-option value="off">Off</mat-option>
-            <mat-option value="compress">Compress (fix crushed blacks below code 16)</mat-option>
-            <mat-option value="expand">Expand (fix grey blacks / clipped whites)</mat-option>
-        </mat-select>
-    </div>
-</div>
 
-<div class="field">
-    <div class="title">
-        <span>Black Floor: Shadow Lift (floor / knee, sRGB codes)</span>
-        <app-field-tip info="Lifts only the deepest shadows: codes below the knee are squeezed linearly so true black lands at the floor code, everything above the knee is untouched. Rescues detail crushed by the OLED floor or the encoder's dark-scene quantization (including the foveated-region boundary square) without greying the whole image. Floor 2 / knee 8 is a subtle start; raise the knee if banding remains just above it." />
-    </div>
-    <div class="control">
-        <mat-slide-toggle [(ngModel)]="settings.blackFloor.shadowLift" (ngModelChange)="save()"></mat-slide-toggle>
-        <span>F</span><input matInput [(ngModel)]="settings.blackFloor.floorCode" step="0.5" min="0" max="16" (ngModelChange)="save()" type="number">
-        <span>K</span><input matInput [(ngModel)]="settings.blackFloor.kneeCode" step="1" min="2" max="48" (ngModelChange)="save()" type="number">
-    </div>
-</div>
 
 <div class="field">
     <div class="title">
         <span>Black Floor: Black Point (sRGB code)</span>
-        <app-field-tip info="Adjustable black level: remaps [BP, 255] onto [0, 255], darkening blacks by exactly as much as the chain can carry. Calibration recipe: turn the Ramp Bar on, raise BP until the two darkest patches just merge into one black, then back off one notch - that is maximum contrast with zero crushed detail. This is the tunable version of Range Remap Expand (which is a fixed 16-code chop, measured crushing most of the ramp); leave Range Remap off when using this. 0 disables." />
+        <app-field-tip info="Adjustable black level: remaps [BP, 255] onto [0, 255], darkening blacks. Calibration recipe: turn the Ramp Bar on, raise BP until the two darkest patches just merge into one black, then back off one notch, that is maximum contrast with zero crushed detail." />
     </div>
     <div class="control">
         <input matInput [(ngModel)]="settings.blackFloor.blackPointCode" step="0.5" min="0" max="24" (ngModelChange)="save()" type="number">
@@ -890,7 +855,7 @@
 <div class="field">
     <div class="title">
         <span>Hitch Diagnostics (HITCHDIAG)</span>
-        <app-field-tip info="Render-side cadence instrumentation, the frame-path analog of KALDIAG. Every 2 seconds a HITCHDIAG log line summarizes the frame callback rhythm: mean/max gap between frames, counts over 16.7ms and 33ms, sync-mutex wait, this driver's own work time, and skip/scratch-create/evict counters. Any single gap over 25ms also logs a one-shot HITCH line tagged with what the previous frame did (scratch creation, distortion LUT bake, shader compile, sync skip) so stutters name their own cause. Costs a few clock reads per frame - safe to leave on; grep the log for HITCHDIAG / HITCH." />
+        <app-field-tip info="Render-side cadence instrumentation, the frame-path analog of KALDIAG. Every 2 seconds a HITCHDIAG log line summarizes the frame callback rhythm: mean/max gap between frames, counts over 16.7ms and 33ms, sync-mutex wait, this driver's own work time, and skip/scratch-create/evict counters. Any single gap over 25ms also logs a one-shot HITCH line tagged with what the previous frame did (scratch creation, distortion LUT bake, shader compile, sync skip) so stutters name their own cause." />
         <app-reset-button [canReset]="settings.hitchDiag != defaults.hitchDiag" (resetClick)="reset('hitchDiag')"></app-reset-button>
     </div>
     <div class="control">
@@ -991,19 +956,6 @@
     </div>
 </div>
 }
-@if(settings.velocityFixMode == 'kalmanCAM' || settings.velocityFixMode == 'kalmanCA'){
-<div class="field">
-    <div class="title">
-        <span>Throw Strength Trim (scale / spin scale)</span>
-        <app-field-tip info="Global multipliers on reported speed and spin, kept as safety trims for the CA experiment modes. If the CA model is doing its job these converge to 1.0 - the PEAKDIAG log line (out/sec ratio) is the instrument that says whether they can." />
-        <app-reset-button [canReset]="settings.kalmanMagScale != defaults.kalmanMagScale || settings.kalmanAngMagScale != defaults.kalmanAngMagScale" (resetClick)="reset('kalmanMagScale'); reset('kalmanAngMagScale')"></app-reset-button>
-    </div>
-    <div class="control">
-        <span>S</span><input matInput [(ngModel)]="settings.kalmanMagScale" step="0.05" min="0.25" max="4" (ngModelChange)="save()" type="number">
-        <span>Sa</span><input matInput [(ngModel)]="settings.kalmanAngMagScale" step="0.05" min="0.25" max="4" (ngModelChange)="save()" type="number">
-    </div>
-</div>
-}
 
 <div class="field">
     <div class="title">
@@ -1027,6 +979,97 @@
     <div class="section-title collapsible" (click)="sections.graveyard = !sections.graveyard"><span>Graveyard (retired experiments)</span><span class="chevron" [class.closed]="!sections.graveyard">▾</span></div>
 </div>
 @if(sections.graveyard){
+<!-- graveyarded 2026-08-15: A/B/C session - whip-class relDirOff WORSENED vs manual Td5 (7.7 vs 6.8 med, p75 11.7 vs 8.0); the whip tail proved sporadic, not a stable function of w, so a deterministic slope shifts the whole population to chase a minority. manual Td5 ratified. -->
+<div class="field">
+    <div class="title">
+        <span>Adaptive Direction Lead - EXPERIMENT A</span>
+        <app-field-tip info="The fixed Direction Lead above is tuned for the average throw, but the hardest wrist whips (25+ rad/s) lag the filter more, so a single value under-corrects exactly your most violent throws - the last remaining direction tail. When enabled, the lead grows smoothly with your wrist speed: base + slope x rotation speed, OVERRIDING the manual Td while on. Defaults (5 + 0.3/rads): an ordinary throw gets ~8ms, a hard whip ~14ms. No thresholds, nothing switches - gentle throws are essentially unchanged. Success looks like the rare 12-24 degree hard-whip releases dropping to the ~5 degree baseline with everything else identical." />
+        <app-reset-button [canReset]="settings.kalmanDirLeadAdaptive != defaults.kalmanDirLeadAdaptive || settings.kalmanDirLeadBaseMs != defaults.kalmanDirLeadBaseMs || settings.kalmanDirLeadWMs != defaults.kalmanDirLeadWMs" (resetClick)="reset('kalmanDirLeadAdaptive'); reset('kalmanDirLeadBaseMs'); reset('kalmanDirLeadWMs')"></app-reset-button>
+    </div>
+    <div class="control">
+        <mat-slide-toggle [(ngModel)]="settings.kalmanDirLeadAdaptive" (ngModelChange)="save()"></mat-slide-toggle>
+        <span>Base</span><input matInput [(ngModel)]="settings.kalmanDirLeadBaseMs" step="1" min="0" max="30" (ngModelChange)="save()" type="number">
+        <span>Slope</span><input matInput [(ngModel)]="settings.kalmanDirLeadWMs" step="0.05" min="0" max="1" (ngModelChange)="save()" type="number">
+    </div>
+</div>
+<!-- graveyarded 2026-08-15: A/B/C session - statistically identical to manual Td5 on release direction (6.7 vs 6.8 med) with a fatter tail, at a felt jitter cost during fast motion (rDiv peaks to 55 mid-whip). attacks a sporadic per-throw transient an EMA can only chase with delay. -->
+<div class="field">
+    <div class="title">
+        <span>Adaptive Measurement Trust - EXPERIMENT B</span>
+        <app-field-tip info="Attacks the hard-whip lag itself instead of compensating its direction error - so unlike Experiment A this also reaches games that compute throws from hand position history. The filter continuously measures how far the incoming tracking is outrunning its own smooth model and, exactly in proportion, trusts the raw measurements more (bounded by Max). During calm and ordinary motion it is mathematically identical to off; during violent whips it lets the filter keep up, at the honest cost of passing some tracking noise through while your hand is moving fast (where it is hard to perceive). Purely opt-in - this deliberately bends the smoothness tuning the whole campaign ratified, so judge it on its own session. Watch rDiv/rADiv in KALDIAG: 1.0 all session = it never engaged; peaks of 5-16 during whips only = working as designed." />
+        <app-reset-button [canReset]="settings.kalmanAdaptiveR != defaults.kalmanAdaptiveR || settings.kalmanAdaptiveRMaxDiv != defaults.kalmanAdaptiveRMaxDiv" (resetClick)="reset('kalmanAdaptiveR'); reset('kalmanAdaptiveRMaxDiv')"></app-reset-button>
+    </div>
+    <div class="control">
+        <mat-slide-toggle [(ngModel)]="settings.kalmanAdaptiveR" (ngModelChange)="save()"></mat-slide-toggle>
+        <span>Max</span><input matInput [(ngModel)]="settings.kalmanAdaptiveRMaxDiv" step="2" min="1" max="100" (ngModelChange)="save()" type="number">
+    </div>
+</div>
+<!-- graveyarded 2026-08-15: field-rejected across multiple sessions; the w x r transport never produced a felt or measured win over reporting the tracked-origin state. -->
+<div class="field">
+    <div class="title">
+        <span>Grip-Point Velocity Compensator</span>
+        <app-field-tip info="The estimator honestly reports the tracked origin's velocity; during a wrist snap that includes the origin's tangential speed around your hand (w x r) - physics, not filter error, and the measured cause of combined linear+wrist throws bending off while pure linear and pure flick throws feel right. When enabled, reported velocity is transported to the grip point: v + blend x (w x r). Set r via the in-headset Aligner's GRIP capture (hold the palm still, swirl a pure wrist cone with the trigger held) or type it below. With r set but Enable OFF the driver runs shadow-only: PEAKDIAG logs gOut/gDirOff/wr showing what compensation WOULD have reported - verify a session like that first. Leave OFF for games/engines that already transport velocity to their own attach point (they would double-apply). Blend 1 = full physics; below 1 under-corrects deliberately." />
+        <app-reset-button [canReset]="settings.kalmanGripEnable != defaults.kalmanGripEnable || settings.kalmanGripBlend != defaults.kalmanGripBlend" (resetClick)="reset('kalmanGripEnable'); reset('kalmanGripBlend')"></app-reset-button>
+    </div>
+    <div class="control">
+        <mat-slide-toggle [(ngModel)]="settings.kalmanGripEnable" (ngModelChange)="save()"></mat-slide-toggle>
+        <span>Blend</span><input matInput [(ngModel)]="settings.kalmanGripBlend" step="0.1" min="0" max="2" (ngModelChange)="save()" type="number">
+    </div>
+</div>
+<!-- graveyarded 2026-08-15: parameters of the retired grip compensator above. -->
+<div class="field">
+    <div class="title">
+        <span>Grip Point r - Left / Right (cm, controller local frame)</span>
+        <app-field-tip info="Per-hand vector from the tracked origin to the hand's rotation center, in the controller's local frame. The Aligner's GRIP capture solves this automatically (it is the same least-squares pivot solve as the tip capture, aimed at your wrist instead of a desk) and saving from the Aligner writes these fields. Typical magnitude a few cm; values are ignored (compensator inert) below 0.1cm or above 30cm. Field data 2026-08-14: per-throw inversion of the direction error clusters at |r| ~ 5cm." />
+        <app-reset-button [canReset]="settings.kalmanGripLeftCm.x != defaults.kalmanGripLeftCm.x || settings.kalmanGripLeftCm.y != defaults.kalmanGripLeftCm.y || settings.kalmanGripLeftCm.z != defaults.kalmanGripLeftCm.z || settings.kalmanGripRightCm.x != defaults.kalmanGripRightCm.x || settings.kalmanGripRightCm.y != defaults.kalmanGripRightCm.y || settings.kalmanGripRightCm.z != defaults.kalmanGripRightCm.z" (resetClick)="reset('kalmanGripLeftCm'); reset('kalmanGripRightCm')"></app-reset-button>
+    </div>
+    <div class="control">
+        <span>Lx</span><input matInput [(ngModel)]="settings.kalmanGripLeftCm.x" step="0.5" min="-20" max="20" (ngModelChange)="save()" type="number">
+        <span>Ly</span><input matInput [(ngModel)]="settings.kalmanGripLeftCm.y" step="0.5" min="-20" max="20" (ngModelChange)="save()" type="number">
+        <span>Lz</span><input matInput [(ngModel)]="settings.kalmanGripLeftCm.z" step="0.5" min="-20" max="20" (ngModelChange)="save()" type="number">
+        <span>Rx</span><input matInput [(ngModel)]="settings.kalmanGripRightCm.x" step="0.5" min="-20" max="20" (ngModelChange)="save()" type="number">
+        <span>Ry</span><input matInput [(ngModel)]="settings.kalmanGripRightCm.y" step="0.5" min="-20" max="20" (ngModelChange)="save()" type="number">
+        <span>Rz</span><input matInput [(ngModel)]="settings.kalmanGripRightCm.z" step="0.5" min="-20" max="20" (ngModelChange)="save()" type="number">
+    </div>
+</div>
+<!-- graveyarded 2026-08-15: superseded by the Black Point workflow below the ramp bar. -->
+<div class="field">
+    <div class="title">
+        <span>Black Floor: Range Remap</span>
+        <app-field-tip info="Fix for a full-vs-limited video range mismatch in the stream chain. Compress: pre-maps into limited range (16-235) before encode - the fix when the first ~8 ramp patches are indistinguishable black (display decoding full as limited). Expand: the inverse - the fix when black looks grey and highlights clip. Leave off unless the ramp bar diagnosed one of the two." />
+    </div>
+    <div class="control">
+        <mat-select [(ngModel)]="settings.blackFloor.rangeMode" (ngModelChange)="save()">
+            <mat-option value="off">Off</mat-option>
+            <mat-option value="compress">Compress (fix crushed blacks below code 16)</mat-option>
+            <mat-option value="expand">Expand (fix grey blacks / clipped whites)</mat-option>
+        </mat-select>
+    </div>
+</div>
+<!-- graveyarded 2026-08-15: superseded by the Black Point workflow; lift solved a problem the calibrated black point solves cleaner. -->
+<div class="field">
+    <div class="title">
+        <span>Black Floor: Shadow Lift (floor / knee, sRGB codes)</span>
+        <app-field-tip info="Lifts only the deepest shadows: codes below the knee are squeezed linearly so true black lands at the floor code, everything above the knee is untouched. Rescues detail crushed by the OLED floor or the encoder's dark-scene quantization (including the foveated-region boundary square) without greying the whole image. Floor 2 / knee 8 is a subtle start; raise the knee if banding remains just above it." />
+    </div>
+    <div class="control">
+        <mat-slide-toggle [(ngModel)]="settings.blackFloor.shadowLift" (ngModelChange)="save()"></mat-slide-toggle>
+        <span>F</span><input matInput [(ngModel)]="settings.blackFloor.floorCode" step="0.5" min="0" max="16" (ngModelChange)="save()" type="number">
+        <span>K</span><input matInput [(ngModel)]="settings.blackFloor.kneeCode" step="1" min="2" max="48" (ngModelChange)="save()" type="number">
+    </div>
+</div>
+<!-- graveyarded 2026-08-15: the CA model closed with rel/pk at 1.00 - the trim converged to its own retirement (its designed success condition). -->
+<div class="field">
+    <div class="title">
+        <span>Throw Strength Trim (scale / spin scale)</span>
+        <app-field-tip info="Global multipliers on reported speed and spin, kept as safety trims for the CA experiment modes. If the CA model is doing its job these converge to 1.0 - the PEAKDIAG log line (out/sec ratio) is the instrument that says whether they can." />
+        <app-reset-button [canReset]="settings.kalmanMagScale != defaults.kalmanMagScale || settings.kalmanAngMagScale != defaults.kalmanAngMagScale" (resetClick)="reset('kalmanMagScale'); reset('kalmanAngMagScale')"></app-reset-button>
+    </div>
+    <div class="control">
+        <span>S</span><input matInput [(ngModel)]="settings.kalmanMagScale" step="0.05" min="0.25" max="4" (ngModelChange)="save()" type="number">
+        <span>Sa</span><input matInput [(ngModel)]="settings.kalmanAngMagScale" step="0.05" min="0.25" max="4" (ngModelChange)="save()" type="number">
+    </div>
+</div>
 <div class="field">
     <div class="title">
         <span>Field-retired experiments - kept for reproducibility. Each lost a live test. Values here stay ACTIVE while hidden; re-test only if the transport fresh-rate materially improves.</span>

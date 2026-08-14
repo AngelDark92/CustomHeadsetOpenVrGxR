@@ -133,6 +133,7 @@ export type StreamFrameConfig = {
   hitchDiag: boolean;
   deferredEviction: boolean;
   velocityFixMode: string;
+  streamFrameSchema: number;
   deriveSmoothTauSlowMs: number;
   deriveSmoothTauFastMs: number;
   deriveSmoothSpeedLow: number;
@@ -181,6 +182,12 @@ export type StreamFrameConfig = {
   kalmanGazeMinSpeed: number;
   kalmanSmoothLagMs: number;
   kalmanDirLeadMs: number;
+  kalmanDirLeadAdaptive: boolean;
+  kalmanDirLeadBaseMs: number;
+  kalmanDirLeadWMs: number;
+  kalmanAdaptiveR: boolean;
+  kalmanAdaptiveRMaxDiv: number;
+  kalmanLossCoastMs: number;
   kalmanCaJerk: number;
   kalmanCaAngJerk: number;
   kalmanCaPosNoiseMm: number;

@@ -445,7 +445,16 @@ struct StreamFrameConfig{
 	// the ramp-lag magnitude deficit is removed by the model instead of
 	// rescaled away. both CA modes skip the legacy blend/peak-hold
 	// stack entirely (clean state reporting).
-	int velocityFixMode = 4; // kalman: consolidation default 2026-08-11
+	int velocityFixMode = 6; // kalmanCA: release default 2026-08-15
+	// (supersedes the 2026-08-11 CV consolidation — the CA campaign
+	// closed with relDirOff 4.3deg / relAngOff 3.8deg / rel/pk 1.00 at
+	// the release instant, felt and instrumented in agreement)
+	// stored-config schema for the version-gated migration below (see
+	// ConfigLoader): absent in files written before 2026-08-15 -> 1.
+	// bump when a migration is added; the GUI persists it (stored as a
+	// value distinct from the GUI serializer default so the pruner
+	// keeps it, making deliberate post-migration choices sticky).
+	int streamFrameSchema = 1;
 	// derive-mode speed-adaptive smoothing: the estimator is a low lag
 	// endpoint derivative, so its noise shows fully in derive mode (the
 	// old modes' 1 m/s engage gate was hiding it). the filter time
@@ -620,7 +629,41 @@ struct StreamFrameConfig{
 	// J's release-instant peak-hold — the two J pressures decouple.
 	// tune: start ~ the felt group delay (10-30ms at J=10-17), watch
 	// PEAKDIAG dirOff on combined throws. 0 = off.
-	double kalmanDirLeadMs = 0.0;
+	// RATIFIED 2026-08-15: Td=5 (supersedes the 2026-08-14 Td=10). the
+	// peak instant and the release instant want DIFFERENT derotation:
+	// release sits on the post-peak downslope where less lag has
+	// accumulated, and the game samples release. the relDirOff
+	// instrument (release-instant output vs ring-secant truth, the
+	// channel relOffPk is structurally blind to) reads 4.3 / 5.7 /
+	// 8.7 / 12.7 deg at Td 5/10/15/20 — monotone, hands agree, and
+	// rel/pk stays 1.00 throughout (magnitude provably untouched).
+	double kalmanDirLeadMs = 5.0;
+	// adaptive direction lead (2026-08-15, tail experiment A): the fixed
+	// Td is tuned for the median throw, but the release-tail autopsy
+	// shows every genuine residual (12-24deg) is a maximum-violence
+	// whip (wRel 23-39 rad/s) where the filter's effective lag is
+	// ~8-17ms, not 5 — the optimum is throw-dependent. when enabled,
+	// the derotation time becomes Td_eff = base + slope * |w| (clamped
+	// to 50ms total), OVERRIDING the manual knob: an ordinary 12 rad/s
+	// throw gets ~8.6ms, a 30 rad/s whip ~14ms. pure proportionality —
+	// no thresholds, identity at w = 0, magnitude and pose untouched.
+	bool kalmanDirLeadAdaptive = false;
+	double kalmanDirLeadBaseMs = 5.0;
+	double kalmanDirLeadWMs = 0.3; // ms per rad/s
+	// adaptive measurement trust (2026-08-15, tail experiment B, pure
+	// opt-in): innovation-scheduled R — the textbook adaptive-Kalman
+	// route, attacking the lag ITSELF instead of compensating it (so
+	// it also reaches pose-history games, which the derotation cannot).
+	// a fast EMA of the BASE-R-normalized NIS (base-normalized, or
+	// shrinking R would inflate the very statistic that shrinks it)
+	// divides R and Ra continuously: divisor = clamp(schedNis, 1,
+	// maxDiv). at the measured baseline (nis ~0.02, R overstated ~50x)
+	// the divisor sits pinned at 1 = bit-identical to off; during a
+	// violent whip the innovations blow through the model and trust
+	// ramps within ~25ms. the cost is honest: measurement noise passes
+	// through during fast motion, where it is perceptually masked.
+	bool kalmanAdaptiveR = false;
+	double kalmanAdaptiveRMaxDiv = 16.0;
 	// magnitude channel (field 2026-08-10: A=1 + raised P/O is the user
 	// verified sweet spot for DIRECTION, but that configuration's lag
 	// under-reports throw SPEED — "strength feels low", items falling out.
@@ -668,6 +711,20 @@ struct StreamFrameConfig{
 	// catch-ups (~0.1m). 0 disables. config-only this slice; GUI knob
 	// rides the next GUI-touching slice.
 	double kalmanTeleportM = 0.75;
+	// flagged-loss coasting (2026-08-15): during a flagged tracking loss
+	// (out-of-FOV hand) the raw pose passes through FROZEN and the
+	// device zero-fills velocity — the hand visibly parks for the loss
+	// duration (field: brief FOV exits cluster at ~100ms). native
+	// drivers dead-reckon on the IMU through optical loss; vrlink gives
+	// us nothing, but the filter state is the next best thing: for up
+	// to this many ms of loss the reported pose is the state predicted
+	// forward (Singer decay bounding the acceleration, so a stale hot
+	// accel cannot run away), velocities reported from the same
+	// prediction. stateless per callback (predicted from the last
+	// committed state, never re-committed), so nothing accumulates;
+	// reacquire still takes the existing clean-reinit path. past the
+	// window the pose passes through raw, exactly as before. 0 = off.
+	double kalmanLossCoastMs = 250.0;
 	// measurement timestamping (estimator correctness pass 2026-08-10):
 	// vrlink stamps every pose with poseTimeOffset, and this session's
 	// field data shows it is real and VARYING — median +13.8ms, stdev
@@ -730,7 +787,10 @@ struct StreamFrameConfig{
 	// lag acts as an accidental peak hold — beats high jerk at the only
 	// instant the game samples (J=10: rel/pk 1.00, relOff 0deg median;
 	// J=51: rel/pk down to 0.72, relOff 8deg median).
-	double kalmanCaJerk = 10.0;
+	// RATIFIED 2026-08-14 (Td session): J=17 P=5.7 O=5.75 Td=10. J=17
+	// ran the whole sweep clean (rel/pk 1.00, relOff 0.0deg); prior
+	// session: good to at least 17, very bad at 50.
+	double kalmanCaJerk = 17.0;
 	double kalmanCaAngJerk = 1500.0;
 	// CA-full measurement noise, separate from the CV knobs so tuning
 	// one mode never disturbs the other's field-proven values.
@@ -739,8 +799,12 @@ struct StreamFrameConfig{
 	// zero >30deg releases), P=3 measured pathological, P=5.7 fine but
 	// no better. still deliberately overstates the sensor — this knob
 	// is the mode's smoothness dial, not an honest noise estimate.
-	double kalmanCaPosNoiseMm = 4.2;
-	double kalmanCaOriNoiseDeg = 1.25;
+	double kalmanCaPosNoiseMm = 5.7;
+	// 5.75 field-preferred over 1.25 (2026-08-14): instruments show a
+	// fatter direction tail at 1.25 (dirOff max 177 vs 92); the felt
+	// benefit likely lives in the smoother q/pose stream that
+	// pose-history games fit — PEAKDIAG does not score that channel.
+	double kalmanCaOriNoiseDeg = 5.75;
 	// shared acceleration decay time constant (CA-full, both channels)
 	double kalmanCaAccelTauMs = 150.0;
 	// CA-M fast magnitude channel knobs

@@ -533,10 +533,39 @@ void CustomHeadsetDeviceProvider::LogReleaseSnapshot(vr::PropertyContainerHandle
 			&& IsStreamedController(id)){
 		double relSp = 0, pkSp = 0, relOff = 0, dtPkMs = 0, dtWPkMs = 0;
 		double wRel = 0, wPk = 0;
+		double relDirOff = -1, relAngOff = -1;
 		bool haveRel = false;
 		{
 			std::lock_guard<std::mutex> rdGuard(deriveFilterLock);
 			KalState &krs = kalStates[id];
+			// release-instant direction vs displacement truth: the Td/O
+			// adjudicator (relOffPk below is blind to any direction
+			// shaping — it compares two post-shaping vectors). -1 =
+			// no valid snapshot or speeds below the direction floor.
+			if(krs.relSnapHave){
+				double so = 0, ss = 0, d = 0;
+				double swo = 0, sws = 0, dw = 0;
+				for(int a2 = 0; a2 < 3; a2++){
+					so += krs.relOutV[a2] * krs.relOutV[a2];
+					ss += krs.relSecV[a2] * krs.relSecV[a2];
+					d += krs.relOutV[a2] * krs.relSecV[a2];
+					swo += krs.relOutW[a2] * krs.relOutW[a2];
+					sws += krs.relSecW[a2] * krs.relSecW[a2];
+					dw += krs.relOutW[a2] * krs.relSecW[a2];
+				}
+				if(so > 1.0 && ss > 1.0){
+					double c = d / sqrt(so * ss);
+					if(c > 1.0){ c = 1.0; }
+					if(c < -1.0){ c = -1.0; }
+					relDirOff = acos(c) * 180.0 / 3.14159265358979323846;
+				}
+				if(swo > 4.0 && sws > 4.0){
+					double cw = dw / sqrt(swo * sws);
+					if(cw > 1.0){ cw = 1.0; }
+					if(cw < -1.0){ cw = -1.0; }
+					relAngOff = acos(cw) * 180.0 / 3.14159265358979323846;
+				}
+			}
 			if(krs.histCount > 2){
 				int newest = (krs.histHead - 1 + KalState::histSize) % KalState::histSize;
 				double tNow = krs.histT[newest];
@@ -578,9 +607,9 @@ void CustomHeadsetDeviceProvider::LogReleaseSnapshot(vr::PropertyContainerHandle
 		}
 		// log outside the lock; bounded by the caller's 20Hz cap
 		if(haveRel){
-			DriverLog("PoseLog: RELDIAG id=%u mode=%d rel=%.2f pk150=%.2f rel/pk=%.2f relOffPk=%.1fdeg dtPk=%.0fms dtWPk=%.0fms wRel=%.1f wPk=%.1f",
+			DriverLog("PoseLog: RELDIAG id=%u mode=%d rel=%.2f pk150=%.2f rel/pk=%.2f relOffPk=%.1fdeg relDirOff=%.1fdeg relAngOff=%.1fdeg dtPk=%.0fms dtWPk=%.0fms wRel=%.1f wPk=%.1f",
 				id, driverConfig.streamFrame.velocityFixMode, relSp, pkSp,
-				pkSp > 0.01 ? relSp / pkSp : 0.0, relOff, dtPkMs, dtWPkMs, wRel, wPk);
+				pkSp > 0.01 ? relSp / pkSp : 0.0, relOff, relDirOff, relAngOff, dtPkMs, dtWPkMs, wRel, wPk);
 		}
 	}
 	// release latch trigger: arm the peak replay for this device the moment
@@ -904,14 +933,65 @@ bool CustomHeadsetDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 						openVRID, rawResult, (int)rawPoseValid);
 				}
 			}
+			// flagged-loss coast: report the state predicted forward for
+			// a bounded window instead of the frozen raw pose. STATELESS:
+			// predicted from the last committed state each callback
+			// (horizon = lossNow - lks.time), nothing is written back,
+			// so nothing accumulates and reacquire's clean reinit is
+			// untouched. Singer decay bounds a stale hot acceleration
+			// across the horizon; velocities are reported from the same
+			// prediction so the runtime and pose-history games see one
+			// coherent coasted state, not a frozen hand with zero v.
+			double coastWin = driverConfig.streamFrame.kalmanLossCoastMs / 1000.0;
+			if(coastWin > 1.0){ coastWin = 1.0; }
+			if(coastWin > 0.0005 && lks.have
+					&& lossNow - lks.lossStartT <= coastWin){
+				double dtL = lossNow - lks.time;
+				if(dtL > 0 && dtL <= coastWin + 0.05){
+					double tauL = driverConfig.streamFrame.kalmanCaAccelTauMs / 1000.0;
+					if(tauL < 0.02){ tauL = 0.02; }
+					if(tauL > 10.0){ tauL = 10.0; }
+					bool caL = velocityFixMode == 6;
+					double pL[3], vL[3], wL[3];
+					double eL = exp(-dtL / tauL);
+					double aFacL = (tauL / dtL) * (1.0 - eL);
+					for(int a2 = 0; a2 < 3; a2++){
+						pL[a2] = lks.p[a2];
+						vL[a2] = lks.v[a2];
+						if(caL){
+							double aC = lks.ca[a2];
+							CaStatePredict(dtL, tauL, pL[a2], vL[a2], aC);
+							wL[a2] = lks.w[a2] + lks.caW[a2] * aFacL * dtL;
+						}else{
+							pL[a2] += vL[a2] * dtL;
+							wL[a2] = lks.w[a2];
+						}
+					}
+					double hL = 0.5 * dtL;
+					vr::HmdQuaternion_t dqL = {1.0, lks.w[0] * hL, lks.w[1] * hL, lks.w[2] * hL};
+					vr::HmdQuaternion_t qL = QuatMultiply(dqL, lks.q);
+					double qnL = sqrt(qL.w * qL.w + qL.x * qL.x + qL.y * qL.y + qL.z * qL.z);
+					if(qnL > 1e-9){ qL.w /= qnL; qL.x /= qnL; qL.y /= qnL; qL.z /= qnL; }
+					for(int a2 = 0; a2 < 3; a2++){
+						pose.vecPosition[a2] = pL[a2];
+						pose.vecVelocity[a2] = vL[a2];
+						pose.vecAngularVelocity[a2] = wL[a2];
+					}
+					pose.qRotation = qL;
+					pose.poseIsValid = true;
+					pose.result = vr::TrackingResult_Running_OK;
+				}
+			}
 		}else if(lks.lost){
 			lks.lost = false;
 			double lm = (lossNow - lks.lossStartT) * 1000.0;
 			lks.lossMsSum += lm;
 			lks.have = false; // clean reinit on this first OK sample
 			if(driverConfig.streamFrame.poseLogging){
-				DriverLog("PoseLog: KALLOSS id=%u reacquired after %.0fms -> reinit",
-					openVRID, lm);
+				double cw = driverConfig.streamFrame.kalmanLossCoastMs;
+				double coasted = lm < cw ? lm : cw;
+				DriverLog("PoseLog: KALLOSS id=%u reacquired after %.0fms (coasted %.0fms) -> reinit",
+					openVRID, lm, coasted);
 			}
 		}
 	}
@@ -1040,6 +1120,10 @@ bool CustomHeadsetDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 			double caMagTau = driverConfig.streamFrame.kalmanCaMagAccelTauMs / 1000.0;
 			if(caMagTau < 0.02){ caMagTau = 0.02; }
 			if(caMagTau > 10.0){ caMagTau = 10.0; }
+			bool adaptR = driverConfig.streamFrame.kalmanAdaptiveR;
+			double adaptMax = driverConfig.streamFrame.kalmanAdaptiveRMaxDiv;
+			if(adaptMax < 1.0){ adaptMax = 1.0; }
+			if(adaptMax > 100.0){ adaptMax = 100.0; }
 			bool announceKalman = false;
 			bool announceGaze = false;
 			bool logKalDiag = false;
@@ -1047,6 +1131,10 @@ bool CustomHeadsetDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 			bool stuckEnterLog = false;
 			bool stuckExitLog = false;
 			double stuckLogDiv = 0, stuckLogMs = 0, stuckLogMax = 0, stuckLogV0 = 0;
+			// corrupt-payload gate log flags (log outside the lock)
+			bool logGarbage = false;
+			double gbPos[3] = {0, 0, 0};
+			double gbQn2 = 0;
 			double diagNis = 0;
 			double diagStepMax = 0;
 			int diagFrozen = 0;
@@ -1067,6 +1155,10 @@ bool CustomHeadsetDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 			int diagLossRuns = 0;
 			double diagLossMs = 0;
 			int diagTeleports = 0;
+			int diagGarbage = 0;
+			int diagVClamp = 0;
+			double diagRDiv = 1.0;
+			double diagRADiv = 1.0;
 			double diagCaAcc = 0;
 			double diagCaWAcc = 0;
 			// device-time measurement stamp: the device says WHEN this
@@ -1088,6 +1180,25 @@ bool CustomHeadsetDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 				ks.have = false;
 				ks.haveFast = false;
 			}
+			// adaptive measurement trust: divide R/Ra by the fast scheduler
+			// statistic, bounded. baseline (schedNis << 1) pins the divisor
+			// at 1 = bit-identical to off; the BASE values are kept for the
+			// scheduler's own normalization below. dup-soft inflation
+			// stacks multiplicatively on top, unchanged.
+			double RbaseSched = R;
+			double RaBaseSched = Ra;
+			if(adaptR){
+				double divL = ks.schedNis;
+				if(divL < 1.0){ divL = 1.0; }
+				if(divL > adaptMax){ divL = adaptMax; }
+				double divA = ks.schedANis;
+				if(divA < 1.0){ divA = 1.0; }
+				if(divA > adaptMax){ divA = adaptMax; }
+				R /= divL;
+				Ra /= divA;
+				if(divL > ks.rDivPk){ ks.rDivPk = divL; }
+				if(divA > ks.rADivPk){ ks.rADivPk = divA; }
+			}
 			// acceleration field probe: raw stream, before any
 			// accept/drop decision (we are probing what vrlink SENDS,
 			// not what the filter uses)
@@ -1104,7 +1215,47 @@ bool CustomHeadsetDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 			}
 			double dt = devTime ? tMeas - ks.tMeas : now - ks.time;
 			bool dropSample = false;
-			if(devTime && ks.have && dt <= 0 && dt > -0.2){
+			// corrupt-payload sanity gate (field 2026-08-14): vrlink
+			// delivers occasional position garbage (~4e18m, sub-frame-dt
+			// bursts) FLAGGED Running_OK — the loss gate never sees it.
+			// a non-finite or out-of-playspace measurement is not a
+			// measurement: reject it BEFORE dt/dup/teleport/state ever
+			// touch it. rejected samples take the existing drop path
+			// (state, clocks, lastMeas untouched; reported pose holds
+			// the last filtered state), so the guard can never reinit
+			// at garbage and the accept path can never innovate across
+			// it. bursts longer than 200ms reinit naturally at the next
+			// good sample via the dt > 0.2 path. 50m bound: generous
+			// for any real playspace, far below the garbage class.
+			{
+				bool garbage = false;
+				for(int gI = 0; gI < 3; gI++){
+					double pc = pose.vecPosition[gI];
+					if(!std::isfinite(pc) || pc > 50.0 || pc < -50.0){ garbage = true; }
+				}
+				double qn2g = pose.qRotation.w * pose.qRotation.w
+					+ pose.qRotation.x * pose.qRotation.x
+					+ pose.qRotation.y * pose.qRotation.y
+					+ pose.qRotation.z * pose.qRotation.z;
+				if(!std::isfinite(qn2g) || qn2g < 0.25 || qn2g > 4.0){ garbage = true; }
+				if(garbage){
+					dropSample = true;
+					ks.garbageN++;
+					if(!ks.garbageRun){
+						ks.garbageRun = true;
+						if(driverConfig.streamFrame.poseLogging){
+							logGarbage = true;
+							gbPos[0] = pose.vecPosition[0];
+							gbPos[1] = pose.vecPosition[1];
+							gbPos[2] = pose.vecPosition[2];
+							gbQn2 = qn2g;
+						}
+					}
+				}else{
+					ks.garbageRun = false;
+				}
+			}
+			if(!dropSample && devTime && ks.have && dt <= 0 && dt > -0.2){
 				// out-of-order on the device clock: this sample is OLDER
 				// than the state. it carries no new information — drop
 				// it. never reinit here: zeroing velocity mid-throw on a
@@ -1327,11 +1478,14 @@ bool CustomHeadsetDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 				// machinery — only the motion model changes.
 				double caBeta = exp(-dt / caTau);
 				double nisAccum = 0;
+				double nisBaseAccum = 0;
 				if(caFull){
 					for(int a2 = 0; a2 < 3; a2++){
 						CaStatePredict(dt, caTau, ks.p[a2], ks.v[a2], ks.ca[a2]);
 						CaCovPredict(dt, caJ, caBeta, ks.P6[a2]);
-						nisAccum += CaUpdate(pose.vecPosition[a2] - ks.p[a2], R,
+						double yv = pose.vecPosition[a2] - ks.p[a2];
+						nisBaseAccum += yv * yv / (ks.P6[a2][0] + RbaseSched);
+						nisAccum += CaUpdate(yv, R,
 							ks.p[a2], ks.v[a2], ks.ca[a2], ks.P6[a2]);
 					}
 					double caMagNow = sqrt(ks.ca[0] * ks.ca[0] + ks.ca[1] * ks.ca[1] + ks.ca[2] * ks.ca[2]);
@@ -1345,6 +1499,7 @@ bool CustomHeadsetDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 					double y = pose.vecPosition[a2] - ks.p[a2];
 					double S = Ppp + R;
 					nisAccum += y * y / S;
+					nisBaseAccum += y * y / (Ppp + RbaseSched);
 					double Kp = Ppp / S;
 					double Kv = Ppv / S;
 					ks.p[a2] += Kp * y;
@@ -1354,6 +1509,8 @@ bool CustomHeadsetDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 					ks.P[a2][2] = Pvv - Kv * Ppv;
 				}
 				ks.nisEma += 0.1 * (nisAccum / 3.0 - ks.nisEma);
+				// fast scheduler EMA (~25ms at stream cadence)
+				ks.schedNis += 0.3 * (nisBaseAccum / 3.0 - ks.schedNis);
 				// raw-step telemetry (EMA-free, so single-frame freezes or
 				// teleports cannot hide): settles the FOV question
 				{
@@ -1473,12 +1630,14 @@ bool CustomHeadsetDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 				double res[3] = { 2.0 * sgn * qe.x, 2.0 * sgn * qe.y, 2.0 * sgn * qe.z };
 				double corr[3];
 				double aNisAccum = 0;
+				double aNisBaseAccum = 0;
 				if(caFull){
 					// covariance already predicted above; the zero-seeded
 					// error scratch comes back as K0 * residual = the
 					// orientation correction, w gets K1, caW gets K2
 					for(int a2 = 0; a2 < 3; a2++){
 						double errS = 0;
+						aNisBaseAccum += res[a2] * res[a2] / (ks.Pa6[a2][0] + RaBaseSched);
 						aNisAccum += CaUpdate(res[a2], Ra, errS, ks.w[a2], ks.caW[a2], ks.Pa6[a2]);
 						corr[a2] = errS;
 					}
@@ -1489,6 +1648,7 @@ bool CustomHeadsetDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 					double Pvv = ks.Pa[a2][2] + qaA * qaA * dt2;
 					double S = Ppp + Ra;
 					aNisAccum += res[a2] * res[a2] / S;
+					aNisBaseAccum += res[a2] * res[a2] / (Ppp + RaBaseSched);
 					double Kp = Ppp / S;
 					double Kv = Ppv / S;
 					corr[a2] = Kp * res[a2];
@@ -1498,6 +1658,7 @@ bool CustomHeadsetDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 					ks.Pa[a2][2] = Pvv - Kv * Ppv;
 				}
 				ks.nisAEma += 0.1 * (aNisAccum / 3.0 - ks.nisAEma);
+				ks.schedANis += 0.3 * (aNisBaseAccum / 3.0 - ks.schedANis);
 				vr::HmdQuaternion_t qCorr = {1.0, corr[0] * 0.5, corr[1] * 0.5, corr[2] * 0.5};
 				ks.q = QuatMultiply(qCorr, qPred);
 				double qn2 = sqrt(ks.q.w * ks.q.w + ks.q.x * ks.q.x + ks.q.y * ks.q.y + ks.q.z * ks.q.z);
@@ -1694,10 +1855,22 @@ bool CustomHeadsetDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 			// the game reads, direction-stabilized by any angular dir
 			// smoothing already applied.
 			{
-				double dLead = driverConfig.streamFrame.kalmanDirLeadMs / 1000.0;
+				double wm = sqrt(wRep[0] * wRep[0] + wRep[1] * wRep[1] + wRep[2] * wRep[2]);
+				double dLead;
+				if(driverConfig.streamFrame.kalmanDirLeadAdaptive){
+					// adaptive: Td_eff = base + slope * |w| — the tail
+					// autopsy's throw-dependent lag, as a smooth law.
+					// OVERRIDES the manual knob while enabled.
+					double baseMs = driverConfig.streamFrame.kalmanDirLeadBaseMs;
+					if(baseMs < 0){ baseMs = 0; }
+					double slope = driverConfig.streamFrame.kalmanDirLeadWMs;
+					if(slope < 0){ slope = 0; }
+					dLead = (baseMs + slope * wm) / 1000.0;
+				}else{
+					dLead = driverConfig.streamFrame.kalmanDirLeadMs / 1000.0;
+				}
 				if(dLead > 0.0){
 					if(dLead > 0.05){ dLead = 0.05; }
-					double wm = sqrt(wRep[0] * wRep[0] + wRep[1] * wRep[1] + wRep[2] * wRep[2]);
 					double mV = sqrt(vRep[0] * vRep[0] + vRep[1] * vRep[1] + vRep[2] * vRep[2]);
 					if(wm > 1e-3 && mV > 0.05){
 						double ax = wRep[0] / wm, ay = wRep[1] / wm, az = wRep[2] / wm;
@@ -1821,6 +1994,25 @@ bool CustomHeadsetDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 					useSmoothOut = true;
 				}
 			}
+			// reported-velocity sanity clamp (belt and suspenders behind
+			// the payload gate): no human hand exceeds 25 m/s (the
+			// teleport guard's own constant); 50 m/s is double that
+			// margin. engages ONLY on insanity — a state velocity this
+			// wrong means an unmodeled corruption slipped every gate,
+			// and handing it to the runtime's forward prediction
+			// teleports the rendered hand. pure output bound, counted
+			// for KALDIAG; the state itself is never touched.
+			{
+				double vm2 = vRep[0] * vRep[0] + vRep[1] * vRep[1] + vRep[2] * vRep[2];
+				if(!std::isfinite(vm2)){
+					vRep[0] = 0; vRep[1] = 0; vRep[2] = 0;
+					ks.vClampN++;
+				}else if(vm2 > 50.0 * 50.0){
+					double sc = 50.0 / sqrt(vm2);
+					vRep[0] *= sc; vRep[1] *= sc; vRep[2] *= sc;
+					ks.vClampN++;
+				}
+			}
 			for(int a2 = 0; a2 < 3; a2++){
 				pose.vecPosition[a2] = (useSmoothOut ? ksOutP[a2] : ks.p[a2]) + ks.v[a2] * lead;
 				pose.vecVelocity[a2] = vRep[a2];
@@ -1887,7 +2079,13 @@ bool CustomHeadsetDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 					// mode, but this sum's epsilon floor ~1.5e-3 leaves
 					// ms-scale terms fully representable, unlike the
 					// 1e16-scale legacy sig)
-					+ driverConfig.streamFrame.kalmanDirLeadMs * 17.0;
+					+ driverConfig.streamFrame.kalmanDirLeadMs * 17.0
+					+ driverConfig.streamFrame.kalmanLossCoastMs * 0.31
+					+ (driverConfig.streamFrame.kalmanDirLeadAdaptive ? 0.031 : 0)
+					+ driverConfig.streamFrame.kalmanDirLeadBaseMs * 0.71
+					+ driverConfig.streamFrame.kalmanDirLeadWMs * 11.0
+					+ (driverConfig.streamFrame.kalmanAdaptiveR ? 0.0071 : 0)
+					+ driverConfig.streamFrame.kalmanAdaptiveRMaxDiv * 0.013;
 				// grip sig: cm-scale terms would vanish below the CA sig's
 				// epsilon floor (~1e-2 next to its 1e13-scale terms)
 				double sigGrip = (gripEnable ? 1000.0 : 0.0) + gripBlend * 100.0
@@ -1926,6 +2124,14 @@ bool CustomHeadsetDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 				diagTeleports = ks.teleports;
 				diagCaAcc = ks.caAccPk;
 				diagCaWAcc = ks.caWAccPk;
+				diagGarbage = ks.garbageN;
+				diagVClamp = ks.vClampN;
+				ks.garbageN = 0;
+				ks.vClampN = 0;
+				diagRDiv = ks.rDivPk;
+				diagRADiv = ks.rADivPk;
+				ks.rDivPk = 1.0;
+				ks.rADivPk = 1.0;
 				ks.caAccPk = 0;
 				ks.caWAccPk = 0;
 				ks.stepMax = 0;
@@ -1951,6 +2157,10 @@ bool CustomHeadsetDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 				logKalDiag = true;
 			}
 			}
+			if(logGarbage){
+				DriverLog("PoseLog: KALGARBAGE id=%u corrupt payload rejected pos=(%.3g, %.3g, %.3g) |q|2=%.3g",
+					openVRID, gbPos[0], gbPos[1], gbPos[2], gbQn2);
+			}
 			if(stuckEnterLog){
 				DriverLog("PoseLog: STUCKDIAG id=%u OPEN div=%.2fm v=%.2fm/s (state gliding past measurement)",
 					openVRID, stuckLogDiv, stuckLogV0);
@@ -1973,6 +2183,14 @@ bool CustomHeadsetDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 				driverConfig.streamFrame.kalmanDeviceTime ? 1 : 0,
 				driverConfig.streamFrame.kalmanDupCoastMaxMs,
 				driverConfig.streamFrame.poseLogging ? 1 : 0);
+			if(driverConfig.streamFrame.kalmanDirLeadAdaptive || driverConfig.streamFrame.kalmanAdaptiveR){
+				DriverLog("VelocityFix: ADAPT dirLeadAdaptive=%d base=%.1fms slope=%.2fms/rads adaptR=%d maxDiv=%.0f",
+					driverConfig.streamFrame.kalmanDirLeadAdaptive ? 1 : 0,
+					driverConfig.streamFrame.kalmanDirLeadBaseMs,
+					driverConfig.streamFrame.kalmanDirLeadWMs,
+					driverConfig.streamFrame.kalmanAdaptiveR ? 1 : 0,
+					driverConfig.streamFrame.kalmanAdaptiveRMaxDiv);
+			}
 			if(velocityFixMode >= 5){
 				DriverLog("VelocityFix: CA %s active id=%u J=%.0f Ja=%.0f caP=%.1fmm caO=%.2fdeg tau=%.0fms magJ=%.0f magTau=%.0fms reportAccel=%d",
 					velocityFixMode == 6 ? "FULL" : "MAGNITUDE",
@@ -2004,7 +2222,7 @@ bool CustomHeadsetDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 			if(logKalDiag){
 				// tuning guide: NIS ~ 1 means the noise models match
 				// reality; sustained > 3 = too stiff; < 0.3 = too loose
-				DriverLog("PoseLog: KALDIAG id=%u nis=%.2f aNis=%.2f stepMax=%.1fmm frozenSteps=%d dupSkipped=%d dtBack=%d dtMean=%.2fms dtMax=%.1fms fdtMean=%.2fms fdtMax=%.1fms coastMax=%.0fms gazeBends=%d bendMean=%.1fdeg bendMax=%.1fdeg accMax=%.2f wAccMax=%.1f accNZ=%d loss=%d lossMs=%.0f tp=%d caAcc=%.1f caWAcc=%.1f", openVRID, diagNis, diagANis, diagStepMax * 1000.0, diagFrozen, diagDup, diagDtBack, diagDtMean, diagDtMax, diagFdtMean, diagFdtMax, diagCoastMax, diagBends, diagBendMean, diagBendMax, diagAccMax, diagWAccMax, diagAccNZ, diagLossRuns, diagLossMs, diagTeleports, diagCaAcc, diagCaWAcc);
+				DriverLog("PoseLog: KALDIAG id=%u nis=%.2f aNis=%.2f stepMax=%.1fmm frozenSteps=%d dupSkipped=%d dtBack=%d dtMean=%.2fms dtMax=%.1fms fdtMean=%.2fms fdtMax=%.1fms coastMax=%.0fms gazeBends=%d bendMean=%.1fdeg bendMax=%.1fdeg accMax=%.2f wAccMax=%.1f accNZ=%d loss=%d lossMs=%.0f tp=%d caAcc=%.1f caWAcc=%.1f garbage=%d vClamp=%d rDiv=%.1f rADiv=%.1f", openVRID, diagNis, diagANis, diagStepMax * 1000.0, diagFrozen, diagDup, diagDtBack, diagDtMean, diagDtMax, diagFdtMean, diagFdtMax, diagCoastMax, diagBends, diagBendMean, diagBendMax, diagAccMax, diagWAccMax, diagAccNZ, diagLossRuns, diagLossMs, diagTeleports, diagCaAcc, diagCaWAcc, diagGarbage, diagVClamp, diagRDiv, diagRADiv);
 			}
 		}
 		// ==== end kalman mode ====
@@ -2555,6 +2773,15 @@ bool CustomHeadsetDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 				{
 					std::lock_guard<std::mutex> pkGuard(deriveFilterLock);
 					KalState &pks = kalStates[openVRID];
+					// release-instant snapshot: shaped output + secant,
+					// every frame, read by RELDIAG at the release edge
+					pks.relSnapHave = true;
+					for(int a2 = 0; a2 < 3; a2++){
+						pks.relOutV[a2] = pose.vecVelocity[a2];
+						pks.relOutW[a2] = pose.vecAngularVelocity[a2];
+						pks.relSecV[a2] = secantVel[a2];
+						pks.relSecW[a2] = secantAng[a2];
+					}
 					if(!pks.pkActive && outSp > 2.0){
 						pks.pkActive = true;
 						pks.pkOut = 0; pks.pkSec = 0; pks.pkCalm = 0; pks.pkMag = 0;

@@ -53,7 +53,11 @@ function defaultStreamFrame(): StreamFrameConfig {
     fxaa: 'off',
     hitchDiag: true,
     deferredEviction: true,
-    velocityFixMode: 'kalman',
+    velocityFixMode: 'kalmanCA',
+    // serializer default 0 (real schema is 2): keeps the written 2 from
+    // being pruned by the default-diff serializer, so post-migration
+    // choices stay sticky (see migration in the settings effect)
+    streamFrameSchema: 0,
     deriveSmoothTauSlowMs: 90,
     deriveSmoothTauFastMs: 6,
     deriveSmoothSpeedLow: 0.25,
@@ -87,7 +91,13 @@ function defaultStreamFrame(): StreamFrameConfig {
     kalmanReleaseRewindMs: 0,
     kalmanRewindHoldMs: 100,
     kalmanDirSmoothMs: 0,
-    kalmanDirLeadMs: 0,
+    kalmanDirLeadMs: 5,
+    kalmanDirLeadAdaptive: false,
+    kalmanDirLeadBaseMs: 5,
+    kalmanDirLeadWMs: 0.3,
+    kalmanAdaptiveR: false,
+    kalmanAdaptiveRMaxDiv: 16,
+    kalmanLossCoastMs: 250,
     kalmanAngDirSmoothMs: 0,
     kalmanMagSource: 'state',
     kalmanMagAccel: 60,
@@ -101,10 +111,10 @@ function defaultStreamFrame(): StreamFrameConfig {
     kalmanGazeMaxDeg: 30,
     kalmanGazeMinSpeed: 1.2,
     kalmanSmoothLagMs: 0,
-    kalmanCaJerk: 10,
+    kalmanCaJerk: 17,
     kalmanCaAngJerk: 1500,
-    kalmanCaPosNoiseMm: 4.2,
-    kalmanCaOriNoiseDeg: 1.25,
+    kalmanCaPosNoiseMm: 5.7,
+    kalmanCaOriNoiseDeg: 5.75,
     kalmanCaAccelTauMs: 150,
     kalmanCaMagJerk: 800,
     kalmanCaMagAccelTauMs: 150,
@@ -195,6 +205,28 @@ export class StreamFrameComponent {
     effect(() => {
       this.rootSetting = this.dss.values();
       if (this.rootSetting) {
+        // schema-2 migration (2026-08-15), on the RAW stored object BEFORE
+        // fillDefaults so absent keys are distinguishable from explicit old
+        // defaults. mirrors the driver-side migration; this side persists
+        // it. only exact-old-default configs are upgraded - custom tuning
+        // and deliberate mode choices pass through untouched.
+        const rawSf: any = this.rootSetting.streamFrame;
+        if (rawSf && (rawSf.streamFrameSchema ?? 1) < 2) {
+          const cvDef = (rawSf.kalmanProcessAccel ?? 1) === 1 && (rawSf.kalmanPosNoiseMm ?? 2.7) === 2.7
+            && (rawSf.kalmanProcessAngAccel ?? 400) === 400 && (rawSf.kalmanOriNoiseDeg ?? 1.25) === 1.25;
+          const caOld = rawSf.kalmanCaJerk === 10 && (rawSf.kalmanCaAngJerk ?? 1500) === 1500
+            && rawSf.kalmanCaPosNoiseMm === 4.2 && rawSf.kalmanCaOriNoiseDeg === 1.25;
+          if (rawSf.velocityFixMode === 'kalman' && cvDef) {
+            rawSf.velocityFixMode = 'kalmanCA';
+          } else if ((rawSf.velocityFixMode === 'kalmanCAM' || rawSf.velocityFixMode === 'kalmanCA') && caOld) {
+            rawSf.velocityFixMode = 'kalmanCA';
+            rawSf.kalmanCaJerk = 17;
+            rawSf.kalmanCaPosNoiseMm = 5.7;
+            rawSf.kalmanCaOriNoiseDeg = 5.75;
+          }
+          rawSf.streamFrameSchema = 2;
+          queueMicrotask(() => this.save());
+        }
         this.rootSetting.streamFrame = fillDefaults(this.rootSetting.streamFrame, defaultStreamFrame());
         this.rootSetting.controllers = fillDefaults(this.rootSetting.controllers, defaultControllers());
         this.controllerSettings = this.rootSetting.controllers;
@@ -282,8 +314,8 @@ export class StreamFrameComponent {
     return a.leftH != d.leftH || a.leftV != d.leftV || a.rightH != d.rightH || a.rightV != d.rightV;
   }
 
-  velocityFixTip = 'Off: pass the native runtime velocities through untouched. Kalman (recommended): a single estimator produces position, rotation, velocity and spin as one coherent state, the same architecture native tracked controllers use; all tuning lives in Advanced. Kalman CA (experimental): constant-acceleration variants that track the throw ramp itself instead of rescaling it away - Magnitude swaps only the throw-strength channel (low risk), Full replaces the whole estimator. Turn on Pose Logging and compare PEAKDIAG lines to score them.';
-  velocityFixTipFull = 'Off: pass the native runtime velocities through untouched. Kalman (recommended): a single estimator produces position, rotation, velocity and spin as one coherent state, the same architecture native tracked controllers use; all tuning lives in Advanced. Classic/Full: first-generation fixes, superseded. Derive: the legacy pose-derivation pipeline; retired after field testing, kept intact for reproducibility.';
+  velocityFixTip = 'Off: pass the native runtime velocities through untouched. Kalman: a single estimator produces position, rotation, velocity and spin as one coherent state, the same architecture native tracked controllers use. Kalman CA (recommended): A constant-acceleration variant that tracks the throw ramp itself instead of rescaling it away. Replaces the whole estimator.';
+  velocityFixTipFull = 'Off: pass the native runtime velocities through untouched. Kalman: a single estimator produces position, rotation, velocity and spin as one coherent state, the same architecture native tracked controllers use. Kalman CA (recommended): A constant-acceleration variant that tracks the throw ramp itself instead of rescaling it away. Replaces the whole estimator. Graveyard modes - Classic/Full: first-generation fixes, superseded. Derive: the legacy pose-derivation pipeline; retired after field testing, kept intact for reproducibility. Kalman CA Magnitude: transitional CA variant that swapped only the throw-strength channel; superseded by CA Full (retired 2026-08-15).';
 
   resetGraveyard() {
     if (!this.settings) return;
@@ -316,6 +348,19 @@ export class StreamFrameComponent {
   // normal play session — drives the warning banner at the top of the page
   // the CA experiment modes share the mode-4 machinery (dup handling,
   // device time), so those rows show for any kalman-family mode
+  retiredVelocityModes: string[] = ['classic', 'full', 'derive', 'kalmanCAM'];
+  retiredVelocityModeLabels: { [k: string]: string } = {
+    classic: 'Classic (legacy)',
+    full: 'Full (legacy)',
+    derive: 'Derive (legacy, retired)',
+    kalmanCAM: 'Kalman CA \u2014 Magnitude (retired)',
+  };
+  // a stored graveyarded mode still renders (as the sole extra option)
+  // when the graveyard is hidden, so old configs never break
+  isRetiredVelocityMode(m: string | undefined): boolean {
+    return !!m && this.retiredVelocityModes.includes(m);
+  }
+
   isKalmanMode(): boolean {
     const m = this.settings?.velocityFixMode;
     return m == 'kalman' || m == 'kalmanCAM' || m == 'kalmanCA';
