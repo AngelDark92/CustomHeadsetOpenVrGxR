@@ -102,7 +102,7 @@ function defaultStreamFrame(): StreamFrameConfig {
     kalmanSmoothLagMs: 0,
     kalmanCaJerk: 10,
     kalmanCaAngJerk: 1500,
-    kalmanCaPosNoiseMm: 5.7,
+    kalmanCaPosNoiseMm: 4.2,
     kalmanCaOriNoiseDeg: 1.25,
     kalmanCaAccelTauMs: 150,
     kalmanCaMagJerk: 800,

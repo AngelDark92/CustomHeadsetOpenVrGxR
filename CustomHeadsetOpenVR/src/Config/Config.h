@@ -717,10 +717,12 @@ struct StreamFrameConfig{
 	double kalmanCaAngJerk = 1500.0;
 	// CA-full measurement noise, separate from the CV knobs so tuning
 	// one mode never disturbs the other's field-proven values.
-	// field-derived: 5.7mm deliberately overstates the sensor (NIS
-	// ~0.02) — it is the smoothness dial of this mode, and P=3 was
-	// measured pathological (7/22 throws >30deg off).
-	double kalmanCaPosNoiseMm = 5.7;
+	// field-derived (session 5): P=4.2 was best-or-tied at the release
+	// instant for BOTH J=10 and J=17 (rel/pk 1.00, relOff 0.0deg,
+	// zero >30deg releases), P=3 measured pathological, P=5.7 fine but
+	// no better. still deliberately overstates the sensor — this knob
+	// is the mode's smoothness dial, not an honest noise estimate.
+	double kalmanCaPosNoiseMm = 4.2;
 	double kalmanCaOriNoiseDeg = 1.25;
 	// shared acceleration decay time constant (CA-full, both channels)
 	double kalmanCaAccelTauMs = 150.0;
