@@ -668,6 +668,10 @@ struct StreamFrameConfig{
 	// violent whip the innovations blow through the model and trust
 	// ramps within ~25ms. the cost is honest: measurement noise passes
 	// through during fast motion, where it is perceptually masked.
+	// retired for this transport (2026-08-16): even with the dup
+	// composition fixed, dividing R during maneuvers makes the filter
+	// hug STALE samples at release (left bias, magnitude jitter). kept
+	// functional for experiments; not recommended.
 	bool kalmanAdaptiveR = false;
 	double kalmanAdaptiveRMaxDiv = 16.0;
 	// magnitude channel (field 2026-08-10: A=1 + raised P/O is the user
@@ -796,7 +800,10 @@ struct StreamFrameConfig{
 	// RATIFIED 2026-08-14 (Td session): J=17 P=5.7 O=5.75 Td=10. J=17
 	// ran the whole sweep clean (rel/pk 1.00, relOff 0.0deg); prior
 	// session: good to at least 17, very bad at 50.
-	double kalmanCaJerk = 17.0;
+	// RATIFIED 2026-08-16 (composition-fix session): with the adaptiveR/
+	// dedup composition fixed and honest noise viable, J=4 ran the
+	// standard battery "genuinely great, best of everything so far".
+	double kalmanCaJerk = 4.0;
 	double kalmanCaAngJerk = 1500.0;
 	// CA-full measurement noise, separate from the CV knobs so tuning
 	// one mode never disturbs the other's field-proven values.
@@ -805,14 +812,21 @@ struct StreamFrameConfig{
 	// zero >30deg releases), P=3 measured pathological, P=5.7 fine but
 	// no better. still deliberately overstates the sensor — this knob
 	// is the mode's smoothness dial, not an honest noise estimate.
-	double kalmanCaPosNoiseMm = 5.7;
+	// 2026-08-16: honest 1.5mm ratified — viable now that dup distrust
+	// is floored in absolute terms (it no longer weakens when this
+	// shrinks) and adaptiveR no longer stacks against it.
+	double kalmanCaPosNoiseMm = 1.5;
 	// 5.75 field-preferred over 1.25 (2026-08-14): instruments show a
 	// fatter direction tail at 1.25 (dirOff max 177 vs 92); the felt
 	// benefit likely lives in the smoother q/pose stream that
 	// pose-history games fit — PEAKDIAG does not score that channel.
-	double kalmanCaOriNoiseDeg = 5.75;
-	// shared acceleration decay time constant (CA-full, both channels)
-	double kalmanCaAccelTauMs = 150.0;
+	// 2026-08-16: 1.5 ratified alongside the honest linear noise.
+	double kalmanCaOriNoiseDeg = 1.5;
+	// shared acceleration decay time constant (CA-full, both channels).
+	// 2026-08-16: 20ms ratified (with exactCov the low-tau covariance is
+	// consistent; 150 was only ever better under the legacy covariance
+	// and inflated-R regime).
+	double kalmanCaAccelTauMs = 20.0;
 	// CA-M fast magnitude channel knobs
 	double kalmanCaMagJerk = 800.0;
 	double kalmanCaMagAccelTauMs = 150.0;
@@ -830,7 +844,9 @@ struct StreamFrameConfig{
 	// model — consistent gains recalibrate NIS and shift the effective
 	// meaning of the tuned J/P/O knobs slightly. off = bit-identical to
 	// the field-tuned 8.5 behavior.
-	bool kalmanCaExactCov = false;
+	// 2026-08-16: ON ratified as default (field-neutral at high tau,
+	// correct at the ratified tau=20).
+	bool kalmanCaExactCov = true;
 	// ==== grip-point velocity compensator ====
 	// the estimator honestly reports the TRACKED ORIGIN's velocity; during
 	// a wrist snap that includes the origin's tangential velocity w x r

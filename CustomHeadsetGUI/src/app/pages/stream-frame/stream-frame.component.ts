@@ -112,15 +112,15 @@ function defaultStreamFrame(): StreamFrameConfig {
     kalmanGazeMaxDeg: 30,
     kalmanGazeMinSpeed: 1.2,
     kalmanSmoothLagMs: 0,
-    kalmanCaJerk: 17,
+    kalmanCaJerk: 4,
     kalmanCaAngJerk: 1500,
-    kalmanCaPosNoiseMm: 5.7,
-    kalmanCaOriNoiseDeg: 5.75,
-    kalmanCaAccelTauMs: 150,
+    kalmanCaPosNoiseMm: 1.5,
+    kalmanCaOriNoiseDeg: 1.5,
+    kalmanCaAccelTauMs: 20,
     kalmanCaMagJerk: 800,
     kalmanCaMagAccelTauMs: 150,
     kalmanCaReportAccel: false,
-    kalmanCaExactCov: false,
+    kalmanCaExactCov: true,
     kalmanGripEnable: false,
     kalmanGripBlend: 1,
     kalmanGripLeftCm: { x: 0, y: 0, z: 0 },
@@ -227,6 +227,23 @@ export class StreamFrameComponent {
             rawSf.kalmanCaOriNoiseDeg = 5.75;
           }
           rawSf.streamFrameSchema = 2;
+          queueMicrotask(() => this.save());
+        }
+        // schema-3 migration (2026-08-16): schema-2 ratified CA tuning ->
+        // new ratified defaults. chains after the schema-2 block so a
+        // schema-1 config upgraded above matches the pattern here too.
+        if (rawSf && (rawSf.streamFrameSchema ?? 1) < 3) {
+          const caS2 = rawSf.kalmanCaJerk === 17 && (rawSf.kalmanCaAngJerk ?? 1500) === 1500
+            && rawSf.kalmanCaPosNoiseMm === 5.7 && rawSf.kalmanCaOriNoiseDeg === 5.75
+            && (rawSf.kalmanCaAccelTauMs ?? 150) === 150 && !(rawSf.kalmanCaExactCov ?? false);
+          if (rawSf.velocityFixMode === 'kalmanCA' && caS2) {
+            rawSf.kalmanCaJerk = 4;
+            rawSf.kalmanCaPosNoiseMm = 1.5;
+            rawSf.kalmanCaOriNoiseDeg = 1.5;
+            rawSf.kalmanCaAccelTauMs = 20;
+            rawSf.kalmanCaExactCov = true;
+          }
+          rawSf.streamFrameSchema = 3;
           queueMicrotask(() => this.save());
         }
         this.rootSetting.streamFrame = fillDefaults(this.rootSetting.streamFrame, defaultStreamFrame());

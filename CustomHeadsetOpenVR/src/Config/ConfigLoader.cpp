@@ -991,6 +991,29 @@ void ConfigLoader::ParseConfig(){
 			}
 			sf.streamFrameSchema = 2;
 		}
+		// schema 3 (2026-08-16, composition-fix session): upgrade exact
+		// schema-2 ratified CA configs to the new ratified defaults
+		// (J=4 P=1.5 O=1.5 tau=20 excov=1). same contract as schema 2:
+		// only untouched ratified tunings migrate, anything custom passes
+		// through; idempotent until the GUI persists the schema number.
+		if(newConfig.streamFrame.streamFrameSchema < 3){
+			auto &sf = newConfig.streamFrame;
+			bool caSchema2Defaults = sf.kalmanCaJerk == 17.0
+				&& sf.kalmanCaAngJerk == 1500.0
+				&& sf.kalmanCaPosNoiseMm == 5.7
+				&& sf.kalmanCaOriNoiseDeg == 5.75
+				&& sf.kalmanCaAccelTauMs == 150.0
+				&& sf.kalmanCaExactCov == false;
+			if(sf.velocityFixMode == 6 && caSchema2Defaults){
+				sf.kalmanCaJerk = 4.0;
+				sf.kalmanCaPosNoiseMm = 1.5;
+				sf.kalmanCaOriNoiseDeg = 1.5;
+				sf.kalmanCaAccelTauMs = 20.0;
+				sf.kalmanCaExactCov = true;
+				DriverLog("Config: schema migration - schema-2 CA defaults upgraded to ratified J=4 P=1.5 O=1.5 tau=20 excov=1");
+			}
+			sf.streamFrameSchema = 3;
+		}
 		// write to global config
 		{
 			std::lock_guard<std::mutex> lock(driverConfigLock);
