@@ -1178,6 +1178,7 @@ bool CustomHeadsetDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 			double diagStepMax = 0;
 			int diagFrozen = 0;
 			int diagDup = 0;
+			int diagP3d = 0;
 			int diagBends = 0;
 			double diagBendMean = 0;
 			double diagBendMax = 0;
@@ -1329,12 +1330,57 @@ bool CustomHeadsetDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 			// repeat sustained past it IS stillness — so every repeat past
 			// the cap must stay full weight until a FRESH sample arrives.)
 			bool dupRepeat = false;
+			bool posOnlyFreeze = false;
 			if(!dropSample && ks.have && dt > 0 && dt <= 0.2 && dupMode != 0 && ks.haveMeas){
 				double ddx = pose.vecPosition[0] - ks.lastMeas[0];
 				double ddy = pose.vecPosition[1] - ks.lastMeas[1];
 				double ddz = pose.vecPosition[2] - ks.lastMeas[2];
 				double stepD = sqrt(ddx * ddx + ddy * ddy + ddz * ddz);
 				double stSpd = sqrt(ks.v[0] * ks.v[0] + ks.v[1] * ks.v[1] + ks.v[2] * ks.v[2]);
+				// 3dof-fallback classifier (field 2026-08-16: hand parked
+				// ~1m out for ~0.5s while still ROTATING with the wrist;
+				// 66 windows with fresh gaps >400ms against a 90ms cap,
+				// reacquire teleports 0.8-2.4m). a frozen position with a
+				// moving quaternion is the tracker's position-only loss,
+				// not a still hand: the quaternion in the SAME payload is
+				// the proof of motion. 0.2deg/sample ~ 18deg/s at stream
+				// cadence, an order of magnitude above orientation noise.
+				if(stepD < 0.0003 && driverConfig.streamFrame.kalmanPosFreeze3dof){
+					double qd = pose.qRotation.w * ks.lastMeasQ[0]
+						+ pose.qRotation.x * ks.lastMeasQ[1]
+						+ pose.qRotation.y * ks.lastMeasQ[2]
+						+ pose.qRotation.z * ks.lastMeasQ[3];
+					if(qd < 0){ qd = -qd; }
+					if(qd > 1.0){ qd = 1.0; }
+					if(2.0 * acos(qd) > 0.0035){
+						// no state-speed gate: a slow (aiming) hand with a
+						// frozen position and live rotation is the same
+						// tracker event and deserves the same protection
+						posOnlyFreeze = true;
+						ks.posFreeze3dof++;
+						// velocity decay during position-blindness (field
+						// 2026-08-16 out-of-FOV windups): coasting on the
+						// occlusion-entry velocity sails the hand up to 2m
+						// out (measured maxDiv 1.99m) and reacquires with a
+						// wrong-DIRECTION velocity state — worse for a
+						// following throw than the old park-at-stale, which
+						// at least restarted from v=0. real windups
+						// decelerate; decay v toward zero so short freezes
+						// coast nearly untouched (mid-throw, <100ms) and
+						// long occlusions glide to a stop near the loss
+						// point. 0 disables (pure coast).
+						double vdMs = driverConfig.streamFrame.kalmanPosFreezeVelDecayMs;
+						if(vdMs > 0){
+							if(vdMs < 20.0){ vdMs = 20.0; }
+							if(vdMs > 2000.0){ vdMs = 2000.0; }
+							double vDecay = exp(-dt / (vdMs / 1000.0));
+							for(int vi = 0; vi < 3; vi++){
+								ks.v[vi] *= vDecay;
+								ks.vF[vi] *= vDecay;
+							}
+						}
+					}
+				}
 				if(stepD < 0.0003 && stSpd > 0.5){
 					dupRepeat = true;
 					// run cap (bug fix, caught live: NIS 570 for 8+s).
@@ -1348,12 +1394,12 @@ bool CustomHeadsetDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 					if(coastMax > 0.5){ coastMax = 0.5; }
 					if(ks.coastStart < 0){ ks.coastStart = now; }
 					double coastLen = now - ks.coastStart + dt;
-					if(coastLen <= coastMax){
+					if(coastLen <= coastMax || posOnlyFreeze){
 						dupHit = true;
 						ks.dupSkipped++;
 						double cMs = coastLen * 1000.0;
 						if(cMs > ks.coastMaxMs){ ks.coastMaxMs = cMs; }
-					}else if(caM || caFull){
+					}else if((caM || caFull) && !posOnlyFreeze){
 						// a repeat sustained past the cap IS stillness by
 						// this gate's own definition — so the CA accel
 						// states go to zero with it. a live acceleration
@@ -1369,7 +1415,7 @@ bool CustomHeadsetDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 					}
 				}
 			}
-			bool dupDrop = dupHit && dupMode == 2;
+			bool dupDrop = dupHit && dupMode == 2 && !posOnlyFreeze;
 			// teleport guard (2026-08-12): an UNFLAGGED reacquire slams
 			// a huge step into the filter as one innovation and the
 			// reported velocity rockets for several frames (field: 12m
@@ -1396,7 +1442,7 @@ bool CustomHeadsetDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 					}
 				}
 			}
-			if(dupHit && dupMode == 3){
+			if(dupHit && (dupMode == 3 || posOnlyFreeze)){
 				// SOFT: this repeat WILL be processed as a measurement,
 				// but with honest noise for a sample of unknown age —
 				// inflate R (and the angular Ra: the payload freezes as
@@ -1429,8 +1475,19 @@ bool CustomHeadsetDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 				double raFloor = 0.035 * 0.035;     // (2deg)^2 in rad
 				double Rrep = R > rFloor ? R : rFloor;
 				double RaRep = Ra > raFloor ? Ra : raFloor;
-				R = Rrep * sK * sK;
-				Ra = RaRep * sK * sK;
+				if(posOnlyFreeze){
+					// proven position-only tracker loss: the moving
+					// quaternion proves the hand is NOT still, so the
+					// frozen position is certainly stale — distrust it
+					// harder than an ambiguous repeat, and leave Ra
+					// HONEST so the live orientation keeps tracking
+					// through the event (matching what the real hand is
+					// visibly doing while the old code parked it).
+					R = Rrep * sK * sK * 9.0;
+				}else{
+					R = Rrep * sK * sK;
+					Ra = RaRep * sK * sK;
+				}
 			}else if(adaptR){
 				// fresh sample: the division stands; record the peaks
 				// here (not at division time) so telemetry reflects
@@ -1481,7 +1538,7 @@ bool CustomHeadsetDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 				double dt2 = dt * dt;
 				// dup decision was made above (coast and soft reach
 				// here; drop never does — it exits via the drop path)
-				bool dupCoast = dupHit && dupMode == 1;
+				bool dupCoast = dupHit && dupMode == 1 && !posOnlyFreeze;
 				if(!dupRepeat){
 					// only a genuinely FRESH sample ends the dup run.
 					// keyed on dupRepeat, not dupHit: soft-mode repeats
@@ -1620,6 +1677,10 @@ bool CustomHeadsetDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 						}
 					}
 					ks.haveMeas = true;
+					ks.lastMeasQ[0] = pose.qRotation.w;
+					ks.lastMeasQ[1] = pose.qRotation.x;
+					ks.lastMeasQ[2] = pose.qRotation.y;
+					ks.lastMeasQ[3] = pose.qRotation.z;
 					ks.lastMeas[0] = pose.vecPosition[0];
 					ks.lastMeas[1] = pose.vecPosition[1];
 					ks.lastMeas[2] = pose.vecPosition[2];
@@ -2168,7 +2229,9 @@ bool CustomHeadsetDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 					+ driverConfig.streamFrame.kalmanDirLeadWMs * 11.0
 					+ (driverConfig.streamFrame.kalmanAdaptiveR ? 0.0071 : 0)
 					+ driverConfig.streamFrame.kalmanAdaptiveRMaxDiv * 0.013
-					+ (caExactCov ? 0.0017 : 0);
+					+ (caExactCov ? 0.0017 : 0)
+					+ (driverConfig.streamFrame.kalmanPosFreeze3dof ? 0.00073 : 0)
+					+ driverConfig.streamFrame.kalmanPosFreezeVelDecayMs * 0.000031;
 				// grip sig: cm-scale terms would vanish below the CA sig's
 				// epsilon floor (~1e-2 next to its 1e13-scale terms)
 				double sigGrip = (gripEnable ? 1000.0 : 0.0) + gripBlend * 100.0
@@ -2189,6 +2252,7 @@ bool CustomHeadsetDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 				diagStepMax = ks.stepMax;
 				diagFrozen = ks.stepFrozen;
 				diagDup = ks.dupSkipped;
+				diagP3d = ks.posFreeze3dof;
 				diagBends = ks.gazeBends;
 				diagBendMean = ks.gazeBends > 0 ? ks.gazeBendSum / ks.gazeBends : 0.0;
 				diagBendMax = ks.gazeBendMax;
@@ -2220,6 +2284,7 @@ bool CustomHeadsetDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 				ks.stepMax = 0;
 				ks.stepFrozen = 0;
 				ks.dupSkipped = 0;
+				ks.posFreeze3dof = 0;
 				ks.gazeBends = 0;
 				ks.gazeBendSum = 0;
 				ks.gazeBendMax = 0;
@@ -2254,7 +2319,7 @@ bool CustomHeadsetDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 			}
 			if(announceKalman){
 			// outside the lock — lock discipline
-			DriverLog("VelocityFix: kalman mode active id=%u qa=%.0f rp=%.1fmm qaA=%.0f ro=%.2fdeg lead=%.0fms dirLead=%.0fms dup=%d dupR=%.0f devT=%d cap=%.0f log=%d",
+			DriverLog("VelocityFix: kalman mode active id=%u qa=%.0f rp=%.1fmm qaA=%.0f ro=%.2fdeg lead=%.0fms dirLead=%.0fms dup=%d dupR=%.0f devT=%d cap=%.0f log=%d p3d=%d",
 				openVRID, driverConfig.streamFrame.kalmanProcessAccel,
 				driverConfig.streamFrame.kalmanPosNoiseMm,
 				driverConfig.streamFrame.kalmanProcessAngAccel,
@@ -2265,7 +2330,7 @@ bool CustomHeadsetDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 				driverConfig.streamFrame.kalmanDupRScale,
 				driverConfig.streamFrame.kalmanDeviceTime ? 1 : 0,
 				driverConfig.streamFrame.kalmanDupCoastMaxMs,
-				driverConfig.streamFrame.poseLogging ? 1 : 0);
+				driverConfig.streamFrame.poseLogging ? 1 : 0, (int)driverConfig.streamFrame.kalmanPosFreeze3dof);
 			if(driverConfig.streamFrame.kalmanDirLeadAdaptive || driverConfig.streamFrame.kalmanAdaptiveR){
 				DriverLog("VelocityFix: ADAPT dirLeadAdaptive=%d base=%.1fms slope=%.2fms/rads adaptR=%d maxDiv=%.0f",
 					driverConfig.streamFrame.kalmanDirLeadAdaptive ? 1 : 0,
@@ -2306,7 +2371,7 @@ bool CustomHeadsetDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 			if(logKalDiag){
 				// tuning guide: NIS ~ 1 means the noise models match
 				// reality; sustained > 3 = too stiff; < 0.3 = too loose
-				DriverLog("PoseLog: KALDIAG id=%u nis=%.2f aNis=%.2f stepMax=%.1fmm frozenSteps=%d dupSkipped=%d dtBack=%d dtMean=%.2fms dtMax=%.1fms fdtMean=%.2fms fdtMax=%.1fms coastMax=%.0fms gazeBends=%d bendMean=%.1fdeg bendMax=%.1fdeg accMax=%.2f wAccMax=%.1f accNZ=%d loss=%d lossMs=%.0f tp=%d caAcc=%.1f caWAcc=%.1f garbage=%d vClamp=%d rDiv=%.1f rADiv=%.1f", openVRID, diagNis, diagANis, diagStepMax * 1000.0, diagFrozen, diagDup, diagDtBack, diagDtMean, diagDtMax, diagFdtMean, diagFdtMax, diagCoastMax, diagBends, diagBendMean, diagBendMax, diagAccMax, diagWAccMax, diagAccNZ, diagLossRuns, diagLossMs, diagTeleports, diagCaAcc, diagCaWAcc, diagGarbage, diagVClamp, diagRDiv, diagRADiv);
+				DriverLog("PoseLog: KALDIAG id=%u nis=%.2f aNis=%.2f stepMax=%.1fmm frozenSteps=%d dupSkipped=%d dtBack=%d dtMean=%.2fms dtMax=%.1fms fdtMean=%.2fms fdtMax=%.1fms coastMax=%.0fms gazeBends=%d bendMean=%.1fdeg bendMax=%.1fdeg accMax=%.2f wAccMax=%.1f accNZ=%d loss=%d lossMs=%.0f tp=%d caAcc=%.1f caWAcc=%.1f garbage=%d vClamp=%d rDiv=%.1f rADiv=%.1f p3d=%d", openVRID, diagNis, diagANis, diagStepMax * 1000.0, diagFrozen, diagDup, diagDtBack, diagDtMean, diagDtMax, diagFdtMean, diagFdtMax, diagCoastMax, diagBends, diagBendMean, diagBendMax, diagAccMax, diagWAccMax, diagAccNZ, diagLossRuns, diagLossMs, diagTeleports, diagCaAcc, diagCaWAcc, diagGarbage, diagVClamp, diagRDiv, diagRADiv, diagP3d);
 			}
 		}
 		// ==== end kalman mode ====
@@ -3462,7 +3527,9 @@ void CustomHeadsetDeviceProvider::LogDevicePose(uint32_t openVRID, const vr::Dri
 			steady = true;
 			peakForLog = state.peakSpeed;
 			state.peakSpeed = 0;
-		}else if((effSpeed > 2.0 || fdEffSpeed > 2.0 || inPostFastWindow) && now - state.lastBurstLog >= 0.01){
+		}else if((effSpeed > 2.0 || fdEffSpeed > 2.0 || inPostFastWindow)
+				&& driverConfig.streamFrame.poseLogBurst
+				&& now - state.lastBurstLog >= 0.01){
 			state.lastBurstLog = now;
 			burst = true;
 		}

@@ -596,6 +596,9 @@ void ConfigLoader::ParseConfig(){
 			if(streamFrameData["poseLogging"].is_boolean()){
 				newConfig.streamFrame.poseLogging = streamFrameData["poseLogging"].get<bool>();
 			}
+			if(streamFrameData["poseLogBurst"].is_boolean()){
+				newConfig.streamFrame.poseLogBurst = streamFrameData["poseLogBurst"].get<bool>();
+			}
 			// RETIRED 1.6.7 (prune-on-save incident 2026-08-11): the legacy
 			// "velocityFix" bool no longer selects a mode. The GUI's
 			// default-diff serializer prunes an explicit velocityFixMode the
@@ -770,6 +773,12 @@ void ConfigLoader::ParseConfig(){
 			}
 			if(streamFrameData["kalmanDeviceTime"].is_boolean()){
 				newConfig.streamFrame.kalmanDeviceTime = streamFrameData["kalmanDeviceTime"].get<bool>();
+			}
+			if(streamFrameData["kalmanPosFreeze3dof"].is_boolean()){
+				newConfig.streamFrame.kalmanPosFreeze3dof = streamFrameData["kalmanPosFreeze3dof"].get<bool>();
+			}
+			if(streamFrameData["kalmanPosFreezeVelDecayMs"].is_number()){
+				newConfig.streamFrame.kalmanPosFreezeVelDecayMs = streamFrameData["kalmanPosFreezeVelDecayMs"].get<double>();
 			}
 			if(streamFrameData["kalmanDupCoastMaxMs"].is_number()){
 				newConfig.streamFrame.kalmanDupCoastMaxMs = streamFrameData["kalmanDupCoastMaxMs"].get<double>();
@@ -1301,6 +1310,7 @@ void ConfigLoader::WriteInfo(){
 				{"skipColorWhileDashboardOpen", defaultSettings.streamFrame.skipColorWhileDashboardOpen},
 				{"processAtSubmitLayer", defaultSettings.streamFrame.processAtSubmitLayer},
 				{"poseLogging", defaultSettings.streamFrame.poseLogging},
+				{"poseLogBurst", defaultSettings.streamFrame.poseLogBurst},
 				{"syncTimeoutMs", defaultSettings.streamFrame.syncTimeoutMs},
 				{"reconLogger", defaultSettings.streamFrame.reconLogger},
 				{"hitchDiag", defaultSettings.streamFrame.hitchDiag},
@@ -1374,6 +1384,8 @@ void ConfigLoader::WriteInfo(){
 				{"streamFrameSchema", defaultSettings.streamFrame.streamFrameSchema},
 				{"graveyardEnable", defaultSettings.streamFrame.graveyardEnable},
 				{"kalmanDeviceTime", defaultSettings.streamFrame.kalmanDeviceTime},
+				{"kalmanPosFreeze3dof", defaultSettings.streamFrame.kalmanPosFreeze3dof},
+				{"kalmanPosFreezeVelDecayMs", defaultSettings.streamFrame.kalmanPosFreezeVelDecayMs},
 				{"kalmanDupCoastMaxMs", defaultSettings.streamFrame.kalmanDupCoastMaxMs},
 				{"kalmanGazeAssist", defaultSettings.streamFrame.kalmanGazeAssist},
 				{"kalmanGazeMaxDeg", defaultSettings.streamFrame.kalmanGazeMaxDeg},

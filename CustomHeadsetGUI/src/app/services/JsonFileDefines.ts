@@ -177,6 +177,8 @@ export type StreamFrameConfig = {
   kalmanDupRScale: number;
   graveyardEnable: boolean;
   kalmanDeviceTime: boolean;
+  kalmanPosFreeze3dof: boolean;
+  kalmanPosFreezeVelDecayMs: number;
   kalmanDupCoastMaxMs: number;
   kalmanGazeAssist: number;
   kalmanGazeMaxDeg: number;
@@ -206,6 +208,7 @@ export type StreamFrameConfig = {
   blackFloor: { rampBar: boolean, rangeMode: string, shadowLift: boolean, floorCode: number, kneeCode: number, blackPointCode: number };
   pupilSwim: { centerStrengthX: number, centerStrengthY: number };
   poseLogging: boolean;
+  poseLogBurst: boolean;
 };
 export type CustomShaderConfig = {
   enable: boolean;

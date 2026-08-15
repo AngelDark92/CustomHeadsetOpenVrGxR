@@ -783,6 +783,28 @@
         <mat-slide-toggle [(ngModel)]="settings.kalmanDeviceTime" (ngModelChange)="save()"></mat-slide-toggle>
     </div>
 </div>
+
+<div class="field">
+    <div class="title">
+        <span>Position-Freeze Protection (3dof Fallback)</span>
+        <app-field-tip info="Detects the tracker's position-only loss: the position payload freezes while the quaternion keeps moving (fast or occluded hand falling back to IMU orientation). When detected, the stale position stays distrusted for the whole freeze instead of being adopted after the duplicate-run cap, and orientation keeps tracking live in every duplicate-handling mode. Fixes the hand parking a meter away while still rotating with the wrist, then teleporting back." />
+        <app-reset-button [canReset]="settings.kalmanPosFreeze3dof != defaults.kalmanPosFreeze3dof" (resetClick)="reset('kalmanPosFreeze3dof')"></app-reset-button>
+    </div>
+    <div class="control">
+        <mat-slide-toggle [(ngModel)]="settings.kalmanPosFreeze3dof" (ngModelChange)="save()"></mat-slide-toggle>
+    </div>
+</div>
+
+<div class="field">
+    <div class="title">
+        <span>Position-Freeze Velocity Decay (ms)</span>
+        <app-field-tip info="While the position is frozen (3dof fallback), the hand's velocity decays toward zero with this time constant. Short mid-throw freezes coast almost untouched; long out-of-view occlusions (windups behind the head) glide to a stop near where tracking was lost instead of sailing away on the entry velocity and reacquiring with a wrong-direction state. 0 = pure coast. Driver clamps 20-2000 when nonzero." />
+        <app-reset-button [canReset]="settings.kalmanPosFreezeVelDecayMs != defaults.kalmanPosFreezeVelDecayMs" (resetClick)="reset('kalmanPosFreezeVelDecayMs')"></app-reset-button>
+    </div>
+    <div class="control">
+        <input matInput [(ngModel)]="settings.kalmanPosFreezeVelDecayMs" step="20" min="0" max="2000" (ngModelChange)="save()" type="number">
+    </div>
+</div>
 }
 
 <div class="field">
@@ -962,6 +984,17 @@
     </div>
     <div class="control">
         <mat-slide-toggle [(ngModel)]="settings.poseLogging" (ngModelChange)="save()"></mat-slide-toggle>
+    </div>
+</div>
+
+<div class="field">
+    <div class="title">
+        <span>Pose Logging: Burst Channel</span>
+        <app-field-tip info="High-rate diagnostic lines (up to 100/s per device) during fast motion, on top of Pose Logging. Log storms during hard throws can hitch the game/stream, so leave this off unless a session is specifically collecting throw diagnostics." />
+        <app-reset-button [canReset]="settings.poseLogBurst != defaults.poseLogBurst" (resetClick)="reset('poseLogBurst')"></app-reset-button>
+    </div>
+    <div class="control">
+        <mat-slide-toggle [(ngModel)]="settings.poseLogBurst" (ngModelChange)="save()"></mat-slide-toggle>
     </div>
 </div>
 

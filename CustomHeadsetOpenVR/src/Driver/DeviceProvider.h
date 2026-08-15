@@ -205,6 +205,13 @@ private:
 		// single-step measurement distance and count of near-zero steps
 		// while the state was moving, since the last KALDIAG line
 		double lastMeas[3] = {};
+		// last measured quaternion: the 3dof-fallback discriminator.
+		// GxR optical tracking loses POSITION on fast/occluded hands and
+		// freezes it while the IMU keeps ORIENTATION live — a frozen
+		// position with a moving quaternion is a position-only freeze,
+		// NOT stillness, so the dup run cap's rationale does not apply.
+		double lastMeasQ[4] = {1, 0, 0, 0};
+		int posFreeze3dof = 0;
 		bool haveMeas = false;
 		double stepMax = 0;
 		int stepFrozen = 0;

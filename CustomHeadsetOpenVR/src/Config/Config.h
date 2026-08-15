@@ -749,6 +749,20 @@ struct StreamFrameConfig{
 	// once device time is in play). |offset| > 100ms falls back to
 	// receipt time. toggle off = previous behavior exactly, for A/B.
 	bool kalmanDeviceTime = true;
+	// 3dof-fallback protection (2026-08-16): a frozen position with a
+	// moving quaternion is the tracker losing POSITION only (fast or
+	// occluded hand -> IMU-only fallback), not a still hand. when
+	// detected, the position stays hard-distrusted past the dup run cap
+	// and the live orientation keeps updating in every dup mode. field
+	// symptom this kills: hand parked ~1m away but still rotating with
+	// the wrist for ~0.5s, then teleporting back.
+	bool kalmanPosFreeze3dof = true;
+	// velocity decay time constant during position-only freezes (ms).
+	// short freezes coast (throws unaffected), long occlusions glide to
+	// a stop instead of sailing on the occlusion-entry velocity and
+	// reacquiring with a wrong-direction state. 0 = pure coast (the
+	// 2026-08-16 pre-decay behavior). clamped 20-2000 when nonzero.
+	double kalmanPosFreezeVelDecayMs = 180.0;
 	// dup run cap (bug fix 2026-08-10; rationale sharpened 2026-08-11):
 	// no human hand holds a position BIT-IDENTICALLY for tens of ms —
 	// real stillness shows micro-tremor above the 0.3mm gate. a repeat
@@ -880,6 +894,15 @@ struct StreamFrameConfig{
 	// captures high-velocity moments (throws). live-reloaded, so it can be
 	// toggled mid-session. groundwork for the throw/velocity fix.
 	bool poseLogging = false;
+	// sub-gate for the HIGH-RATE burst channel of pose logging (up to
+	// 100Hz/device during fast motion through DriverLog on the pose hot
+	// path). field 2026-08-16: burst storms during hard right-hand
+	// throws (10.9k lines/session on one device) correlate with
+	// game/stream hitches — synchronous log I/O at exactly the worst
+	// moment. steady 2s lines and event diagnostics stay under
+	// poseLogging alone; bursts now additionally require this, default
+	// OFF so release configs never storm.
+	bool poseLogBurst = false;
 	// GUI-only fence: retired experimental knobs render in the GUI's
 	// Graveyard section only when this is set by hand in settings.json.
 	// no GUI knob on purpose. values of archived knobs stay ACTIVE

@@ -107,6 +107,8 @@ function defaultStreamFrame(): StreamFrameConfig {
     kalmanDupMode: 'soft',
     kalmanDupRScale: 3,
     kalmanDeviceTime: true,
+    kalmanPosFreeze3dof: true,
+    kalmanPosFreezeVelDecayMs: 180,
     kalmanDupCoastMaxMs: 90,
     kalmanGazeAssist: 0,
     kalmanGazeMaxDeg: 30,
@@ -129,6 +131,7 @@ function defaultStreamFrame(): StreamFrameConfig {
     blackFloor: { rampBar: false, rangeMode: 'off', shadowLift: false, floorCode: 2, kneeCode: 8, blackPointCode: 0 },
     pupilSwim: { centerStrengthX: 0, centerStrengthY: 0 },
     poseLogging: false,
+    poseLogBurst: false,
     graveyardEnable: false
   };
 }
