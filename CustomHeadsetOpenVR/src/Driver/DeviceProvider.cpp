@@ -1023,12 +1023,33 @@ bool CustomHeadsetDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 			lks.lost = false;
 			double lm = (lossNow - lks.lossStartT) * 1000.0;
 			lks.lossMsSum += lm;
-			lks.have = false; // clean reinit on this first OK sample
+			// A short flagged loss is missing measurement time, not a new
+			// trajectory.  The state was deliberately left committed at the
+			// last good measurement while the loss reporter coasted it
+			// statelessly.  Keep that state: the normal Kalman path below will
+			// predict once across the complete device-time gap and assimilate
+			// this first fresh position with the covariance grown by that gap.
+			//
+			// Only abandon the derivative state after a loss longer than the
+			// configured coast horizon.  This avoids the old FOV-reacquire
+			// failure where a 8-100 ms hole zeroed v/a exactly at release.
+			double cw = driverConfig.streamFrame.kalmanLossCoastMs;
+			bool longLoss = cw <= 0.0 || lm > cw;
+			if(longLoss){
+				lks.have = false;
+				lks.reacqCheck = false;
+				lks.reacqActive = false;
+				lks.reacqCount = 0;
+			}else{
+				// Preserve the derivative state, but do not blindly trust the
+				// first Running_OK position.  Source handoffs can return good
+				// status with a discontinuous coordinate solution.
+				lks.reacqCheck = true;
+			}
 			if(driverConfig.streamFrame.poseLogging){
-				double cw = driverConfig.streamFrame.kalmanLossCoastMs;
 				double coasted = lm < cw ? lm : cw;
-				DriverLog("PoseLog: KALLOSS id=%u reacquired after %.0fms (coasted %.0fms) -> reinit",
-					openVRID, lm, coasted);
+				DriverLog("PoseLog: KALLOSS id=%u reacquired after %.0fms (coasted %.0fms) -> %s",
+					openVRID, lm, coasted, longLoss ? "reinit" : "resume-state");
 			}
 		}
 	}
@@ -1201,6 +1222,74 @@ bool CustomHeadsetDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 			double diagRADiv = 1.0;
 			double diagCaAcc = 0;
 			double diagCaWAcc = 0;
+			// Epoch/state observability.  These are copied while the Kalman
+			// lock is held and emitted with KALDIAG outside the lock.
+			double diagRawPos[3] = {0, 0, 0};
+			double diagStateP[3] = {0, 0, 0};
+			double diagStateV[3] = {0, 0, 0};
+			double diagStateA[3] = {0, 0, 0};
+			double diagSubmitP[3] = {0, 0, 0};
+			double diagTMeas = 0;
+			double diagOffsetIn = 0;
+			double diagOffsetOut = 0;
+			int diagFresh = 0;
+			double diagSignedDirDeg = 0;
+			bool diagSignedDirValid = false;
+			double diagPosSigma = 0;
+			double diagVelSigma = 0;
+			double diagAccSigma = 0;
+			// Observe-only angular-space / Td probe.  No value below is fed
+			// back into the estimator or report path.
+			bool logSpace = false;
+			bool diagQRateValid = false;
+			double diagQDtMs = 0;
+			double diagSrcW[3] = {
+				pose.vecAngularVelocity[0],
+				pose.vecAngularVelocity[1],
+				pose.vecAngularVelocity[2]
+			};
+			// Raw upstream linear velocity probe.  This is captured before
+			// the Kalman report path overwrites DriverPose_t::vecVelocity.
+			// It is OBSERVE-ONLY in this patch; the next field run decides
+			// whether it contains enough information to become a very noisy
+			// velocity measurement during position-blind motion.
+			double diagSrcV[3] = {
+				pose.vecVelocity[0], pose.vecVelocity[1], pose.vecVelocity[2]
+			};
+			double diagFdV[3] = {0, 0, 0};
+			double diagKalV[3] = {0, 0, 0};
+			int diagP3dNow = 0;
+			int diagReacqNow = 0;
+			double diagQWorldW[3] = {0, 0, 0};
+			double diagQBodyW[3] = {0, 0, 0};
+			double diagKalW[3] = {0, 0, 0};
+			double diagPreTdV[3] = {0, 0, 0};
+			double diagPostTdV[3] = {0, 0, 0};
+			double diagLocalX[3] = {0, 0, 0};
+			double diagLocalY[3] = {0, 0, 0};
+			double diagLocalZ[3] = {0, 0, 0};
+			double diagCurveW[3] = {0, 0, 0};
+			double diagSrcWorldDeg = -1;
+			double diagSrcBodyDeg = -1;
+			double diagKalWorldDeg = -1;
+			double diagKalBodyDeg = -1;
+			double diagCurveVsKalDeg = -1;
+			double diagTdCmdDeg = 0;
+			double diagTdBendDeg = 0;
+			double diagSrcFdDeg = -1;
+			double diagSrcKalDeg = -1;
+			double diagSrcFdMagRatio = -1;
+			bool diagFdTrusted = false;
+			// WorldFromDriver velocity-space probe. Observe-only: score the raw
+			// upstream linear velocity in all three plausible spaces against the
+			// corrected fresh-position secant. The existing spaceVelocityFixMode
+			// runs after the Kalman output; this shadow probe never changes pose.
+			vr::HmdQuaternion_t diagQwd = pose.qWorldFromDriverRotation;
+			double diagQwdAngleDeg = 0;
+			double diagSrcVQwd[3] = {0, 0, 0};
+			double diagSrcVQwdInv[3] = {0, 0, 0};
+			double diagSrcQwdFdDeg = -1;
+			double diagSrcQwdInvFdDeg = -1;
 			// device-time measurement stamp: the device says WHEN this
 			// pose was true (poseTimeOffset); the filter previously
 			// treated every sample as "now" — timing is the proven
@@ -1213,12 +1302,100 @@ bool CustomHeadsetDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 			{
 			std::lock_guard<std::mutex> kalGuard(deriveFilterLock);
 			KalState &ks = kalStates[openVRID];
+			// Raw quaternion finite-difference in BOTH conventions:
+			//   q1*q0^-1 -> world/driver-space angular velocity
+			//   q0^-1*q1 -> body/controller-local angular velocity
+			// The source vecAngularVelocity is logged against both.  This
+			// directly tests the report that the upstream runtime may be
+			// supplying angular velocity in the wrong coordinate space.
+			//
+			// Use an orientation-only freshness clock.  Position duplicate
+			// detection is intentionally irrelevant here because GxR can
+			// keep q live while p is frozen.
+			{
+				vr::HmdQuaternion_t qNow = pose.qRotation;
+				double qNowN = sqrt(qNow.w * qNow.w + qNow.x * qNow.x
+					+ qNow.y * qNow.y + qNow.z * qNow.z);
+				if(qNowN > 1e-9){
+					qNow.w /= qNowN; qNow.x /= qNowN;
+					qNow.y /= qNowN; qNow.z /= qNowN;
+				}
+				if(!ks.diagRawQHave){
+					ks.diagRawQHave = true;
+					ks.diagRawQ[0] = qNow.w; ks.diagRawQ[1] = qNow.x;
+					ks.diagRawQ[2] = qNow.y; ks.diagRawQ[3] = qNow.z;
+					ks.diagRawQT = tMeas;
+				}else{
+					double dotQ = ks.diagRawQ[0] * qNow.w
+						+ ks.diagRawQ[1] * qNow.x
+						+ ks.diagRawQ[2] * qNow.y
+						+ ks.diagRawQ[3] * qNow.z;
+					double absDotQ = fabs(dotQ);
+					if(absDotQ > 1.0){ absDotQ = 1.0; }
+					// Ignore exact/repeated orientation payloads.  Align the
+					// quaternion hemisphere before differencing so a q/-q
+					// representation flip cannot masquerade as 360 degrees.
+					if(1.0 - absDotQ > 1e-10){
+						if(dotQ < 0){
+							qNow.w = -qNow.w; qNow.x = -qNow.x;
+							qNow.y = -qNow.y; qNow.z = -qNow.z;
+						}
+						double qdt = tMeas - ks.diagRawQT;
+						if(qdt > 0.001 && qdt < 0.100){
+							vr::HmdQuaternion_t qPrev = {
+								ks.diagRawQ[0], ks.diagRawQ[1],
+								ks.diagRawQ[2], ks.diagRawQ[3]
+							};
+							vr::HmdQuaternion_t qPrevInv = {
+								qPrev.w, -qPrev.x, -qPrev.y, -qPrev.z
+							};
+							vr::HmdQuaternion_t dqWorld = QuatMultiply(qNow, qPrevInv);
+							vr::HmdQuaternion_t dqBody = QuatMultiply(qPrevInv, qNow);
+							auto deltaToRate = [&](vr::HmdQuaternion_t dq, double outW[3]){
+								if(dq.w < 0){
+									dq.w = -dq.w; dq.x = -dq.x;
+									dq.y = -dq.y; dq.z = -dq.z;
+								}
+								double sv = sqrt(dq.x * dq.x + dq.y * dq.y + dq.z * dq.z);
+								if(sv > 1e-12){
+									double ang = 2.0 * atan2(sv, dq.w);
+									double sc = ang / (sv * qdt);
+									outW[0] = dq.x * sc;
+									outW[1] = dq.y * sc;
+									outW[2] = dq.z * sc;
+								}else{
+									outW[0] = 0; outW[1] = 0; outW[2] = 0;
+								}
+							};
+							deltaToRate(dqWorld, diagQWorldW);
+							deltaToRate(dqBody, diagQBodyW);
+							diagQDtMs = qdt * 1000.0;
+							diagQRateValid = true;
+						}
+						ks.diagRawQ[0] = qNow.w; ks.diagRawQ[1] = qNow.x;
+						ks.diagRawQ[2] = qNow.y; ks.diagRawQ[3] = qNow.z;
+						ks.diagRawQT = tMeas;
+					}
+				}
+			}
+			auto vecAngleDeg = [](const double a[3], const double b[3]){
+				double am = sqrt(a[0] * a[0] + a[1] * a[1] + a[2] * a[2]);
+				double bm = sqrt(b[0] * b[0] + b[1] * b[1] + b[2] * b[2]);
+				if(am < 1e-6 || bm < 1e-6){ return -1.0; }
+				double d = (a[0] * b[0] + a[1] * b[1] + a[2] * b[2]) / (am * bm);
+				if(d < -1.0){ d = -1.0; }
+				if(d > 1.0){ d = 1.0; }
+				return acos(d) * 180.0 / 3.14159265358979323846;
+			};
 			// switching between CV and CA modes mid-session invalidates
 			// the carried covariances (different layouts) — clean reinit
 			if(ks.lastMode != velocityFixMode){
 				ks.lastMode = velocityFixMode;
 				ks.have = false;
 				ks.haveFast = false;
+				ks.reacqCheck = false;
+				ks.reacqActive = false;
+				ks.reacqCount = 0;
 			}
 			// adaptive measurement trust: divide R/Ra by the fast scheduler
 			// statistic, bounded. baseline (schedNis << 1) pins the divisor
@@ -1416,6 +1593,260 @@ bool CustomHeadsetDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 				}
 			}
 			bool dupDrop = dupHit && dupMode == 2 && !posOnlyFreeze;
+
+			// ==== discontinuity reacquisition ====
+			// A position jump is checked on the POSITION cadence, not the
+			// callback/state cadence.  Coast advances ks.tMeas on repeated
+			// callbacks (~360Hz) while distinct positions arrive ~90Hz; using
+			// dt here made an ordinary fresh-to-fresh hand step look ~4x too
+			// fast and could falsely open reacquisition during hard throws.
+			double posDt = ks.tFresh > 0 ? tMeas - ks.tFresh : dt;
+			if(posDt <= 0){ posDt = dt; }
+			// For continuity only, clamp the comparison horizon to one plausible
+			// position epoch.  The lower bound prevents callback-rate false
+			// teleports; the upper bound makes a large return after a long
+			// position-blind interval prove itself through the candidate path
+			// rather than being assimilated as one giant innovation.
+			double continuityDt = posDt;
+			if(continuityDt < 0.008){ continuityDt = 0.008; }
+			if(continuityDt > 0.020){ continuityDt = 0.020; }
+
+			// Once a physically impossible position jump is observed, NEVER
+			// let the generic dt>200ms initializer decide when the raw stream
+			// has become trustworthy again.  Candidate callbacks are kept out of
+			// the live estimator until a coherent short trajectory is proven.
+			auto resetReacqAtCurrent = [&](){
+				ks.reacqCount = 1;
+				ks.reacqFirstT = tMeas;
+				ks.reacqLastT = tMeas;
+				ks.reacqT[0] = tMeas;
+				ks.reacqHavePrevStepV = false;
+				for(int rI = 0; rI < 3; rI++){
+					ks.reacqFirstP[rI] = pose.vecPosition[rI];
+					ks.reacqLastP[rI] = pose.vecPosition[rI];
+					ks.reacqP[0][rI] = pose.vecPosition[rI];
+					ks.reacqPrevStepV[rI] = 0;
+				}
+			};
+			auto startReacq = [&](double triggerStep, const char* reason){
+				ks.reacqActive = true;
+				ks.reacqCheck = false;
+				resetReacqAtCurrent();
+				dropSample = true;
+				if(driverConfig.streamFrame.poseLogging){
+					DriverLog("PoseLog: KALREACQ id=%u START reason=%s step=%.2fm dt=%.1fms posDt=%.1fms",
+						openVRID, reason, triggerStep, dt * 1000.0, posDt * 1000.0);
+				}
+			};
+
+			// First Running_OK sample after a SHORT flagged loss: accept it
+			// immediately when it is physically continuous; otherwise route it
+			// into the exact same candidate mechanism as an unflagged teleport.
+			if(!dropSample && ks.reacqCheck){
+				ks.reacqCheck = false;
+				if(ks.have && ks.haveMeas && continuityDt > 0){
+					double rdx = pose.vecPosition[0] - ks.lastMeas[0];
+					double rdy = pose.vecPosition[1] - ks.lastMeas[1];
+					double rdz = pose.vecPosition[2] - ks.lastMeas[2];
+					double rStep = sqrt(rdx * rdx + rdy * rdy + rdz * rdz);
+					double telM = driverConfig.streamFrame.kalmanTeleportM;
+					if(telM > 0 && rStep > telM && rStep > 25.0 * continuityDt){
+						startReacq(rStep, "short-loss");
+					}
+				}
+			}
+
+			if(!dropSample && ks.reacqActive){
+				// Candidate callbacks are not measurements for the live estimator.
+				// Require seven DISTINCT samples (~67ms at the measured 90Hz
+				// position cadence), coherent adjacent velocities, and a low-
+				// residual least-squares trajectory before promotion.
+				dropSample = true;
+				double cdt = tMeas - ks.reacqLastT;
+				double cdx = pose.vecPosition[0] - ks.reacqLastP[0];
+				double cdy = pose.vecPosition[1] - ks.reacqLastP[1];
+				double cdz = pose.vecPosition[2] - ks.reacqLastP[2];
+				double cStep = sqrt(cdx * cdx + cdy * cdy + cdz * cdz);
+				if(cdt > 0 && cStep >= 0.0003){
+					// Individual step envelope: ~10m/s plus 2cm measurement/cadence
+					// slack.  A candidate outside it restarts from the newest point.
+					double maxCStep = 0.02 + 10.0 * cdt;
+					if(cdt > 0.2 || cStep > maxCStep){
+						resetReacqAtCurrent();
+						if(driverConfig.streamFrame.poseLogging){
+							DriverLog("PoseLog: KALREACQ id=%u RESET reason=step step=%.2fm cdt=%.1fms",
+								openVRID, cStep, cdt * 1000.0);
+						}
+					}else{
+						double stepV[3] = { cdx / cdt, cdy / cdt, cdz / cdt };
+						double stepDv2 = 0;
+						if(ks.reacqHavePrevStepV){
+							for(int rI = 0; rI < 3; rI++){
+								double dv = stepV[rI] - ks.reacqPrevStepV[rI];
+								stepDv2 += dv * dv;
+							}
+						}
+						double stepDv = sqrt(stepDv2);
+						// Generous physical coherence envelope.  The field failures
+						// reversed candidate velocity by many m/s in one ~11ms epoch;
+						// real hard throws remain comfortably inside this bound.
+						double maxStepDv = 1.5 + 120.0 * cdt;
+						if(ks.reacqHavePrevStepV && stepDv > maxStepDv){
+							resetReacqAtCurrent();
+							if(driverConfig.streamFrame.poseLogging){
+								DriverLog("PoseLog: KALREACQ id=%u RESET reason=step-accel dV=%.2fm/s max=%.2fm/s cdt=%.1fms",
+									openVRID, stepDv, maxStepDv, cdt * 1000.0);
+							}
+						}else{
+							for(int rI = 0; rI < 3; rI++){
+								ks.reacqPrevStepV[rI] = stepV[rI];
+								ks.reacqLastP[rI] = pose.vecPosition[rI];
+							}
+							ks.reacqHavePrevStepV = true;
+							ks.reacqLastT = tMeas;
+							if(ks.reacqCount < KalState::reacqFitN){
+								int ci = ks.reacqCount;
+								ks.reacqT[ci] = tMeas;
+								for(int rI = 0; rI < 3; rI++){
+									ks.reacqP[ci][rI] = pose.vecPosition[rI];
+								}
+								ks.reacqCount++;
+							}
+
+							double span = ks.reacqLastT - ks.reacqFirstT;
+							if(ks.reacqCount >= KalState::reacqFitN && span >= 0.040){
+								// Least-squares constant-velocity fit over the complete
+								// candidate window.  This is much harder for one lucky
+								// first/last pair in a bad coordinate solution to spoof.
+								double meanT = 0;
+								double meanP[3] = {0, 0, 0};
+								for(int ci = 0; ci < KalState::reacqFitN; ci++){
+									meanT += ks.reacqT[ci];
+									for(int rI = 0; rI < 3; rI++){
+										meanP[rI] += ks.reacqP[ci][rI];
+									}
+								}
+								meanT /= KalState::reacqFitN;
+								for(int rI = 0; rI < 3; rI++){ meanP[rI] /= KalState::reacqFitN; }
+
+								double varT = 0;
+								double covTP[3] = {0, 0, 0};
+								for(int ci = 0; ci < KalState::reacqFitN; ci++){
+									double tc = ks.reacqT[ci] - meanT;
+									varT += tc * tc;
+									for(int rI = 0; rI < 3; rI++){
+										covTP[rI] += tc * (ks.reacqP[ci][rI] - meanP[rI]);
+									}
+								}
+								double seedV[3] = {0, 0, 0};
+								if(varT > 1e-9){
+									for(int rI = 0; rI < 3; rI++){ seedV[rI] = covTP[rI] / varT; }
+								}
+								double seedV2 = seedV[0] * seedV[0] + seedV[1] * seedV[1] + seedV[2] * seedV[2];
+								double seedSpeed = sqrt(seedV2);
+
+								double fitErr2 = 0;
+								for(int ci = 0; ci < KalState::reacqFitN; ci++){
+									double tc = ks.reacqT[ci] - meanT;
+									double e2 = 0;
+									for(int rI = 0; rI < 3; rI++){
+										double e = ks.reacqP[ci][rI] - (meanP[rI] + seedV[rI] * tc);
+										e2 += e * e;
+									}
+									fitErr2 += e2;
+								}
+								double fitRms = sqrt(fitErr2 / KalState::reacqFitN);
+
+								// A short reacquisition should also be dynamically reachable
+								// from the carried derivative state.  Let the allowance grow
+								// with time since the last trusted distinct position so a real
+								// long occlusion is not forced to preserve stale direction.
+								double sinceFresh = ks.tFresh > 0 ? tMeas - ks.tFresh : span;
+								if(sinceFresh < 0){ sinceFresh = 0; }
+								if(sinceFresh > 0.5){ sinceFresh = 0.5; }
+								double dvCarry2 = 0;
+								for(int rI = 0; rI < 3; rI++){
+									double dv = seedV[rI] - ks.v[rI];
+									dvCarry2 += dv * dv;
+								}
+								double dvCarry = sqrt(dvCarry2);
+								double maxDvCarry = 2.0 + 100.0 * sinceFresh;
+
+								const char* rejectReason = nullptr;
+								if(seedSpeed > 10.0){ rejectReason = "seed-speed"; }
+								else if(fitRms > 0.040){ rejectReason = "fit-rms"; }
+								else if(dvCarry > maxDvCarry){ rejectReason = "carry-dv"; }
+
+								if(rejectReason){
+									resetReacqAtCurrent();
+									if(driverConfig.streamFrame.poseLogging){
+										DriverLog("PoseLog: KALREACQ id=%u RESET reason=%s seedV=%.2fm/s fit=%.1fmm dCarry=%.2f/%.2fm/s span=%.1fms",
+											openVRID, rejectReason, seedSpeed, fitRms * 1000.0,
+											dvCarry, maxDvCarry, span * 1000.0);
+									}
+								}else{
+									ks.have = true;
+									ks.time = now;
+									ks.tMeas = tMeas;
+									ks.coastStart = -1.0;
+									ks.haveSlow = false;
+									ks.nisEma = 1.0;
+									ks.schedNis = 1.0;
+									for(int rI = 0; rI < 3; rI++){
+										ks.p[rI] = pose.vecPosition[rI];
+										ks.v[rI] = seedV[rI];
+										ks.ca[rI] = 0;
+										ks.P[rI][0] = 0.01; ks.P[rI][1] = 0; ks.P[rI][2] = 4.0;
+										CaInit(ks.P6[rI], 0.01, 4.0, 2500.0);
+										if(!caFull){
+											ks.pF[rI] = pose.vecPosition[rI];
+											ks.vF[rI] = seedV[rI];
+											ks.caF[rI] = 0;
+											ks.PF[rI][0] = 0.01; ks.PF[rI][1] = 0; ks.PF[rI][2] = 4.0;
+											CaInit(ks.PF6[rI], 0.01, 4.0, 2500.0);
+										}
+										ks.lastMeas[rI] = pose.vecPosition[rI];
+									}
+									if(!caFull){ ks.haveFast = true; }
+									ks.q = pose.qRotation;
+									ks.haveMeas = true;
+									ks.lastMeasQ[0] = pose.qRotation.w;
+									ks.lastMeasQ[1] = pose.qRotation.x;
+									ks.lastMeasQ[2] = pose.qRotation.y;
+									ks.lastMeasQ[3] = pose.qRotation.z;
+									ks.tFresh = tMeas;
+									ks.reacqActive = false;
+									ks.reacqCount = 0;
+									ks.reacqHavePrevStepV = false;
+									if(driverConfig.streamFrame.poseLogging){
+										DriverLog("PoseLog: KALREACQ id=%u PROMOTE n=%d span=%.1fms seedV=%.2fm/s seed=(%.2f,%.2f,%.2f) fit=%.1fmm dCarry=%.2fm/s",
+											openVRID, KalState::reacqFitN, span * 1000.0, seedSpeed,
+											seedV[0], seedV[1], seedV[2], fitRms * 1000.0, dvCarry);
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+			// Fresh position secant for signed direction diagnostics.  This is
+			// telemetry only and deliberately uses the previous accepted raw
+			// position with the DISTINCT-position clock (posDt), before lastMeas
+			// is changed by the accept path.
+			// Positive/negative is the yaw error around +Y:
+			// atan2(dot(+Y, v_fd x v_kal), dotXZ(v_fd,v_kal)).
+			double rawFd[3] = {0, 0, 0};
+			bool rawFdValid = false;
+			if(!dropSample && !dupRepeat && ks.haveMeas && posDt > 0.001 && posDt <= 0.2){
+				for(int fdI = 0; fdI < 3; fdI++){
+					rawFd[fdI] = (pose.vecPosition[fdI] - ks.lastMeas[fdI]) / posDt;
+				}
+				double fdXZ2 = rawFd[0] * rawFd[0] + rawFd[2] * rawFd[2];
+				rawFdValid = fdXZ2 > 0.25; // >0.5 m/s horizontal: direction is meaningful
+				if(rawFdValid){
+					for(int fdI = 0; fdI < 3; fdI++){ diagFdV[fdI] = rawFd[fdI]; }
+				}
+			}
 			// teleport guard (2026-08-12): an UNFLAGGED reacquire slams
 			// a huge step into the filter as one innovation and the
 			// reported velocity rockets for several frames (field: 12m
@@ -1424,7 +1855,9 @@ bool CustomHeadsetDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 			// clears the floor (kalmanTeleportM, ignores freeze
 			// catch-ups) and implies >25 m/s is a reacquire — reinit
 			// cleanly at the new position instead of innovating across
-			// it. flagged losses never reach here (estimator gate).
+			// it.  The speed test uses continuityDt derived from the distinct-
+			// position clock, not callback dt; flagged losses never reach here
+			// (estimator gate).
 			if(!dropSample && !dupDrop && ks.have && ks.haveMeas && dt > 0 && dt <= 0.2){
 				double telM = driverConfig.streamFrame.kalmanTeleportM;
 				if(telM > 0){
@@ -1432,13 +1865,12 @@ bool CustomHeadsetDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 					double tdy = pose.vecPosition[1] - ks.lastMeas[1];
 					double tdz = pose.vecPosition[2] - ks.lastMeas[2];
 					double stepT = sqrt(tdx * tdx + tdy * tdy + tdz * tdz);
-					if(stepT > telM && stepT > 25.0 * dt){
-						ks.have = false; // reinit branch below takes it
+					if(stepT > telM && stepT > 25.0 * continuityDt){
 						ks.teleports++;
-						if(driverConfig.streamFrame.poseLogging){
-							DriverLog("PoseLog: KALLOSS id=%u teleport %.2fm in %.1fms -> reinit",
-								openVRID, stepT, dt * 1000.0);
-						}
+						// Start one candidate run instead of spamming rejects
+						// until dt crosses 200ms.  While reacqActive is true
+						// the generic reinit branch is unreachable.
+						startReacq(stepT, "teleport");
 					}
 				}
 			}
@@ -1539,6 +1971,7 @@ bool CustomHeadsetDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 				// dup decision was made above (coast and soft reach
 				// here; drop never does — it exits via the drop path)
 				bool dupCoast = dupHit && dupMode == 1 && !posOnlyFreeze;
+				bool linearMeasurementMissing = posOnlyFreeze;
 				if(!dupRepeat){
 					// only a genuinely FRESH sample ends the dup run.
 					// keyed on dupRepeat, not dupHit: soft-mode repeats
@@ -1612,10 +2045,12 @@ bool CustomHeadsetDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 					for(int a2 = 0; a2 < 3; a2++){
 						CaStatePredict(dt, caTau, ks.p[a2], ks.v[a2], ks.ca[a2]);
 						CaCovPredict(dt, caJ, caTau, caBeta, caExactCov, ks.P6[a2]);
-						double yv = pose.vecPosition[a2] - ks.p[a2];
-						nisBaseAccum += yv * yv / (ks.P6[a2][0] + RbaseSched);
-						nisAccum += CaUpdate(yv, R,
-							ks.p[a2], ks.v[a2], ks.ca[a2], ks.P6[a2]);
+						if(!linearMeasurementMissing){
+							double yv = pose.vecPosition[a2] - ks.p[a2];
+							nisBaseAccum += yv * yv / (ks.P6[a2][0] + RbaseSched);
+							nisAccum += CaUpdate(yv, R,
+								ks.p[a2], ks.v[a2], ks.ca[a2], ks.P6[a2]);
+						}
 					}
 					double caMagNow = sqrt(ks.ca[0] * ks.ca[0] + ks.ca[1] * ks.ca[1] + ks.ca[2] * ks.ca[2]);
 					if(caMagNow > ks.caAccPk){ ks.caAccPk = caMagNow; }
@@ -1625,27 +2060,32 @@ bool CustomHeadsetDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 					double Ppp = ks.P[a2][0] + 2.0 * ks.P[a2][1] * dt + ks.P[a2][2] * dt2 + qa * qa * dt2 * dt2 / 4.0;
 					double Ppv = ks.P[a2][1] + ks.P[a2][2] * dt + qa * qa * dt2 * dt / 2.0;
 					double Pvv = ks.P[a2][2] + qa * qa * dt2;
-					double y = pose.vecPosition[a2] - ks.p[a2];
-					double S = Ppp + R;
-					nisAccum += y * y / S;
-					nisBaseAccum += y * y / (Ppp + RbaseSched);
-					double Kp = Ppp / S;
-					double Kv = Ppv / S;
-					ks.p[a2] += Kp * y;
-					ks.v[a2] += Kv * y;
-					ks.P[a2][0] = (1.0 - Kp) * Ppp;
-					ks.P[a2][1] = (1.0 - Kp) * Ppv;
-					ks.P[a2][2] = Pvv - Kv * Ppv;
+					if(linearMeasurementMissing){
+						ks.P[a2][0] = Ppp;
+						ks.P[a2][1] = Ppv;
+						ks.P[a2][2] = Pvv;
+					}else{
+						double y = pose.vecPosition[a2] - ks.p[a2];
+						double S = Ppp + R;
+						nisAccum += y * y / S;
+						nisBaseAccum += y * y / (Ppp + RbaseSched);
+						double Kp = Ppp / S;
+						double Kv = Ppv / S;
+						ks.p[a2] += Kp * y;
+						ks.v[a2] += Kv * y;
+						ks.P[a2][0] = (1.0 - Kp) * Ppp;
+						ks.P[a2][1] = (1.0 - Kp) * Ppv;
+						ks.P[a2][2] = Pvv - Kv * Ppv;
+					}
 				}
-				ks.nisEma += 0.1 * (nisAccum / 3.0 - ks.nisEma);
-				// fast scheduler EMA (~25ms at stream cadence).
-				// frozen repeats are excluded: their huge base-R
-				// innovations were ramping the scheduler DURING freeze
-				// runs, which then divided R on the repeats themselves
-				// (feedback loop). the scheduler now only learns from
-				// fresh samples.
-				if(!dupHit){
-					ks.schedNis += 0.3 * (nisBaseAccum / 3.0 - ks.schedNis);
+				if(!linearMeasurementMissing){
+					ks.nisEma += 0.1 * (nisAccum / 3.0 - ks.nisEma);
+					// The linear scheduler must learn only from a real
+					// positional measurement.  A p3d callback has live
+					// orientation but no new translational observation.
+					if(!dupHit){
+						ks.schedNis += 0.3 * (nisBaseAccum / 3.0 - ks.schedNis);
+					}
 				}
 				// raw-step telemetry (EMA-free, so single-frame freezes or
 				// teleports cannot hide): settles the FOV question
@@ -1675,6 +2115,11 @@ bool CustomHeadsetDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 							}
 							ks.tFresh = tMeas;
 						}
+					}else{
+						// Seed the distinct-position clock with the first accepted
+						// baseline so the next fresh step is timed against position,
+						// not whichever callback happened immediately before it.
+						ks.tFresh = tMeas;
 					}
 					ks.haveMeas = true;
 					ks.lastMeasQ[0] = pose.qRotation.w;
@@ -1706,8 +2151,10 @@ bool CustomHeadsetDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 						for(int a2 = 0; a2 < 3; a2++){
 							CaStatePredict(dt, caMagTau, ks.pF[a2], ks.vF[a2], ks.caF[a2]);
 							CaCovPredict(dt, caMagJ, caMagTau, caMagBeta, caExactCov, ks.PF6[a2]);
-							CaUpdate(pose.vecPosition[a2] - ks.pF[a2], R,
-								ks.pF[a2], ks.vF[a2], ks.caF[a2], ks.PF6[a2]);
+							if(!linearMeasurementMissing){
+								CaUpdate(pose.vecPosition[a2] - ks.pF[a2], R,
+									ks.pF[a2], ks.vF[a2], ks.caF[a2], ks.PF6[a2]);
+							}
 						}
 						double caFMag = sqrt(ks.caF[0] * ks.caF[0] + ks.caF[1] * ks.caF[1] + ks.caF[2] * ks.caF[2]);
 						if(caFMag > ks.caAccPk){ ks.caAccPk = caFMag; }
@@ -1729,15 +2176,21 @@ bool CustomHeadsetDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 							double Ppp = ks.PF[a2][0] + 2.0 * ks.PF[a2][1] * dt + ks.PF[a2][2] * dt2 + qaF * qaF * dt2 * dt2 / 4.0;
 							double Ppv = ks.PF[a2][1] + ks.PF[a2][2] * dt + qaF * qaF * dt2 * dt / 2.0;
 							double Pvv = ks.PF[a2][2] + qaF * qaF * dt2;
-							double y = pose.vecPosition[a2] - ks.pF[a2];
-							double S = Ppp + R;
-							double Kp = Ppp / S;
-							double Kv = Ppv / S;
-							ks.pF[a2] += Kp * y;
-							ks.vF[a2] += Kv * y;
-							ks.PF[a2][0] = (1.0 - Kp) * Ppp;
-							ks.PF[a2][1] = (1.0 - Kp) * Ppv;
-							ks.PF[a2][2] = Pvv - Kv * Ppv;
+							if(linearMeasurementMissing){
+								ks.PF[a2][0] = Ppp;
+								ks.PF[a2][1] = Ppv;
+								ks.PF[a2][2] = Pvv;
+							}else{
+								double y = pose.vecPosition[a2] - ks.pF[a2];
+								double S = Ppp + R;
+								double Kp = Ppp / S;
+								double Kv = Ppv / S;
+								ks.pF[a2] += Kp * y;
+								ks.vF[a2] += Kv * y;
+								ks.PF[a2][0] = (1.0 - Kp) * Ppp;
+								ks.PF[a2][1] = (1.0 - Kp) * Ppv;
+								ks.PF[a2][2] = Pvv - Kv * Ppv;
+							}
 						}
 					}
 				}
@@ -1815,7 +2268,7 @@ bool CustomHeadsetDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 			// the filter-side stuck-hand mechanism, as opposed to the
 			// KALLOSS raw-passthrough freeze. pure telemetry: no state is
 			// touched, no behavior changes.
-			if(driverConfig.streamFrame.poseLogging && !dropSample && !dupDrop && ks.have){
+			if(driverConfig.streamFrame.poseLogging && !dropSample && !dupDrop && !posOnlyFreeze && ks.have){
 				double sdx = ks.p[0] - pose.vecPosition[0];
 				double sdy = ks.p[1] - pose.vecPosition[1];
 				double sdz = ks.p[2] - pose.vecPosition[2];
@@ -1988,16 +2441,29 @@ bool CustomHeadsetDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 					wRep[a2] *= mSA;
 				}
 			}
-			// direction derotation lead: a lagged velocity estimate points
-			// along the tangent from L ago; on a curved (combined linear +
-			// wrist) path that is a direction error of ~|w|*L. rotate the
-			// reported v FORWARD about the reported w-hat by |w|*dirLead
-			// (Rodrigues). continuous and gate-free: identity at w ~ 0,
-			// inert at |v| ~ 0. magnitude preserved exactly (rotation);
-			// pose and w untouched. uses wRep — the same physical rate
-			// the game reads, direction-stabilized by any angular dir
-			// smoothing already applied.
+			// Direction lead.
+			//
+			// CA FULL now predicts the TRANSLATIONAL velocity direction
+			// forward instead of rotating it around the controller's wrist
+			// angular-velocity axis.  Field 2026-08-15: throw quality depended
+			// on whether the palm was rotating during the throw, not on its
+			// absolute orientation.  KALSPACE simultaneously showed ks.w
+			// tracking quaternion/world angular velocity very well while the
+			// translational curvature axis commonly differed from ks.w.
+			//
+			// For the Singer/decaying-acceleration state,
+			//   dv = a * tau * (1-exp(-L/tau)).
+			// We use the resulting state direction only and preserve the
+			// already-selected vRep magnitude exactly, so magnitude-channel
+			// separation remains intact.  This is continuous Kalman-state
+			// prediction: no release gate, boost, rewind or motion threshold.
+			//
+			// Non-CA modes retain the old Rodrigues wrist-axis behavior so
+			// this patch does not silently change CV semantics.
 			{
+				for(int a2 = 0; a2 < 3; a2++){
+					diagPreTdV[a2] = vRep[a2];
+				}
 				double wm = sqrt(wRep[0] * wRep[0] + wRep[1] * wRep[1] + wRep[2] * wRep[2]);
 				double dLead;
 				if(driverConfig.streamFrame.kalmanDirLeadAdaptive){
@@ -2015,7 +2481,27 @@ bool CustomHeadsetDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 				if(dLead > 0.0){
 					if(dLead > 0.05){ dLead = 0.05; }
 					double mV = sqrt(vRep[0] * vRep[0] + vRep[1] * vRep[1] + vRep[2] * vRep[2]);
-					if(wm > 1e-3 && mV > 0.05){
+					if(caFull && mV > 0.05){
+						double dvFac = dLead;
+						if(caTau > 1e-6){
+							dvFac = caTau * (1.0 - exp(-dLead / caTau));
+						}
+						double vPred[3] = {
+							ks.v[0] + ks.ca[0] * dvFac,
+							ks.v[1] + ks.ca[1] * dvFac,
+							ks.v[2] + ks.ca[2] * dvFac
+						};
+						double mPred = sqrt(vPred[0] * vPred[0] + vPred[1] * vPred[1] + vPred[2] * vPred[2]);
+						double mState = sqrt(ks.v[0] * ks.v[0] + ks.v[1] * ks.v[1] + ks.v[2] * ks.v[2]);
+						if(mPred > 0.05 && mState > 0.05){
+							diagTdCmdDeg = vecAngleDeg(ks.v, vPred);
+							for(int a2 = 0; a2 < 3; a2++){
+								vRep[a2] = vPred[a2] / mPred * mV;
+							}
+						}
+					}else if(wm > 1e-3 && mV > 0.05){
+						// Legacy CV/non-CA fallback.
+						diagTdCmdDeg = wm * dLead * 180.0 / 3.14159265358979323846;
 						double ax = wRep[0] / wm, ay = wRep[1] / wm, az = wRep[2] / wm;
 						double ang = wm * dLead;
 						double c = cos(ang), s = sin(ang);
@@ -2029,6 +2515,82 @@ bool CustomHeadsetDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 							double axc[3] = { ax, ay, az };
 							vRep[a2] = vRep[a2] * c + cr[a2] * s + axc[a2] * adotv * (1.0 - c);
 						}
+					}
+				}
+				for(int a2 = 0; a2 < 3; a2++){
+					diagPostTdV[a2] = vRep[a2];
+					diagKalW[a2] = ks.w[a2];
+				}
+				double bendNow = vecAngleDeg(diagPreTdV, diagPostTdV);
+				if(bendNow >= 0){ diagTdBendDeg = bendNow; }
+
+				// Controller local basis expressed in driver/world space.
+				// We log all three axes rather than assume which physical
+				// controller axis is the palm normal.
+				const double lx[3] = {1, 0, 0};
+				const double ly[3] = {0, 1, 0};
+				const double lz[3] = {0, 0, 1};
+				QuatRotateVector(ks.q, lx, diagLocalX);
+				QuatRotateVector(ks.q, ly, diagLocalY);
+				QuatRotateVector(ks.q, lz, diagLocalZ);
+
+				// Translational curvature angular velocity, observe-only:
+				// omega_curve = (v x a) / |v|^2.  If this aligns with throw
+				// correction better than controller w, it supports replacing
+				// Td's wrist-axis rotation with a trajectory-derived axis.
+				double kv2 = ks.v[0] * ks.v[0] + ks.v[1] * ks.v[1] + ks.v[2] * ks.v[2];
+				if(caFull && kv2 > 0.25){
+					diagCurveW[0] = (ks.v[1] * ks.ca[2] - ks.v[2] * ks.ca[1]) / kv2;
+					diagCurveW[1] = (ks.v[2] * ks.ca[0] - ks.v[0] * ks.ca[2]) / kv2;
+					diagCurveW[2] = (ks.v[0] * ks.ca[1] - ks.v[1] * ks.ca[0]) / kv2;
+					diagCurveVsKalDeg = vecAngleDeg(diagCurveW, diagKalW);
+				}
+				// Source linear velocity diagnostics.  fdV is available only
+				// on a genuinely fresh positional measurement.  During p3d /
+				// reacquisition it intentionally becomes NA while srcV and
+				// kalV keep logging, letting the field trace show whether the
+				// upstream velocity still carries useful unseen-motion data.
+				diagSrcKalDeg = vecAngleDeg(diagSrcV, ks.v);
+				diagP3dNow = posOnlyFreeze ? 1 : 0;
+				diagReacqNow = ks.reacqActive ? 1 : 0;
+				for(int a2 = 0; a2 < 3; a2++){
+					diagKalV[a2] = ks.v[a2];
+				}
+				diagFdTrusted = rawFdValid && !ks.reacqActive && !posOnlyFreeze;
+				// Normalize WorldFromDriver before using it as a rotation. Test
+				// both directions because the OpenVR pose transform convention and
+				// vrlink's velocity convention are exactly what this probe is
+				// intended to adjudicate in the field.
+				double qwdN = sqrt(diagQwd.w * diagQwd.w + diagQwd.x * diagQwd.x
+					+ diagQwd.y * diagQwd.y + diagQwd.z * diagQwd.z);
+				if(qwdN > 1e-9){
+					diagQwd.w /= qwdN; diagQwd.x /= qwdN; diagQwd.y /= qwdN; diagQwd.z /= qwdN;
+					double qwAbs = fabs(diagQwd.w);
+					if(qwAbs > 1.0){ qwAbs = 1.0; }
+					diagQwdAngleDeg = 2.0 * acos(qwAbs) * 180.0 / 3.14159265358979323846;
+					QuatRotateVector(diagQwd, diagSrcV, diagSrcVQwd);
+					vr::HmdQuaternion_t qwdInv = {diagQwd.w, -diagQwd.x, -diagQwd.y, -diagQwd.z};
+					QuatRotateVector(qwdInv, diagSrcV, diagSrcVQwdInv);
+				}
+				if(diagFdTrusted){
+					diagSrcFdDeg = vecAngleDeg(diagSrcV, diagFdV);
+					diagSrcQwdFdDeg = vecAngleDeg(diagSrcVQwd, diagFdV);
+					diagSrcQwdInvFdDeg = vecAngleDeg(diagSrcVQwdInv, diagFdV);
+					double srcM = sqrt(diagSrcV[0]*diagSrcV[0] + diagSrcV[1]*diagSrcV[1] + diagSrcV[2]*diagSrcV[2]);
+					double fdM = sqrt(diagFdV[0]*diagFdV[0] + diagFdV[1]*diagFdV[1] + diagFdV[2]*diagFdV[2]);
+					if(fdM > 0.05){ diagSrcFdMagRatio = srcM / fdM; }
+				}
+				if(diagQRateValid){
+					diagSrcWorldDeg = vecAngleDeg(diagSrcW, diagQWorldW);
+					diagSrcBodyDeg = vecAngleDeg(diagSrcW, diagQBodyW);
+					diagKalWorldDeg = vecAngleDeg(diagKalW, diagQWorldW);
+					diagKalBodyDeg = vecAngleDeg(diagKalW, diagQBodyW);
+					double qwm = sqrt(diagQWorldW[0] * diagQWorldW[0] + diagQWorldW[1] * diagQWorldW[1] + diagQWorldW[2] * diagQWorldW[2]);
+					double vm = sqrt(diagPostTdV[0] * diagPostTdV[0] + diagPostTdV[1] * diagPostTdV[1] + diagPostTdV[2] * diagPostTdV[2]);
+					if(driverConfig.streamFrame.poseLogging && now - ks.diagSpaceLastLog >= 0.05
+							&& (qwm > 1.0 || vm > 0.5)){
+						ks.diagSpaceLastLog = now;
+						logSpace = true;
 					}
 				}
 			}
@@ -2156,10 +2718,39 @@ bool CustomHeadsetDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 					ks.vClampN++;
 				}
 			}
+			// Capture the raw input before replacing DriverPose_t below.
+			for(int a2 = 0; a2 < 3; a2++){ diagRawPos[a2] = pose.vecPosition[a2]; }
+			diagTMeas = tMeas;
+			diagOffsetIn = tOff;
+			diagFresh = (!dropSample && !dupRepeat && !posOnlyFreeze) ? 1 : 0;
+			// Covariance telemetry for the reported "warm-up" question.
+			// A fixed CA model should not learn across throws, but the
+			// duplicate policy is state-dependent; a long still period could
+			// in principle leave the filter much more confident than a moving
+			// period.  Log the actual CA uncertainty so that hypothesis is
+			// directly testable rather than judged from feel.
+			if(caFull){
+				double pVar = 0, vVar = 0, aVar = 0;
+				for(int a2 = 0; a2 < 3; a2++){
+					double pv = ks.P6[a2][0] > 0 ? ks.P6[a2][0] : 0;
+					double vv = ks.P6[a2][3] > 0 ? ks.P6[a2][3] : 0;
+					double av = ks.P6[a2][5] > 0 ? ks.P6[a2][5] : 0;
+					pVar += pv;
+					vVar += vv;
+					aVar += av;
+				}
+				diagPosSigma = sqrt(pVar / 3.0);
+				diagVelSigma = sqrt(vVar / 3.0);
+				diagAccSigma = sqrt(aVar / 3.0);
+			}
+
 			for(int a2 = 0; a2 < 3; a2++){
 				pose.vecPosition[a2] = (useSmoothOut ? ksOutP[a2] : ks.p[a2]) + ks.v[a2] * lead;
 				pose.vecVelocity[a2] = vRep[a2];
 				pose.vecAngularVelocity[a2] = wRep[a2];
+				diagStateP[a2] = ks.p[a2];
+				diagStateV[a2] = ks.v[a2];
+				diagStateA[a2] = caFull ? ks.ca[a2] : 0.0;
 			}
 			if(caFull){
 				// the lead honestly includes the acceleration state
@@ -2190,6 +2781,32 @@ bool CustomHeadsetDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 					pose.qRotation = ql;
 				}else{
 					pose.qRotation = ks.q;
+				}
+			}
+
+			// Epoch contract:
+			//   ks.p/q are estimates at the accepted measurement epoch tMeas.
+			//   lead moves the reported state to tMeas + lead.
+			//   fixed-lag output instead represents receipt-now - smoothLag.
+			// DriverPose_t::poseTimeOffset must describe that same epoch or the
+			// runtime predicts an already/time-shifted state again.
+			if(useSmoothOut){
+				pose.poseTimeOffset = -smoothLag + lead;
+			}else if(devTime){
+				pose.poseTimeOffset = tOff + lead;
+			}else{
+				pose.poseTimeOffset = lead;
+			}
+			diagOffsetOut = pose.poseTimeOffset;
+			for(int a2 = 0; a2 < 3; a2++){ diagSubmitP[a2] = pose.vecPosition[a2]; }
+
+			if(rawFdValid){
+				double outXZ2 = vRep[0] * vRep[0] + vRep[2] * vRep[2];
+				if(outXZ2 > 0.25){
+					double dotXZ = rawFd[0] * vRep[0] + rawFd[2] * vRep[2];
+					double crossY = rawFd[2] * vRep[0] - rawFd[0] * vRep[2];
+					diagSignedDirDeg = atan2(crossY, dotXZ) * 180.0 / 3.14159265358979323846;
+					diagSignedDirValid = true;
 				}
 			}
 			{
@@ -2368,10 +2985,54 @@ bool CustomHeadsetDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 				DriverLog("VelocityFix: gaze aim assist ENGAGED id=%u strength=%.2f maxDeg=%.0f", openVRID,
 					driverConfig.streamFrame.kalmanGazeAssist, driverConfig.streamFrame.kalmanGazeMaxDeg);
 			}
+			if(logSpace){
+				DriverLog("PoseLog: KALSPACE id=%u qdt=%.2fms srcW=(%.2f,%.2f,%.2f) qWorldW=(%.2f,%.2f,%.2f) qBodyW=(%.2f,%.2f,%.2f) kalW=(%.2f,%.2f,%.2f) errSrcWorld=%.1fdeg errSrcBody=%.1fdeg errKalWorld=%.1fdeg errKalBody=%.1fdeg preTdV=(%.2f,%.2f,%.2f) postTdV=(%.2f,%.2f,%.2f) tdCmd=%.2fdeg tdBend=%.2fdeg curveW=(%.2f,%.2f,%.2f) curveVsKal=%.1fdeg localX=(%.2f,%.2f,%.2f) localY=(%.2f,%.2f,%.2f) localZ=(%.2f,%.2f,%.2f)",
+					openVRID, diagQDtMs,
+					diagSrcW[0], diagSrcW[1], diagSrcW[2],
+					diagQWorldW[0], diagQWorldW[1], diagQWorldW[2],
+					diagQBodyW[0], diagQBodyW[1], diagQBodyW[2],
+					diagKalW[0], diagKalW[1], diagKalW[2],
+					diagSrcWorldDeg, diagSrcBodyDeg, diagKalWorldDeg, diagKalBodyDeg,
+					diagPreTdV[0], diagPreTdV[1], diagPreTdV[2],
+					diagPostTdV[0], diagPostTdV[1], diagPostTdV[2],
+					diagTdCmdDeg, diagTdBendDeg,
+					diagCurveW[0], diagCurveW[1], diagCurveW[2], diagCurveVsKalDeg,
+					diagLocalX[0], diagLocalX[1], diagLocalX[2],
+					diagLocalY[0], diagLocalY[1], diagLocalY[2],
+					diagLocalZ[0], diagLocalZ[1], diagLocalZ[2]);
+				DriverLog("PoseLog: KALVSRC id=%u p3d=%d reacq=%d fresh=%d srcV=(%.3f,%.3f,%.3f) fdV=%s(%.3f,%.3f,%.3f) kalV=(%.3f,%.3f,%.3f) preLeadV=(%.3f,%.3f,%.3f) errSrcFd=%s%.1fdeg magSrcFd=%s%.2f errSrcKal=%.1fdeg",
+					openVRID, diagP3dNow, diagReacqNow, diagFresh,
+					diagSrcV[0], diagSrcV[1], diagSrcV[2],
+					diagFdTrusted ? "" : "NA/", diagFdV[0], diagFdV[1], diagFdV[2],
+					diagKalV[0], diagKalV[1], diagKalV[2],
+					diagPreTdV[0], diagPreTdV[1], diagPreTdV[2],
+					diagFdTrusted ? "" : "NA/", diagFdTrusted ? diagSrcFdDeg : 0.0,
+					diagSrcFdMagRatio >= 0 ? "" : "NA/", diagSrcFdMagRatio >= 0 ? diagSrcFdMagRatio : 0.0,
+					diagSrcKalDeg);
+				DriverLog("PoseLog: KALVSPACE id=%u qwd=(%.6f,%.6f,%.6f,%.6f) qwdAng=%.2fdeg raw=(%.3f,%.3f,%.3f) qwdV=(%.3f,%.3f,%.3f) invV=(%.3f,%.3f,%.3f) fd=%s(%.3f,%.3f,%.3f) errRaw=%s%.1fdeg errQwd=%s%.1fdeg errInv=%s%.1fdeg",
+					openVRID,
+					diagQwd.w, diagQwd.x, diagQwd.y, diagQwd.z, diagQwdAngleDeg,
+					diagSrcV[0], diagSrcV[1], diagSrcV[2],
+					diagSrcVQwd[0], diagSrcVQwd[1], diagSrcVQwd[2],
+					diagSrcVQwdInv[0], diagSrcVQwdInv[1], diagSrcVQwdInv[2],
+					diagFdTrusted ? "" : "NA/", diagFdV[0], diagFdV[1], diagFdV[2],
+					diagFdTrusted ? "" : "NA/", diagFdTrusted ? diagSrcFdDeg : 0.0,
+					diagFdTrusted ? "" : "NA/", diagFdTrusted ? diagSrcQwdFdDeg : 0.0,
+					diagFdTrusted ? "" : "NA/", diagFdTrusted ? diagSrcQwdInvFdDeg : 0.0);
+			}
 			if(logKalDiag){
 				// tuning guide: NIS ~ 1 means the noise models match
 				// reality; sustained > 3 = too stiff; < 0.3 = too loose
 				DriverLog("PoseLog: KALDIAG id=%u nis=%.2f aNis=%.2f stepMax=%.1fmm frozenSteps=%d dupSkipped=%d dtBack=%d dtMean=%.2fms dtMax=%.1fms fdtMean=%.2fms fdtMax=%.1fms coastMax=%.0fms gazeBends=%d bendMean=%.1fdeg bendMax=%.1fdeg accMax=%.2f wAccMax=%.1f accNZ=%d loss=%d lossMs=%.0f tp=%d caAcc=%.1f caWAcc=%.1f garbage=%d vClamp=%d rDiv=%.1f rADiv=%.1f p3d=%d", openVRID, diagNis, diagANis, diagStepMax * 1000.0, diagFrozen, diagDup, diagDtBack, diagDtMean, diagDtMax, diagFdtMean, diagFdtMax, diagCoastMax, diagBends, diagBendMean, diagBendMax, diagAccMax, diagWAccMax, diagAccNZ, diagLossRuns, diagLossMs, diagTeleports, diagCaAcc, diagCaWAcc, diagGarbage, diagVClamp, diagRDiv, diagRADiv, diagP3d);
+				DriverLog("PoseLog: KALEPOCH id=%u fresh=%d tMeas=%.6f offIn=%.2fms offOut=%.2fms raw=(%.4f,%.4f,%.4f) stateP=(%.4f,%.4f,%.4f) submitP=(%.4f,%.4f,%.4f) stateV=(%.3f,%.3f,%.3f) stateA=(%.1f,%.1f,%.1f) sigP=%.2fmm sigV=%.3fm/s sigA=%.1fm/s2 dirYaw=%s%.2fdeg",
+					openVRID, diagFresh, diagTMeas, diagOffsetIn * 1000.0, diagOffsetOut * 1000.0,
+					diagRawPos[0], diagRawPos[1], diagRawPos[2],
+					diagStateP[0], diagStateP[1], diagStateP[2],
+					diagSubmitP[0], diagSubmitP[1], diagSubmitP[2],
+					diagStateV[0], diagStateV[1], diagStateV[2],
+					diagStateA[0], diagStateA[1], diagStateA[2],
+					diagPosSigma * 1000.0, diagVelSigma, diagAccSigma,
+					diagSignedDirValid ? "" : "NA/", diagSignedDirValid ? diagSignedDirDeg : 0.0);
 			}
 		}
 		// ==== end kalman mode ====

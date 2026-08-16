@@ -211,6 +211,14 @@ private:
 		// position with a moving quaternion is a position-only freeze,
 		// NOT stillness, so the dup run cap's rationale does not apply.
 		double lastMeasQ[4] = {1, 0, 0, 0};
+		// Observe-only angular-space probe.  This deliberately has its own
+		// raw quaternion clock rather than reusing lastMeasQ/tFresh: position
+		// can freeze while orientation remains live, which is exactly the
+		// case this diagnostic is intended to distinguish.
+		bool diagRawQHave = false;
+		double diagRawQ[4] = {1, 0, 0, 0};
+		double diagRawQT = 0;
+		double diagSpaceLastLog = 0;
 		int posFreeze3dof = 0;
 		bool haveMeas = false;
 		double stepMax = 0;
@@ -262,6 +270,32 @@ private:
 		int lossRuns = 0;
 		double lossMsSum = 0;
 		int teleports = 0;
+		// Measurement-integrity reacquisition.  This is deliberately
+		// separate from throw/release logic: an impossible position jump is
+		// missing/untrusted sensor data, not a motion-model event.
+		//
+		// reacqCheck: first good-status sample after a short flagged loss
+		// must still pass the ordinary teleport-continuity test before it is
+		// allowed to innovate the carried state.
+		// reacqActive: a discontinuity was found; candidate raw positions are
+		// collected without touching the Kalman state until a short coherent
+		// trajectory exists.  This prevents the old dt>200ms timer from
+		// eventually reinitializing onto a still-walking multi-metre glitch.
+		bool reacqCheck = false;
+		bool reacqActive = false;
+		int reacqCount = 0;
+		double reacqFirstT = 0;
+		double reacqLastT = 0;
+		double reacqFirstP[3] = {};
+		double reacqLastP[3] = {};
+		// Candidate trajectory proof: enough distinct position samples to
+		// estimate one coherent velocity instead of promoting a lucky
+		// first/last secant from a walking coordinate solution.
+		static constexpr int reacqFitN = 7;
+		double reacqT[reacqFitN] = {};
+		double reacqP[reacqFitN][3] = {};
+		double reacqPrevStepV[3] = {};
+		bool reacqHavePrevStepV = false;
 		int gazeBends = 0;
 		double gazeBendSum = 0;
 		double gazeBendMax = 0;
