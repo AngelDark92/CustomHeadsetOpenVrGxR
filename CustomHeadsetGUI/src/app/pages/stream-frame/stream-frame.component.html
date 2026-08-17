@@ -749,7 +749,7 @@
 <div class="field">
     <div class="title">
         <span>Kalman Duplicate-Sample Handling</span>
-        <app-field-tip info="The streamer repeats the last pose whenever fresh tracking hasn&#39;t arrived (~2 of 3 samples during fast throws). Off: Repeats believed as measurements; smooth, slight speed drag. Coast (not recommended): Skip repeats and extrapolate through them. Drop (not recommended): Repeats are ignored entirely. Soft (default): repeats processed but distrusted by the scale below; measured equal to Off on strength, halves motion jitter. Sustained repeats are always accepted as genuine stillness." />
+        <app-field-tip info="The streamer repeats the last pose whenever fresh tracking hasn&#39;t arrived (~2 of 3 samples during fast throws). Off: Repeats believed as measurements; smooth, slight speed drag. Coast (not recommended): Skip repeats and extrapolate through them. Drop (not recommended): Repeats are ignored entirely. Soft (default): repeats processed but distrusted by the scale below; measured equal to Off on strength, halves motion jitter. Age (A/B candidate): the honest form of Soft; a repeat&#39;s uncertainty is how far the hand moved since the last fresh sample, so it distrusts repeats continuously with speed and age instead of by a fixed scale above 0.5 m/s. Sustained repeats are always accepted as genuine stillness." />
         <app-reset-button [canReset]="settings.kalmanDupMode != defaults.kalmanDupMode" (resetClick)="reset('kalmanDupMode')"></app-reset-button>
     </div>
     <div class="control">
@@ -758,6 +758,7 @@
             <mat-option value="coast">Coast - extrapolate through repeats (field-rejected)</mat-option>
             <mat-option value="drop">Drop - repeats never happened (honest gaps)</mat-option>
             <mat-option value="soft">Soft - repeats distrusted by the scale below</mat-option>
+            <mat-option value="age">Age - repeats distrusted by hand speed x age (no scale, no speed gate)</mat-option>
         </mat-select>
     </div>
 </div>
@@ -1173,11 +1174,25 @@
 <div class="field">
     <div class="title">
         <span>Kalman Smoothed Reporting Lag (ms)</span>
-        <app-field-tip info="The one remaining pure-estimator upgrade, aimed at what this game actually reads (your hand's position history): instead of estimating the present from the past only, the reported hand state is estimated a few ms in the past using tracking samples from BOTH sides of that moment - as calm as your A=1 tuning AND amplitude-accurate like a fast filter, a combination plain filtering cannot achieve. The whole reported state (position, rotation, velocity, spin) shifts together, staying coherent. The single honest cost: this many ms of added hand latency. Try 20-35; 0 = off. If even 35 doesn't restore throw strength at your calm settings, the tracking data itself is the ceiling." />
+        <app-field-tip info="The one remaining pure-estimator upgrade, aimed at what this game actually reads (your hand's position history): instead of estimating the present from the past only, the reported hand state is estimated a few ms in the past using tracking samples from BOTH sides of that moment - as calm as your A=1 tuning AND amplitude-accurate like a fast filter, a combination plain filtering cannot achieve. The whole reported state (position, rotation, velocity, spin) shifts together, staying coherent. The single honest cost: this many ms of added hand latency (partly hidden by the runtime&#39;s forward prediction, which now gets an accurate velocity). In Kalman CA this is a true fixed-lag RTS smoother; set it to roughly your measured release skew (~35 ms) and pair it with a faster Jerk (8-25) than you would run causally. 0 = off." />
         <app-reset-button [canReset]="settings.kalmanSmoothLagMs != defaults.kalmanSmoothLagMs" (resetClick)="reset('kalmanSmoothLagMs')"></app-reset-button>
     </div>
     <div class="control">
         <input matInput [(ngModel)]="settings.kalmanSmoothLagMs" step="5" min="0" max="100" (ngModelChange)="save()" type="number">
+    </div>
+</div>
+
+<div class="field">
+    <div class="title">
+        <span>Kalman Smoothed Lag Epoch</span>
+        <app-field-tip info="How the smoothed (L ms old) state is stamped for SteamVR. Latent (default): stamped as current, so the runtime predicts its usual short horizon and the whole hand simply carries L ms of extra latency; the submitted position history is the smoothed trajectory delayed by L, which is what pose-history throw estimators read. Honest: the true epoch (-L) is reported; the runtime then extrapolates the position by L plus its photon horizon from the reported velocity, which turned throws weak/backward in the field for this game (pose-history games); only for games that read vecVelocity directly." />
+        <app-reset-button [canReset]="settings.kalmanSmoothLagEpoch != defaults.kalmanSmoothLagEpoch" (resetClick)="reset('kalmanSmoothLagEpoch')"></app-reset-button>
+    </div>
+    <div class="control">
+        <mat-select [(ngModel)]="settings.kalmanSmoothLagEpoch" (ngModelChange)="save()">
+            <mat-option [value]="0">Latent - stamped as current (+L hand latency)</mat-option>
+            <mat-option [value]="1">Honest - true epoch (runtime extrapolates L)</mat-option>
+        </mat-select>
     </div>
 </div>
 

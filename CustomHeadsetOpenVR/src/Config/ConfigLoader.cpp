@@ -754,7 +754,7 @@ void ConfigLoader::ParseConfig(){
 			}
 			if(streamFrameData["kalmanDupMode"].is_string()){
 				std::string dupModeStr = streamFrameData["kalmanDupMode"].get<std::string>();
-				newConfig.streamFrame.kalmanDupMode = dupModeStr == "soft" ? 3 : (dupModeStr == "drop" ? 2 : (dupModeStr == "coast" ? 1 : 0));
+				newConfig.streamFrame.kalmanDupMode = dupModeStr == "age" ? 4 : (dupModeStr == "soft" ? 3 : (dupModeStr == "drop" ? 2 : (dupModeStr == "coast" ? 1 : 0)));
 			}
 			if(streamFrameData["kalmanDupRScale"].is_number()){
 				newConfig.streamFrame.kalmanDupRScale = streamFrameData["kalmanDupRScale"].get<double>();
@@ -794,6 +794,9 @@ void ConfigLoader::ParseConfig(){
 			}
 			if(streamFrameData["kalmanSmoothLagMs"].is_number()){
 				newConfig.streamFrame.kalmanSmoothLagMs = streamFrameData["kalmanSmoothLagMs"].get<double>();
+			}
+			if(streamFrameData["kalmanSmoothLagEpoch"].is_number()){
+				newConfig.streamFrame.kalmanSmoothLagEpoch = streamFrameData["kalmanSmoothLagEpoch"].get<int>();
 			}
 			if(streamFrameData["kalmanDirLeadMs"].is_number()){
 				newConfig.streamFrame.kalmanDirLeadMs = streamFrameData["kalmanDirLeadMs"].get<double>();
@@ -1377,7 +1380,7 @@ void ConfigLoader::WriteInfo(){
 				{"kalmanMagAccel", defaultSettings.streamFrame.kalmanMagAccel},
 				{"kalmanMagScale", defaultSettings.streamFrame.kalmanMagScale},
 				{"kalmanAngMagScale", defaultSettings.streamFrame.kalmanAngMagScale},
-				{"kalmanDupMode", defaultSettings.streamFrame.kalmanDupMode == 3 ? "soft" : (defaultSettings.streamFrame.kalmanDupMode == 2 ? "drop" : (defaultSettings.streamFrame.kalmanDupMode == 1 ? "coast" : "off"))},
+				{"kalmanDupMode", defaultSettings.streamFrame.kalmanDupMode == 4 ? "age" : (defaultSettings.streamFrame.kalmanDupMode == 3 ? "soft" : (defaultSettings.streamFrame.kalmanDupMode == 2 ? "drop" : (defaultSettings.streamFrame.kalmanDupMode == 1 ? "coast" : "off")))},
 				{"kalmanDupRScale", defaultSettings.streamFrame.kalmanDupRScale},
 				{"kalmanTeleportM", defaultSettings.streamFrame.kalmanTeleportM},
 				{"kalmanLossCoastMs", defaultSettings.streamFrame.kalmanLossCoastMs},
@@ -1391,6 +1394,7 @@ void ConfigLoader::WriteInfo(){
 				{"kalmanGazeMaxDeg", defaultSettings.streamFrame.kalmanGazeMaxDeg},
 				{"kalmanGazeMinSpeed", defaultSettings.streamFrame.kalmanGazeMinSpeed},
 				{"kalmanSmoothLagMs", defaultSettings.streamFrame.kalmanSmoothLagMs},
+				{"kalmanSmoothLagEpoch", defaultSettings.streamFrame.kalmanSmoothLagEpoch},
 				{"kalmanDirLeadMs", defaultSettings.streamFrame.kalmanDirLeadMs},
 				{"kalmanDirLeadAdaptive", defaultSettings.streamFrame.kalmanDirLeadAdaptive},
 				{"kalmanDirLeadBaseMs", defaultSettings.streamFrame.kalmanDirLeadBaseMs},

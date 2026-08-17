@@ -713,6 +713,19 @@ struct StreamFrameConfig{
 	// catch-up self-schedules. dupRScale=1 in soft is bit-identical to
 	// off; k -> inf converges toward coast/drop. the run cap applies:
 	// repeats sustained past it are accepted at full weight.
+	// 4=age (2026-08-16, A/B candidate): the honest version of soft.
+	// a repeat is a true position of unknown age; its uncertainty is
+	// how far the hand moved in that age, so R_rep = R + (|v|*age)^2
+	// (and Ra_rep = Ra + (|w|*age)^2) with age = time since the last
+	// FRESH sample. no speed gate (soft only distrusts repeats above
+	// 0.5 m/s, so a slow toss runs a different filter than a throw
+	// and the behavior steps at 0.5), no scale knob, no 5mm floor:
+	// at rest it collapses to R (repeats believed, v -> 0), at 5 m/s
+	// a 3-frame-old repeat is (5cm)^2 and effectively ignored, and a
+	// long repeat run distrusts itself progressively instead of
+	// flipping at the cap. offline it is numerically identical to
+	// soft/k=3 at throw speed and continuous below it. the run cap
+	// still applies as the "tracker stopped producing" backstop.
 	int kalmanDupMode = 3;
 	double kalmanDupRScale = 3.0;
 	// teleport guard: reinit instead of innovating when an accepted step
@@ -792,10 +805,42 @@ struct StreamFrameConfig{
 	// from BOTH sides — calm like A=1 AND amplitude-accurate like high A,
 	// which filtering fundamentally cannot combine. the entire reported
 	// state (pose + velocities, coherent) shifts to t-L; the one honest
-	// cost is L ms of added hand latency. 0 = off. implemented as a
-	// two-estimate fusion: stored forward state at t-L fused with the
-	// current state backcast to t-L.
+	// cost is L ms of added hand latency. 0 = off.
+	// 2026-08-17: in CA-full this is now a real fixed-lag Rauch-Tung-
+	// Striebel smoother (backward recursion over the stored predicted/
+	// filtered Singer states down to t-L; see KalState::rtsN). the CV
+	// modes keep the old two-estimate fusion. field motivation: the raw
+	// referenced instruments put the input release event only ~35ms
+	// (IQR 25-55) after the raw velocity peak, and every causal J read
+	// the release while still RISING (rel/rawPk 0.6-0.87, dtPk=0); the
+	// faster J that reads more (J=6) went erratic in direction. a
+	// smoother reports the velocity AT t-L (L ~ skew) using samples from
+	// both sides — the peak of a fast filter at the calm of a slow one —
+	// so the game reads the release vector itself. poseTimeOffset
+	// carries -L so the runtime predicts from the right epoch. offline:
+	// J=12 P=1.5 L=35 reads 0.93/0.97/0.92 of the raw peak at +30/45/60
+	// ms with the rest-noise of causal J=6 (which reads 0.90/0.95/0.93
+	// but with the field's erratic direction). the two-estimate fusion
+	// it replaces was not a smoother.
 	double kalmanSmoothLagMs = 0.0;
+	// how the smoothed (t-L) state is stamped for the runtime.
+	// 0 = latent (default): poseTimeOffset unchanged, i.e. the L-old
+	//     state is presented as current. the runtime predicts only its
+	//     usual ~photon horizon; the rendered hand carries L ms of extra
+	//     latency; the submitted POSITION stream (what this game
+	//     differentiates for throws) is the smoothed trajectory delayed
+	//     by L, so a release event ~L after the true release reads the
+	//     peak vector.
+	// 1 = honest: poseTimeOffset -= L. field 2026-08-17: with L=35-45
+	//     the runtime extrapolated the position by L+photon (65-80ms)
+	//     from the reported velocity; the game's pose-history velocity
+	//     is then v + T*a, and at release (hand decelerating) that is
+	//     weak or backward. RELDIAG showed relOut/rawPk 0.88-0.92 at
+	//     5-7deg (the reported vecVelocity was right) while throws fell
+	//     out of the hand — the direct proof this game reads pose
+	//     history, not vecVelocity. kept for games that do read
+	//     vecVelocity and prefer honest epochs.
+	int kalmanSmoothLagEpoch = 0;
 	// ==== constant-acceleration (Singer) experiment knobs ====
 	// the CV model treats the throw ramp as noise and structurally lags
 	// its peak (the measured ~80% magnitude deficit); a CA state tracks

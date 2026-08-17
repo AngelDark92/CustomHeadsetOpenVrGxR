@@ -114,6 +114,7 @@ function defaultStreamFrame(): StreamFrameConfig {
     kalmanGazeMaxDeg: 30,
     kalmanGazeMinSpeed: 1.2,
     kalmanSmoothLagMs: 0,
+    kalmanSmoothLagEpoch: 0,
     kalmanCaJerk: 4,
     kalmanCaAngJerk: 1500,
     kalmanCaPosNoiseMm: 1.5,
