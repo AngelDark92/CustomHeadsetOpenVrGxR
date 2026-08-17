@@ -108,7 +108,7 @@ function defaultStreamFrame(): StreamFrameConfig {
     kalmanDupRScale: 3,
     kalmanDeviceTime: true,
     kalmanPosFreeze3dof: true,
-    kalmanPosFreezeVelDecayMs: 180,
+    kalmanPosFreezeVelDecayMs: 0,
     kalmanDupCoastMaxMs: 90,
     kalmanGazeAssist: 0,
     kalmanGazeMaxDeg: 30,

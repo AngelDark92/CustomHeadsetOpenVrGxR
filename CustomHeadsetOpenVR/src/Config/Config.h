@@ -643,6 +643,20 @@ struct StreamFrameConfig{
 	// channel relOffPk is structurally blind to) reads 4.3 / 5.7 /
 	// 8.7 / 12.7 deg at Td 5/10/15/20 — monotone, hands agree, and
 	// rel/pk stays 1.00 throughout (magnitude provably untouched).
+	// 2026-08-17 correction: that relDirOff series was scored against a
+	// secant of the FILTERED pose (DeriveMotion ran after the report
+	// block overwrote the pose), so it grows ~|w|*Td by construction —
+	// it did not ratify anything. what stands is the felt evidence
+	// (combined throws skew left without derotation) and the raw-
+	// referenced session: Td 0/10/5 scored 10/13/12 of 15 on combined
+	// throws, i.e. Td=5 fine, Td=0 worse. Td=5 kept. the CA-full
+	// state-prediction variant (v + a*tau*(1-e^(-L/tau))) added 08-15
+	// was inert at the shipped J/tau (dead accel state, ~0.2deg bend)
+	// and is retired; CA-full uses the Rodrigues form like every mode.
+	// scope: this knob shapes vecVelocity; a pose-history game only sees
+	// it through the runtime's ~10ms extrapolation (a few degrees at
+	// most). second-order for such games, first-order for vecVelocity
+	// games.
 	double kalmanDirLeadMs = 5.0;
 	// adaptive direction lead (2026-08-15, tail experiment A): the fixed
 	// Td is tuned for the median throw, but the release-tail autopsy
@@ -726,6 +740,11 @@ struct StreamFrameConfig{
 	// flipping at the cap. offline it is numerically identical to
 	// soft/k=3 at throw speed and continuous below it. the run cap
 	// still applies as the "tracker stopped producing" backstop.
+	// field 2026-08-17: soft, age and coast are indistinguishable on the
+	// raw-referenced release instruments (rel/rawPk J4: 0.78/0.80, J6:
+	// 0.86/0.87, J2: 0.58/0.63 soft/age); scores leaned soft. soft
+	// stays default; age is the cleaner formulation for anyone who
+	// wants a threshold-free dedup.
 	int kalmanDupMode = 3;
 	double kalmanDupRScale = 3.0;
 	// teleport guard: reinit instead of innovating when an accepted step
@@ -775,7 +794,16 @@ struct StreamFrameConfig{
 	// a stop instead of sailing on the occlusion-entry velocity and
 	// reacquiring with a wrong-direction state. 0 = pure coast (the
 	// 2026-08-16 pre-decay behavior). clamped 20-2000 when nonzero.
-	double kalmanPosFreezeVelDecayMs = 180.0;
+	// default 0 since 2026-08-17: the three instrumented sessions
+	// (raw-referenced release scoring, ~1100 posOnlyFreeze callbacks
+	// per 2-minute epoch) showed no throw or freeze symptom the decay
+	// addressed, and the ad-hoc decay is applied to the state but not
+	// the covariance (the velocity terms keep growing during the
+	// freeze), so the first fresh sample after a long freeze kicks the
+	// velocity anyway. pure coast is the consistent choice; the knob
+	// stays for the field case that motivated it (long occlusion +
+	// wrong-direction reacquire).
+	double kalmanPosFreezeVelDecayMs = 0.0;
 	// dup run cap (bug fix 2026-08-10; rationale sharpened 2026-08-11):
 	// no human hand holds a position BIT-IDENTICALLY for tens of ms —
 	// real stillness shows micro-tremor above the 0.3mm gate. a repeat
@@ -862,6 +890,31 @@ struct StreamFrameConfig{
 	// RATIFIED 2026-08-16 (composition-fix session): with the adaptiveR/
 	// dedup composition fixed and honest noise viable, J=4 ran the
 	// standard battery "genuinely great, best of everything so far".
+	//
+	// SHIPPED 2026-08-17 after four instrumented sessions with a RAW
+	// reference (see KalState::rawRingN; the pre-08-16 rel/pk, dirOff and
+	// lagLin numbers above were filtered-vs-filtered and are kept only
+	// as history). what is now measured, not vibed:
+	//  - only the RATIOS J/P and Ja/O move behavior (Kalman gains depend
+	//    on Q/R alone); P and O are the tracker's noise, not tuning.
+	//  - at J=4/tau=20 the acceleration state is effectively dead (peaks
+	//    ~4 m/s^2 against a ~65 m/s^2 throw); the filter is a smooth CV
+	//    with ~14ms position lag and ~60ms velocity lag. that is not a
+	//    flaw: the game(s) tested read POSE HISTORY (twice confirmed:
+	//    the 08-10 gaze test, and the RTS session where vecVelocity was
+	//    strong+aimed at release yet throws failed). the causal
+	//    position stream carries the lagged velocity's momentum for a
+	//    beat after the peak, so its finite-difference velocity at the
+	//    input release event (skew 22-43ms after the raw peak, drifting
+	//    with fatigue) reads 0.95-1.16 of the raw peak at 6-7deg — and it
+	//    holds that across a 2x spread in skew. RELDIAG fd/rawPk and
+	//    fdRawDir score exactly this channel.
+	//  - fine J sweep 3.5/4/4.5/5 flat within noise; J=2 and J=6 both
+	//    worse (smear vs erratic direction); Ja 400/1500/4000 flat,
+	//    Ja=100 worse. nothing left with a mechanism worth a session.
+	//  - the RTS smoother (kalmanSmoothLagMs) is the right tool for a
+	//    game that reads vecVelocity (relOut/rawPk 0.87-0.97 at 5-7deg)
+	//    and the wrong one for pose-history games (0.80-0.91, +latency).
 	double kalmanCaJerk = 4.0;
 	double kalmanCaAngJerk = 1500.0;
 	// CA-full measurement noise, separate from the CV knobs so tuning
@@ -874,12 +927,17 @@ struct StreamFrameConfig{
 	// 2026-08-16: honest 1.5mm ratified — viable now that dup distrust
 	// is floored in absolute terms (it no longer weakens when this
 	// shrinks) and adaptiveR no longer stacks against it.
+	// 2026-08-17: treat as the sensor's noise, fixed. only J/P matters
+	// for behavior (offline: J=4/P=1.5 and J=11.2/P=4.2 give the same
+	// gains to within the dup floor); if a different tracker needs a
+	// different P, scale J with it to keep the ratio.
 	double kalmanCaPosNoiseMm = 1.5;
 	// 5.75 field-preferred over 1.25 (2026-08-14): instruments show a
 	// fatter direction tail at 1.25 (dirOff max 177 vs 92); the felt
 	// benefit likely lives in the smoother q/pose stream that
 	// pose-history games fit — PEAKDIAG does not score that channel.
 	// 2026-08-16: 1.5 ratified alongside the honest linear noise.
+	// 2026-08-17: same rule as P — fixed sensor noise; Ja/O is the knob.
 	double kalmanCaOriNoiseDeg = 1.5;
 	// shared acceleration decay time constant (CA-full, both channels).
 	// 2026-08-16: 20ms ratified (with exactCov the low-tau covariance is

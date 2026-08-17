@@ -3301,7 +3301,7 @@ bool CustomHeadsetDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 					driverConfig.streamFrame.kalmanAdaptiveRMaxDiv);
 			}
 			if(velocityFixMode >= 5){
-				DriverLog("VelocityFix: CA %s active id=%u J=%.0f Ja=%.0f caP=%.1fmm caO=%.2fdeg tau=%.0fms magJ=%.0f magTau=%.0fms reportAccel=%d excov=%d",
+				DriverLog("VelocityFix: CA %s active id=%u J=%.2f Ja=%.0f caP=%.2fmm caO=%.2fdeg tau=%.0fms magJ=%.0f magTau=%.0fms reportAccel=%d excov=%d",
 					velocityFixMode == 6 ? "FULL" : "MAGNITUDE",
 					openVRID,
 					driverConfig.streamFrame.kalmanCaJerk,
