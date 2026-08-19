@@ -1,9 +1,7 @@
-
-
-use sysinfo::{ProcessesToUpdate, System, Process};
 use std::process::Command;
-use std::time::Duration;
 use std::thread::sleep;
+use std::time::Duration;
+use sysinfo::{Process, ProcessesToUpdate, System};
 use tauri::command;
 // use std::path::Path;
 
@@ -50,7 +48,7 @@ pub fn restart_vrcompositor() -> bool {
     } else {
         return false;
     };
-    
+
     let target_server_process_name = if cfg!(target_os = "windows") {
         "vrserver.exe"
     } else if cfg!(target_os = "linux") {
@@ -58,15 +56,21 @@ pub fn restart_vrcompositor() -> bool {
     } else {
         return false;
     };
-    
+
     let mut compositor_process: Option<&Process> = None;
     let mut server_process: Option<&Process> = None;
     for (_pid, process) in system.processes() {
-        if process.name().eq_ignore_ascii_case(target_compositor_process_name) {
+        if process
+            .name()
+            .eq_ignore_ascii_case(target_compositor_process_name)
+        {
             compositor_process = Some(process);
             continue;
         }
-        if process.name().eq_ignore_ascii_case(target_server_process_name) {
+        if process
+            .name()
+            .eq_ignore_ascii_case(target_server_process_name)
+        {
             server_process = Some(process);
             continue;
         }
@@ -82,16 +86,16 @@ pub fn restart_vrcompositor() -> bool {
                     if !process.kill() {
                         println!("failed to kill vrcompositor");
                         return false;
-                    }else{
+                    } else {
                         println!("killed vrcompositor");
                         sleep(Duration::from_millis(1000));
                         Some(valid_path)
                     }
                 }
             }
-        },
+        }
     };
-    
+
     // infer path from vrserver
     let compositor_path_buf;
     if path == None {
@@ -116,25 +120,25 @@ pub fn restart_vrcompositor() -> bool {
             }
         }
     }
-    
+
     let path_unwraped = match path {
         None => {
             println!("Could not find vrcompositor path from running SteamVR instance");
-            return false
-        },
+            return false;
+        }
         Some(path) => path,
     };
-    
+
     println!("Starting vrcompositor {}", path_unwraped.display());
-    
+
     let mut new_process = Command::new(path_unwraped);
     let result = new_process.spawn();
-    
+
     match result {
         Err(err) => {
             println!("Could not start vrcompositor {}", err);
-            return false
-        },
+            return false;
+        }
         Ok(_child) => return true,
     }
 }
@@ -143,7 +147,7 @@ pub fn restart_vrcompositor() -> bool {
 pub fn kill_process(process_name: String) -> bool {
     let mut system = System::new_all();
     system.refresh_processes(ProcessesToUpdate::All, false);
-    
+
     let mut found = false;
     for (_pid, process) in system.processes() {
         if process.name().eq_ignore_ascii_case(&process_name) {
@@ -161,11 +165,11 @@ pub fn kill_process(process_name: String) -> bool {
 #[command]
 pub fn launch_process(path: String, args: Vec<String>) -> bool {
     use std::path::PathBuf;
-    
+
     let path_buf = PathBuf::from(path);
-    
+
     println!("Launching {:?} with args {:?}", path_buf, args);
-    
+
     match Command::new(&path_buf).args(&args).spawn() {
         Ok(_) => {
             println!("Successfully launched {:?}", path_buf);

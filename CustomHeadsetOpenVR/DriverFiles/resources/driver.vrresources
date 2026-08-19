@@ -1,3 +1,41 @@
 {
-	"jsonid" : "vrresources"
+  "jsonid": "vrresources",
+  "statusicons": {
+    "Galaxy XR HMD Defaults": {
+      "Prop_NamedIconPathDeviceOff_String": "{CustomHeadsetOpenVR}/icons/galaxyxr/headset_galaxy_xr_status_off.png",
+      "Prop_NamedIconPathDeviceSearching_String": "{CustomHeadsetOpenVR}/icons/galaxyxr/headset_galaxy_xr_status_searching.png",
+      "Prop_NamedIconPathDeviceSearchingAlert_String": "{CustomHeadsetOpenVR}/icons/galaxyxr/headset_galaxy_xr_status_searching_alert.png",
+      "Prop_NamedIconPathDeviceReady_String": "{CustomHeadsetOpenVR}/icons/galaxyxr/headset_galaxy_xr_status_ready.png",
+      "Prop_NamedIconPathDeviceReadyAlert_String": "{CustomHeadsetOpenVR}/icons/galaxyxr/headset_galaxy_xr_status_ready_alert.png",
+      "Prop_NamedIconPathDeviceNotReady_String": "{CustomHeadsetOpenVR}/icons/galaxyxr/headset_galaxy_xr_status_error.png",
+      "Prop_NamedIconPathDeviceStandby_String": "{CustomHeadsetOpenVR}/icons/galaxyxr/headset_galaxy_xr_status_standby.png",
+      "Prop_NamedIconPathDeviceAlertLow_String": "{CustomHeadsetOpenVR}/icons/galaxyxr/headset_galaxy_xr_status_ready_low.png"
+    },
+    "Samsung Galaxy XR": { "Alias": "Galaxy XR HMD Defaults" },
+    "Galaxy XR": { "Alias": "Galaxy XR HMD Defaults" },
+    "Galaxy XR Left Controller Defaults": {
+      "Prop_NamedIconPathDeviceOff_String": "{CustomHeadsetOpenVR}/icons/galaxyxr/left_galaxy_xr_status_off.png",
+      "Prop_NamedIconPathDeviceSearching_String": "{CustomHeadsetOpenVR}/icons/galaxyxr/left_galaxy_xr_status_searching.png",
+      "Prop_NamedIconPathDeviceSearchingAlert_String": "{CustomHeadsetOpenVR}/icons/galaxyxr/left_galaxy_xr_status_searching_alert.png",
+      "Prop_NamedIconPathDeviceReady_String": "{CustomHeadsetOpenVR}/icons/galaxyxr/left_galaxy_xr_status_ready.png",
+      "Prop_NamedIconPathDeviceReadyAlert_String": "{CustomHeadsetOpenVR}/icons/galaxyxr/left_galaxy_xr_status_ready_alert.png",
+      "Prop_NamedIconPathDeviceNotReady_String": "{CustomHeadsetOpenVR}/icons/galaxyxr/left_galaxy_xr_status_error.png",
+      "Prop_NamedIconPathDeviceStandby_String": "{CustomHeadsetOpenVR}/icons/galaxyxr/left_galaxy_xr_status_standby.png",
+      "Prop_NamedIconPathDeviceAlertLow_String": "{CustomHeadsetOpenVR}/icons/galaxyxr/left_galaxy_xr_status_ready_low.png"
+    },
+    "Galaxy XR Controller (Left)": { "Alias": "Galaxy XR Left Controller Defaults" },
+    "SamsungVST (Left Controller)": { "Alias": "Galaxy XR Left Controller Defaults" },
+    "Galaxy XR Right Controller Defaults": {
+      "Prop_NamedIconPathDeviceOff_String": "{CustomHeadsetOpenVR}/icons/galaxyxr/right_galaxy_xr_status_off.png",
+      "Prop_NamedIconPathDeviceSearching_String": "{CustomHeadsetOpenVR}/icons/galaxyxr/right_galaxy_xr_status_searching.png",
+      "Prop_NamedIconPathDeviceSearchingAlert_String": "{CustomHeadsetOpenVR}/icons/galaxyxr/right_galaxy_xr_status_searching_alert.png",
+      "Prop_NamedIconPathDeviceReady_String": "{CustomHeadsetOpenVR}/icons/galaxyxr/right_galaxy_xr_status_ready.png",
+      "Prop_NamedIconPathDeviceReadyAlert_String": "{CustomHeadsetOpenVR}/icons/galaxyxr/right_galaxy_xr_status_ready_alert.png",
+      "Prop_NamedIconPathDeviceNotReady_String": "{CustomHeadsetOpenVR}/icons/galaxyxr/right_galaxy_xr_status_error.png",
+      "Prop_NamedIconPathDeviceStandby_String": "{CustomHeadsetOpenVR}/icons/galaxyxr/right_galaxy_xr_status_standby.png",
+      "Prop_NamedIconPathDeviceAlertLow_String": "{CustomHeadsetOpenVR}/icons/galaxyxr/right_galaxy_xr_status_ready_low.png"
+    },
+    "Galaxy XR Controller (Right)": { "Alias": "Galaxy XR Right Controller Defaults" },
+    "SamsungVST (Right Controller)": { "Alias": "Galaxy XR Right Controller Defaults" }
+  }
 }

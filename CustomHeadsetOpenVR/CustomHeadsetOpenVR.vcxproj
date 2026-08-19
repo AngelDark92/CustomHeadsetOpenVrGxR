@@ -34,6 +34,22 @@
     <ClInclude Include="src\Driver\Hooking\Hooking.h" />
     <ClInclude Include="src\Driver\Hooking\InterfaceHookInjector.h" />
     <ClInclude Include="src\Headsets\MeganeX8K.h" />
+    <ClInclude Include="src\Headsets\GalaxyXR.h" />
+    <ClInclude Include="src\Headsets\GalaxyXRVRLinkCompatibility.h" />
+    <ClInclude Include="src\GalaxyXR\GalaxyXRClockSync.h" />
+    <ClInclude Include="src\GalaxyXR\GalaxyXRDeviceRegistry.h" />
+    <ClInclude Include="src\GalaxyXR\GalaxyXRDiagnostics.h" />
+    <ClInclude Include="src\GalaxyXR\GalaxyXRDisplay.h" />
+    <ClInclude Include="src\GalaxyXR\GalaxyXREyePublisher.h" />
+    <ClInclude Include="src\GalaxyXR\GalaxyXRFaceOutput.h" />
+    <ClInclude Include="src\GalaxyXR\GalaxyXRIdentityState.h" />
+    <ClInclude Include="src\GalaxyXR\GalaxyXRPoseTiming.h" />
+    <ClInclude Include="src\GalaxyXR\GalaxyXRProfile.h" />
+    <ClInclude Include="src\GalaxyXR\GalaxyXRProtocol.h" />
+    <ClInclude Include="src\GalaxyXR\GalaxyXRStatus.h" />
+    <ClInclude Include="src\GalaxyXR\GalaxyXRSystem.h" />
+    <ClInclude Include="src\GalaxyXR\GalaxyXRTransport.h" />
+    <ClInclude Include="src\GalaxyXR\GalaxyXRTypes.h" />
     <ClInclude Include="src\HiddenArea\HiddenArea.h" />
   </ItemGroup>
   <ItemGroup>
@@ -72,6 +88,20 @@
     <ClCompile Include="src\Headsets\DreamAir.cpp" />
     <ClCompile Include="src\Headsets\FakeHeadset.cpp" />
     <ClCompile Include="src\Headsets\MeganeX8K.cpp" />
+    <ClCompile Include="src\Headsets\GalaxyXR.cpp" />
+    <ClCompile Include="src\Headsets\GalaxyXRVRLinkCompatibility.cpp" />
+    <ClCompile Include="src\GalaxyXR\GalaxyXRClockSync.cpp" />
+    <ClCompile Include="src\GalaxyXR\GalaxyXRDeviceRegistry.cpp" />
+    <ClCompile Include="src\GalaxyXR\GalaxyXRDiagnostics.cpp" />
+    <ClCompile Include="src\GalaxyXR\GalaxyXRDisplay.cpp" />
+    <ClCompile Include="src\GalaxyXR\GalaxyXREyePublisher.cpp" />
+    <ClCompile Include="src\GalaxyXR\GalaxyXRFaceOutput.cpp" />
+    <ClCompile Include="src\GalaxyXR\GalaxyXRPoseTiming.cpp" />
+    <ClCompile Include="src\GalaxyXR\GalaxyXRProfile.cpp" />
+    <ClCompile Include="src\GalaxyXR\GalaxyXRProtocol.cpp" />
+    <ClCompile Include="src\GalaxyXR\GalaxyXRStatus.cpp" />
+    <ClCompile Include="src\GalaxyXR\GalaxyXRSystem.cpp" />
+    <ClCompile Include="src\GalaxyXR\GalaxyXRTransport.cpp" />
     <ClCompile Include="src\Headsets\GenericHeadset.cpp" />
     <ClCompile Include="src\Helpers\DisplayHelper.cpp" />
     <ClCompile Include="src\Helpers\EyeTrackingOutput.cpp" />
@@ -134,7 +164,9 @@
   <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
   </ImportGroup>
-  <PropertyGroup Label="UserMacros" />
+  <PropertyGroup Label="UserMacros">
+    <DeployToSteamVR>false</DeployToSteamVR>
+  </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
     <IncludePath>$(VC_IncludePath);$(WindowsSDK_IncludePath);$(SolutionDir)\ThirdParty\openvr\headers\;$(SolutionDir)\ThirdParty\json\include\;</IncludePath>
     <LibraryPath>$(SolutionDir)\ThirdParty\openvr\lib\win$(PlatformArchitecture);$(VC_LibraryPath_x86);$(WindowsSDK_LibraryPath_x86)</LibraryPath>
@@ -169,12 +201,14 @@
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
+      <AdditionalDependencies>bcrypt.lib;ws2_32.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <GenerateDebugInformation>true</GenerateDebugInformation>
     </Link>
     <PreBuildEvent>
-      <Command>XCOPY "$(ProjectDir)DriverFiles" "$(SolutionDir)output\$(ProjectName)" /S /Y /I /exclude:..\CustomHeadsetOpenVR\CopyExcludes.txt</Command>
+      <Command>IF EXIST "$(SolutionDir)output\$(ProjectName)\resources" RMDIR /S /Q "$(SolutionDir)output\$(ProjectName)\resources"
+XCOPY "$(ProjectDir)DriverFiles" "$(SolutionDir)output\$(ProjectName)" /S /Y /I /exclude:..\CustomHeadsetOpenVR\CopyExcludes.txt</Command>
     </PreBuildEvent>
-    <PostBuildEvent>
+    <PostBuildEvent Condition="'$(DeployToSteamVR)'=='true'">
       <Command>XCOPY "$(SolutionDir)output\$(ProjectName)" "C:\Program Files (x86)\Steam\steamapps\common\SteamVR\drivers\$(ProjectName)" /S /Y /I</Command>
     </PostBuildEvent>
   </ItemDefinitionGroup>
@@ -191,14 +225,16 @@
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
+      <AdditionalDependencies>bcrypt.lib;ws2_32.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
       <GenerateDebugInformation>true</GenerateDebugInformation>
     </Link>
     <PreBuildEvent>
-      <Command>XCOPY "$(ProjectDir)DriverFiles" "$(SolutionDir)output\$(ProjectName)" /S /Y /I /exclude:..\CustomHeadsetOpenVR\CopyExcludes.txt</Command>
+      <Command>IF EXIST "$(SolutionDir)output\$(ProjectName)\resources" RMDIR /S /Q "$(SolutionDir)output\$(ProjectName)\resources"
+XCOPY "$(ProjectDir)DriverFiles" "$(SolutionDir)output\$(ProjectName)" /S /Y /I /exclude:..\CustomHeadsetOpenVR\CopyExcludes.txt</Command>
     </PreBuildEvent>
-    <PostBuildEvent>
+    <PostBuildEvent Condition="'$(DeployToSteamVR)'=='true'">
       <Command>XCOPY "$(SolutionDir)output\$(ProjectName)" "C:\Program Files (x86)\Steam\steamapps\common\SteamVR\drivers\$(ProjectName)" /S /Y /I</Command>
     </PostBuildEvent>
   </ItemDefinitionGroup>
@@ -212,12 +248,14 @@
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
+      <AdditionalDependencies>bcrypt.lib;ws2_32.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <GenerateDebugInformation>true</GenerateDebugInformation>
     </Link>
     <PreBuildEvent>
-      <Command>XCOPY "$(ProjectDir)DriverFiles" "$(SolutionDir)output\$(ProjectName)" /S /Y /I /exclude:..\CustomHeadsetOpenVR\CopyExcludes.txt</Command>
+      <Command>IF EXIST "$(SolutionDir)output\$(ProjectName)\resources" RMDIR /S /Q "$(SolutionDir)output\$(ProjectName)\resources"
+XCOPY "$(ProjectDir)DriverFiles" "$(SolutionDir)output\$(ProjectName)" /S /Y /I /exclude:..\CustomHeadsetOpenVR\CopyExcludes.txt</Command>
     </PreBuildEvent>
-    <PostBuildEvent>
+    <PostBuildEvent Condition="'$(DeployToSteamVR)'=='true'">
       <Command>XCOPY "$(SolutionDir)output\$(ProjectName)" "C:\Program Files (x86)\Steam\steamapps\common\SteamVR\drivers\$(ProjectName)" /S /Y /I</Command>
     </PostBuildEvent>
   </ItemDefinitionGroup>
@@ -234,14 +272,16 @@
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
+      <AdditionalDependencies>bcrypt.lib;ws2_32.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
       <GenerateDebugInformation>true</GenerateDebugInformation>
     </Link>
     <PreBuildEvent>
-      <Command>XCOPY "$(ProjectDir)DriverFiles" "$(SolutionDir)output\$(ProjectName)" /S /Y /I /exclude:..\CustomHeadsetOpenVR\CopyExcludes.txt</Command>
+      <Command>IF EXIST "$(SolutionDir)output\$(ProjectName)\resources" RMDIR /S /Q "$(SolutionDir)output\$(ProjectName)\resources"
+XCOPY "$(ProjectDir)DriverFiles" "$(SolutionDir)output\$(ProjectName)" /S /Y /I /exclude:..\CustomHeadsetOpenVR\CopyExcludes.txt</Command>
     </PreBuildEvent>
-    <PostBuildEvent>
+    <PostBuildEvent Condition="'$(DeployToSteamVR)'=='true'">
       <Command>XCOPY "$(SolutionDir)output\$(ProjectName)" "C:\Program Files (x86)\Steam\steamapps\common\SteamVR\drivers\$(ProjectName)" /S /Y /I</Command>
     </PostBuildEvent>
   </ItemDefinitionGroup>

@@ -6,3 +6,10 @@ output
 *_test.hlsl
 build
 HidModifierPrivate.cpp
+.tmp/
+.tools/
+VRCFT/**/bin/
+VRCFT/**/obj/
+Release/
+
+tools

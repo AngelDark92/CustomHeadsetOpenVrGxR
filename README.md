@@ -1,6 +1,12 @@
 # CustomHeadsetOpenVR
 This is a custom headset driver for SteamVR that allows the MeganeX 8K and Dream Air to operate as native SteamVR headsets. It provides significant image customization to all native SteamVR headsets through the custom shader.  
 
+This checkout also contains the fail-closed Samsung Galaxy XR integration,
+including SteamVR resources, authenticated GXRP telemetry, native eye output,
+lossless 68-channel face output, and a VRCFaceTracking v5 module. See
+[the project architecture and exact change map](Docs/PROJECT-ARCHITECTURE.md)
+before modifying or deploying it.
+
 
 <picture><img src="./CustomHeadsetGUI/public/CustomHeadsetCropped.png" height="96"><img/></picture>
 

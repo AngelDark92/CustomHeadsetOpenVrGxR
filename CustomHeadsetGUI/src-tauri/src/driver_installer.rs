@@ -514,7 +514,10 @@ pub fn install_driver_transactional(
     if had_target {
         let Some(previous) = &previous_receipt else {
             let _ = fs::remove_dir_all(&stage);
-            return Err("existing driver is unowned because its managed receipt is missing; refusing replacement".into());
+            return Err(format!(
+                "existing driver is unowned because its managed receipt is missing; refusing replacement. Move or rename {} then retry. Closing SteamVR is not enough.",
+                target.display()
+            ));
         };
         if let Err(error) = validate_package(&target) {
             let _ = fs::remove_dir_all(&stage);

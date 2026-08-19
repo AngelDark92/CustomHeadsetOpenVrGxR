@@ -1,6 +1,16 @@
 [
   {
     "language_tag": "en_US",
-    "CustomHeadsetOpenVR": "Custom Headset OpenVR Driver"
+    "CustomHeadsetOpenVR": "Custom Headset OpenVR Driver",
+    "androidxr/VRLINKHMDGALAXYXR": "Samsung Galaxy XR",
+    "androidxr/VRLINKGALAXYXR_Controller_Left": "Galaxy XR Controller (Left)",
+    "androidxr/VRLINKGALAXYXR_Controller_Right": "Galaxy XR Controller (Right)",
+    "/input/joystick": "Thumbstick",
+    "/input/trigger": "Trigger",
+    "/input/grip": "Grip",
+    "/input/thumbrest": "Thumb Rest",
+    "/input/system": "System Button",
+    "/pose/openxr_aim": "Aim Pose",
+    "/pose/openxr_grip": "Grip Pose"
   }
 ]

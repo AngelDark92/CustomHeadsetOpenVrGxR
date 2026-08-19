@@ -1,3 +1,4 @@
+mod driver_installer;
 mod i18n;
 mod js_api;
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -28,6 +29,10 @@ pub fn run() {
             js_api::restart_vrcompositor,
             js_api::kill_process,
             js_api::launch_process,
+            driver_installer::install_driver_transactional,
+            driver_installer::uninstall_driver_transactional,
+            driver_installer::verify_driver_install,
+            driver_installer::write_json_file_transactional,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

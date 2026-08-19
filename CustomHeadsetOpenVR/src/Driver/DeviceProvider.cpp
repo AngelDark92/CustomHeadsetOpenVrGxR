@@ -11,6 +11,9 @@
 #include "../Headsets/DreamAir.h"
 #include "../Headsets/GenericHeadset.h"
 #include "../Headsets/FakeHeadset.h"
+#include "../Headsets/GalaxyXR.h"
+#include "../Headsets/GalaxyXRVRLinkCompatibility.h"
+#include "../GalaxyXR/GalaxyXRSystem.h"
 #include "../Helpers/EyeTrackingOutput.h"
 
 #include "../Config/ConfigLoader.h"
@@ -69,7 +72,15 @@ const char *const *CustomHeadsetDeviceProvider::GetInterfaceVersions(){
 bool CustomHeadsetDeviceProvider::ShouldBlockStandbyMode(){
 	return false;
 }
-void CustomHeadsetDeviceProvider::Cleanup(){}
+void CustomHeadsetDeviceProvider::Cleanup(){
+	for(auto* shim : shims){
+		if(auto* galaxyShim = dynamic_cast<GalaxyXRShim*>(shim)){
+			galaxyShim->Shutdown();
+		}
+	}
+	galaxyXRVRLinkCompatibility.Cleanup();
+	galaxyxr::GalaxyXRSystem::Instance().Cleanup();
+}
 void CustomHeadsetDeviceProvider::EnterStandby(){}
 void CustomHeadsetDeviceProvider::LeaveStandby(){}
 
@@ -100,6 +111,14 @@ void CustomHeadsetDeviceProvider::RunFrame(){
 		return;
 	}
 	#endif
+
+	auto& galaxySystem = galaxyxr::GalaxyXRSystem::Instance();
+	galaxyXRVRLinkCompatibility.RunFrame(
+		galaxySystem.ShouldAttemptVRLinkCompatibility());
+	galaxySystem.SetVRLinkBuildVerified(
+		galaxyXRVRLinkCompatibility.IsModuleVerified() &&
+		galaxyXRVRLinkCompatibility.IsHookActive());
+	galaxySystem.RunFrame(driverConfig.galaxyXR);
 		
 	// process events that were submitted for this frame.
 	vr::VREvent_t vrevent{};
@@ -128,12 +147,22 @@ void CustomHeadsetDeviceProvider::RunFrame(){
 			// set nonNativeHeadsetFound if a device with a direct mode component is found
 			vr::PropertyContainerHandle_t container = vr::VRProperties()->TrackedDeviceToPropertyContainer(vrevent.trackedDeviceIndex);
 			if(container){
+				const std::string serial = vr::VRProperties()->GetStringProperty(
+					container, vr::Prop_SerialNumber_String);
+				const auto deviceClass = static_cast<vr::ETrackedDeviceClass>(
+					vr::VRProperties()->GetInt32Property(
+						container, vr::Prop_DeviceClass_Int32));
+				galaxySystem.ActivateDevice(
+					vrevent.trackedDeviceIndex, serial, deviceClass);
 				// DriverLog("Device %d has driver direct mode component: %s", vrevent.trackedDeviceIndex, vr::VRProperties()->GetBoolProperty(container, vr::Prop_HasDriverDirectModeComponent_Bool) ? "true" : "false");
 				if(vr::VRProperties()->GetBoolProperty(container, vr::Prop_HasDriverDirectModeComponent_Bool)){
 					driverConfigLoader.info.nonNativeHeadsetFound = true;
 					driverConfigLoader.WriteInfo();
 				}
 			}
+		}
+		if(vrevent.eventType == vr::VREvent_TrackedDeviceDeactivated){
+			galaxySystem.DeactivateDevice(vrevent.trackedDeviceIndex);
 		}
 		if(vrevent.eventType == vr::VREvent_DashboardActivated){
 			if(!driverConfigLoader.info.isDashboardOpen){
@@ -931,6 +960,7 @@ static void CaInit(double P[6], double p0Var, double v0Var, double a0Var){
 }
 
 bool CustomHeadsetDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr::DriverPose_t &pose){
+	galaxyxr::GalaxyXRSystem::Instance().ApplyPose(openVRID, pose);
 	// raw tracking status, captured BEFORE forceTracking can launder it.
 	// the estimators gate on these: forceTracking's job is keeping
 	// devices alive for SteamVR, not feeding fake-OK into filters.
@@ -4617,6 +4647,9 @@ bool CustomHeadsetDeviceProvider::HandleDeviceAdded(const char *&pchDeviceSerial
 	}
 	#endif
 	DriverLog("HandleDeviceAdded %s\n", pchDeviceSerialNumber);
+	galaxyxr::GalaxyXRSystem::Instance().ObserveDeviceAdded(
+		pchDeviceSerialNumber ? pchDeviceSerialNumber : "",
+		eDeviceClass);
 	if(eDeviceClass == vr::TrackedDeviceClass_HMD){
 		// keep the (possibly later wrapped) source device for projection
 		// queries; GetComponent forwards through shims either way
@@ -4646,6 +4679,23 @@ bool CustomHeadsetDeviceProvider::HandleDeviceAdded(const char *&pchDeviceSerial
 		genericHeadsetShim->deviceProvider = this;
 		shims.insert(genericHeadsetShim);
 		pDriver = new ShimTrackedDeviceDriver(genericHeadsetShim, pDriver);
+
+		// Keep Galaxy outermost. Until an authenticated GXRP session matches
+		// this HMD, both shims remain pass-through.
+		const std::string galaxySerial =
+			pchDeviceSerialNumber ? pchDeviceSerialNumber : "";
+		const bool galaxySerialCandidate =
+			galaxySerial == "VRLINKHMDGALAXYXR" ||
+			(!driverConfig.galaxyXR.serialMatch.empty() &&
+			 galaxySerial == driverConfig.galaxyXR.serialMatch);
+		if(driverConfig.galaxyXR.enable && galaxySerialCandidate){
+			const std::string serial =
+				galaxySerial;
+			GalaxyXRShim* galaxyXRShim = new GalaxyXRShim(serial);
+			galaxyXRShim->deviceProvider = this;
+			shims.insert(galaxyXRShim);
+			pDriver = new ShimTrackedDeviceDriver(galaxyXRShim, pDriver);
+		}
 	}
 	// you can change eDeviceClass to change what an existing device shows up as
 	
