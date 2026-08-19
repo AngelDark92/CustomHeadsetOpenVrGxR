@@ -643,6 +643,20 @@ struct StreamFrameConfig{
 	// channel relOffPk is structurally blind to) reads 4.3 / 5.7 /
 	// 8.7 / 12.7 deg at Td 5/10/15/20 — monotone, hands agree, and
 	// rel/pk stays 1.00 throughout (magnitude provably untouched).
+	// 2026-08-17 correction: that relDirOff series was scored against a
+	// secant of the FILTERED pose (DeriveMotion ran after the report
+	// block overwrote the pose), so it grows ~|w|*Td by construction —
+	// it did not ratify anything. what stands is the felt evidence
+	// (combined throws skew left without derotation) and the raw-
+	// referenced session: Td 0/10/5 scored 10/13/12 of 15 on combined
+	// throws, i.e. Td=5 fine, Td=0 worse. Td=5 kept. the CA-full
+	// state-prediction variant (v + a*tau*(1-e^(-L/tau))) added 08-15
+	// was inert at the shipped J/tau (dead accel state, ~0.2deg bend)
+	// and is retired; CA-full uses the Rodrigues form like every mode.
+	// scope: this knob shapes vecVelocity; a pose-history game only sees
+	// it through the runtime's ~10ms extrapolation (a few degrees at
+	// most). second-order for such games, first-order for vecVelocity
+	// games.
 	double kalmanDirLeadMs = 5.0;
 	// adaptive direction lead (2026-08-15, tail experiment A): the fixed
 	// Td is tuned for the median throw, but the release-tail autopsy
@@ -713,6 +727,24 @@ struct StreamFrameConfig{
 	// catch-up self-schedules. dupRScale=1 in soft is bit-identical to
 	// off; k -> inf converges toward coast/drop. the run cap applies:
 	// repeats sustained past it are accepted at full weight.
+	// 4=age (2026-08-16, A/B candidate): the honest version of soft.
+	// a repeat is a true position of unknown age; its uncertainty is
+	// how far the hand moved in that age, so R_rep = R + (|v|*age)^2
+	// (and Ra_rep = Ra + (|w|*age)^2) with age = time since the last
+	// FRESH sample. no speed gate (soft only distrusts repeats above
+	// 0.5 m/s, so a slow toss runs a different filter than a throw
+	// and the behavior steps at 0.5), no scale knob, no 5mm floor:
+	// at rest it collapses to R (repeats believed, v -> 0), at 5 m/s
+	// a 3-frame-old repeat is (5cm)^2 and effectively ignored, and a
+	// long repeat run distrusts itself progressively instead of
+	// flipping at the cap. offline it is numerically identical to
+	// soft/k=3 at throw speed and continuous below it. the run cap
+	// still applies as the "tracker stopped producing" backstop.
+	// field 2026-08-17: soft, age and coast are indistinguishable on the
+	// raw-referenced release instruments (rel/rawPk J4: 0.78/0.80, J6:
+	// 0.86/0.87, J2: 0.58/0.63 soft/age); scores leaned soft. soft
+	// stays default; age is the cleaner formulation for anyone who
+	// wants a threshold-free dedup.
 	int kalmanDupMode = 3;
 	double kalmanDupRScale = 3.0;
 	// teleport guard: reinit instead of innovating when an accepted step
@@ -762,7 +794,16 @@ struct StreamFrameConfig{
 	// a stop instead of sailing on the occlusion-entry velocity and
 	// reacquiring with a wrong-direction state. 0 = pure coast (the
 	// 2026-08-16 pre-decay behavior). clamped 20-2000 when nonzero.
-	double kalmanPosFreezeVelDecayMs = 180.0;
+	// default 0 since 2026-08-17: the three instrumented sessions
+	// (raw-referenced release scoring, ~1100 posOnlyFreeze callbacks
+	// per 2-minute epoch) showed no throw or freeze symptom the decay
+	// addressed, and the ad-hoc decay is applied to the state but not
+	// the covariance (the velocity terms keep growing during the
+	// freeze), so the first fresh sample after a long freeze kicks the
+	// velocity anyway. pure coast is the consistent choice; the knob
+	// stays for the field case that motivated it (long occlusion +
+	// wrong-direction reacquire).
+	double kalmanPosFreezeVelDecayMs = 0.0;
 	// dup run cap (bug fix 2026-08-10; rationale sharpened 2026-08-11):
 	// no human hand holds a position BIT-IDENTICALLY for tens of ms —
 	// real stillness shows micro-tremor above the 0.3mm gate. a repeat
@@ -792,10 +833,42 @@ struct StreamFrameConfig{
 	// from BOTH sides — calm like A=1 AND amplitude-accurate like high A,
 	// which filtering fundamentally cannot combine. the entire reported
 	// state (pose + velocities, coherent) shifts to t-L; the one honest
-	// cost is L ms of added hand latency. 0 = off. implemented as a
-	// two-estimate fusion: stored forward state at t-L fused with the
-	// current state backcast to t-L.
+	// cost is L ms of added hand latency. 0 = off.
+	// 2026-08-17: in CA-full this is now a real fixed-lag Rauch-Tung-
+	// Striebel smoother (backward recursion over the stored predicted/
+	// filtered Singer states down to t-L; see KalState::rtsN). the CV
+	// modes keep the old two-estimate fusion. field motivation: the raw
+	// referenced instruments put the input release event only ~35ms
+	// (IQR 25-55) after the raw velocity peak, and every causal J read
+	// the release while still RISING (rel/rawPk 0.6-0.87, dtPk=0); the
+	// faster J that reads more (J=6) went erratic in direction. a
+	// smoother reports the velocity AT t-L (L ~ skew) using samples from
+	// both sides — the peak of a fast filter at the calm of a slow one —
+	// so the game reads the release vector itself. poseTimeOffset
+	// carries -L so the runtime predicts from the right epoch. offline:
+	// J=12 P=1.5 L=35 reads 0.93/0.97/0.92 of the raw peak at +30/45/60
+	// ms with the rest-noise of causal J=6 (which reads 0.90/0.95/0.93
+	// but with the field's erratic direction). the two-estimate fusion
+	// it replaces was not a smoother.
 	double kalmanSmoothLagMs = 0.0;
+	// how the smoothed (t-L) state is stamped for the runtime.
+	// 0 = latent (default): poseTimeOffset unchanged, i.e. the L-old
+	//     state is presented as current. the runtime predicts only its
+	//     usual ~photon horizon; the rendered hand carries L ms of extra
+	//     latency; the submitted POSITION stream (what this game
+	//     differentiates for throws) is the smoothed trajectory delayed
+	//     by L, so a release event ~L after the true release reads the
+	//     peak vector.
+	// 1 = honest: poseTimeOffset -= L. field 2026-08-17: with L=35-45
+	//     the runtime extrapolated the position by L+photon (65-80ms)
+	//     from the reported velocity; the game's pose-history velocity
+	//     is then v + T*a, and at release (hand decelerating) that is
+	//     weak or backward. RELDIAG showed relOut/rawPk 0.88-0.92 at
+	//     5-7deg (the reported vecVelocity was right) while throws fell
+	//     out of the hand — the direct proof this game reads pose
+	//     history, not vecVelocity. kept for games that do read
+	//     vecVelocity and prefer honest epochs.
+	int kalmanSmoothLagEpoch = 0;
 	// ==== constant-acceleration (Singer) experiment knobs ====
 	// the CV model treats the throw ramp as noise and structurally lags
 	// its peak (the measured ~80% magnitude deficit); a CA state tracks
@@ -817,6 +890,31 @@ struct StreamFrameConfig{
 	// RATIFIED 2026-08-16 (composition-fix session): with the adaptiveR/
 	// dedup composition fixed and honest noise viable, J=4 ran the
 	// standard battery "genuinely great, best of everything so far".
+	//
+	// SHIPPED 2026-08-17 after four instrumented sessions with a RAW
+	// reference (see KalState::rawRingN; the pre-08-16 rel/pk, dirOff and
+	// lagLin numbers above were filtered-vs-filtered and are kept only
+	// as history). what is now measured, not vibed:
+	//  - only the RATIOS J/P and Ja/O move behavior (Kalman gains depend
+	//    on Q/R alone); P and O are the tracker's noise, not tuning.
+	//  - at J=4/tau=20 the acceleration state is effectively dead (peaks
+	//    ~4 m/s^2 against a ~65 m/s^2 throw); the filter is a smooth CV
+	//    with ~14ms position lag and ~60ms velocity lag. that is not a
+	//    flaw: the game(s) tested read POSE HISTORY (twice confirmed:
+	//    the 08-10 gaze test, and the RTS session where vecVelocity was
+	//    strong+aimed at release yet throws failed). the causal
+	//    position stream carries the lagged velocity's momentum for a
+	//    beat after the peak, so its finite-difference velocity at the
+	//    input release event (skew 22-43ms after the raw peak, drifting
+	//    with fatigue) reads 0.95-1.16 of the raw peak at 6-7deg — and it
+	//    holds that across a 2x spread in skew. RELDIAG fd/rawPk and
+	//    fdRawDir score exactly this channel.
+	//  - fine J sweep 3.5/4/4.5/5 flat within noise; J=2 and J=6 both
+	//    worse (smear vs erratic direction); Ja 400/1500/4000 flat,
+	//    Ja=100 worse. nothing left with a mechanism worth a session.
+	//  - the RTS smoother (kalmanSmoothLagMs) is the right tool for a
+	//    game that reads vecVelocity (relOut/rawPk 0.87-0.97 at 5-7deg)
+	//    and the wrong one for pose-history games (0.80-0.91, +latency).
 	double kalmanCaJerk = 4.0;
 	double kalmanCaAngJerk = 1500.0;
 	// CA-full measurement noise, separate from the CV knobs so tuning
@@ -829,12 +927,17 @@ struct StreamFrameConfig{
 	// 2026-08-16: honest 1.5mm ratified — viable now that dup distrust
 	// is floored in absolute terms (it no longer weakens when this
 	// shrinks) and adaptiveR no longer stacks against it.
+	// 2026-08-17: treat as the sensor's noise, fixed. only J/P matters
+	// for behavior (offline: J=4/P=1.5 and J=11.2/P=4.2 give the same
+	// gains to within the dup floor); if a different tracker needs a
+	// different P, scale J with it to keep the ratio.
 	double kalmanCaPosNoiseMm = 1.5;
 	// 5.75 field-preferred over 1.25 (2026-08-14): instruments show a
 	// fatter direction tail at 1.25 (dirOff max 177 vs 92); the felt
 	// benefit likely lives in the smoother q/pose stream that
 	// pose-history games fit — PEAKDIAG does not score that channel.
 	// 2026-08-16: 1.5 ratified alongside the honest linear noise.
+	// 2026-08-17: same rule as P — fixed sensor noise; Ja/O is the knob.
 	double kalmanCaOriNoiseDeg = 1.5;
 	// shared acceleration decay time constant (CA-full, both channels).
 	// 2026-08-16: 20ms ratified (with exactCov the low-tau covariance is

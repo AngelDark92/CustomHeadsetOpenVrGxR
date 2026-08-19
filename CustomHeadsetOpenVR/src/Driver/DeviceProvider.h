@@ -425,6 +425,85 @@ private:
 		// ~1e-2 next to its 1e13-scale terms — cm-resolution grip values
 		// would vanish there)
 		double lastGripSig = -1;
+		// RAW reference ring (instrument correctness pass 2026-08-16):
+		// PEAKDIAG/RELDIAG's "secant" comes from DeriveMotion, which in
+		// kalman modes is fed the pose AFTER the report block overwrote
+		// it with the filtered state — so out/sec, dirOff, relDirOff and
+		// lagLin were filtered-vs-filtered comparisons (lagLin ~ 0 and
+		// relDirOff growing ~ |w|*Td by construction). this ring holds
+		// only FRESH raw measurements (distinct position, device-time
+		// stamped) and yields a raw displacement secant attributed to
+		// the window center, plus a running peak of that secant that
+		// is segmented on the RAW speed itself (not on the lagged
+		// output, which would miss the raw peak on short flicks). the
+		// raw fields appended to both diag lines and the new SKEW
+		// instrument read from here. pure telemetry.
+		static constexpr int rawRingN = 5;
+		double rawT[rawRingN] = {};   // device clock (tMeas): secant span
+		double rawTr[rawRingN] = {};  // receipt clock (now): timing vs edges/output
+		double rawP[rawRingN][3] = {};
+		vr::HmdQuaternion_t rawQ[rawRingN] = {};
+		int rawHead = 0;
+		int rawCount = 0;
+		// latest raw secant (window center time, linear + angular)
+		bool rawSecHave = false;
+		double rawSecT = 0;
+		double rawSecV[3] = {};
+		double rawSecW[3] = {};
+		// raw linear peak: segmented on raw secant speed (>1.0 opens,
+		// <0.8 closes); values persist after close as "latest raw peak"
+		bool rawPkActive = false;
+		double rawPkSp = 0;
+		double rawPkT = 0;   // receipt-clock window center of the peak
+		double rawPkV[3] = {};
+		// raw angular peak: own segmentation (>4 rad/s opens, <3 closes)
+		bool rawPkWActive = false;
+		double rawPkWSp = 0;
+		double rawPkWT = 0;  // receipt-clock window center of the peak
+		double rawPkW[3] = {};
+		// last REPORTED velocities (written in the report block itself,
+		// every callback). RELDIAG's raw-referenced fields read these:
+		// the derive-branch snapshot (relOutV) is only refreshed when
+		// DeriveMotion accepts the frame, which it did not during fast
+		// throws (see the teleStep note in DeriveMotion).
+		bool repHave = false;
+		double repV[3] = {};
+		double repW[3] = {};
+		// ---- fixed-lag RTS smoother (CA-full only, kalmanSmoothLagMs>0) ----
+		// per accepted callback: the Singer step's predicted and filtered
+		// (p,v,a) per axis with covariances, the step dt, and the angular
+		// state (q, w, wdot) after the step. the report block runs the
+		// Rauch-Tung-Striebel backward recursion from the newest entry
+		// down to the entry at t-L and reports the smoothed linear state
+		// there (velocity accurate AT t-L, but calmer than any causal
+		// filter with L of lag, because samples after t-L also vote);
+		// the angular state is taken filtered at t-L (its own filter lag
+		// is ~7ms, smoothing gains nothing worth the linearization). ring
+		// stamps are on the device clock (tMeas) so poseTimeOffset can
+		// describe the reported epoch exactly. ~96 x 3ms = ~290ms depth.
+		static constexpr int rtsN = 96;
+		double rtsT[rtsN] = {};
+		double rtsDt[rtsN] = {};
+		double rtsXp[rtsN][3][3] = {};
+		double rtsPp[rtsN][3][6] = {};
+		double rtsXf[rtsN][3][3] = {};
+		double rtsPf[rtsN][3][6] = {};
+		double rtsW[rtsN][3] = {};
+		double rtsWa[rtsN][3] = {};
+		vr::HmdQuaternion_t rtsQ[rtsN] = {};
+		int rtsHead = 0;
+		int rtsCount = 0;
+		// telemetry: frames smoothed / frames reported, mean depth
+		int rtsFrames = 0;
+		int rtsRepFrames = 0;
+		double rtsDepthSum = 0;
+		// submitted-position ring (receipt clock) for the RELDIAG
+		// pose-history channel (fdOut / fd/rawPk / fdRawDir)
+		static constexpr int subN = 32;
+		double subT[subN] = {};
+		double subP[subN][3] = {};
+		int subHead = 0;
+		int subCount = 0;
 	};
 	std::map<uint32_t, KalState> kalStates;
 	// latest HMD orientation, for rotating the head-space gaze ray into

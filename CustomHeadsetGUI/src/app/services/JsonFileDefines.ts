@@ -184,6 +184,7 @@ export type StreamFrameConfig = {
   kalmanGazeMaxDeg: number;
   kalmanGazeMinSpeed: number;
   kalmanSmoothLagMs: number;
+  kalmanSmoothLagEpoch: number;
   kalmanDirLeadMs: number;
   kalmanDirLeadAdaptive: boolean;
   kalmanDirLeadBaseMs: number;
