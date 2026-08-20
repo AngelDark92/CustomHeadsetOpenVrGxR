@@ -1643,7 +1643,24 @@ bool DirectModeComponentShim::GetActiveSettings(FrameProcessSettings &settings, 
 		|| config.eyeGaze.calibDot || config.eyeGaze.probeCapture;
 	// the pass must also run while any dimming is applied
 	settings.dimAmount = dimFactor;
+	// calibration needs stable brightness: the Gray-code decode compares
+	// captures taken tens of seconds apart, and a dim ramp between them
+	// corrupts the thresholds (observed as brightness ratio << 1 in the
+	// sweep's stability line). blackout, not dimming, is the panel
+	// protection story while a camera rig is mounted.
+	if(config.calib.pattern >= 0 || config.calib.captureMode){
+		settings.dimAmount = 0;
+	}
 	colorActive |= settings.dimAmount > 0.0001;
+	// general brightness, and every camera calibration output (blackout,
+	// sweep pattern, capture-mode grid) is shader work
+	colorActive |= config.brightness != 1.0;
+	colorActive |= config.calib.blackout || config.calib.pattern >= 0 || config.calib.captureMode;
+	// the dense displacement map is a remap even when every curve is flat
+	const StreamFrameDisplacementMap &dmap = config.distortion.map;
+	bool mapActive = dmap.enable && dmap.cols >= 2 && dmap.rows >= 2
+		&& (dmap.left.size() == (size_t)dmap.cols * dmap.rows * 2 || dmap.right.size() == (size_t)dmap.cols * dmap.rows * 2);
+	colorActive |= mapActive;
 	bool spline = config.distortion.mode == "spline";
 	auto curveActive = [spline](double k1, double k2, const std::vector<StreamFrameDistortionPoint> &points){
 		if(spline){

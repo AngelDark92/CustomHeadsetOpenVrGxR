@@ -78,6 +78,18 @@ export type StreamFrameCenterTuneConfig = {
   enable: boolean;
   breatheAmp: number;
 };
+// dense per-eye displacement map (camera calibration): cols x rows lattice
+// of (du, dv) source sample offsets in bounds uv, row major, v major.
+// produced by tools/gxr_sweep.py / tools/gxr_overlay.py, applied after the
+// radial curves and scaled by gain. empty = identity.
+export type StreamFrameDisplacementMap = {
+  enable: boolean;
+  cols: number;
+  rows: number;
+  left: number[];
+  right: number[];
+  source: string;
+};
 export type StreamFrameDistortionConfig = {
   gain: number;
   mode: string;
@@ -89,6 +101,16 @@ export type StreamFrameDistortionConfig = {
   segments: number;
   tune: StreamFrameDistortionTuneConfig;
   centerTune: StreamFrameCenterTuneConfig;
+  map?: StreamFrameDisplacementMap;
+};
+// camera calibration support driven by tools/gxr_*.py through settings.json
+export type StreamFrameCalibConfig = {
+  blackout: boolean;
+  eye: number;
+  patternBrightness: number;
+  captureMode: boolean;
+  pattern: number;
+  patternBits: number;
 };
 export type StreamFrameCASConfig = {
   enable: boolean;
@@ -120,6 +142,8 @@ export type StreamFrameConfig = {
   k1: number;
   k2: number;
   distortion: StreamFrameDistortionConfig;
+  brightness?: number;
+  calib?: StreamFrameCalibConfig;
   centerOffsetXLeft: number;
   centerOffsetXRight: number;
   centerOffsetY: number;

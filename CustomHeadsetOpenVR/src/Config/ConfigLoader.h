@@ -56,6 +56,28 @@ public:
 		float focalPointX = 0;
 		float focalPointY = 0;
 		float focalPointZ = 0;
+
+		// stream frame processing state for the camera calibration tools
+		// (tools/gxr_*.py poll this at 4 Hz as their handshake with the
+		// driver: a pattern index written into settings.json is confirmed
+		// shown once calibPatternShown echoes it and calibPatternFrames
+		// has advanced past a few frames)
+		bool streamFrameActive = false;
+		uint64_t streamFrameCounter = 0;
+		int calibPatternShown = -1;
+		uint32_t calibPatternFrames = 0;
+		bool calibBlackout = false;
+		// per-eye projection tangents (raw OpenVR y-down convention) and
+		// eye texture region size + the aspect the radius space uses
+		bool projValid = false;
+		float proj[2][4] = {};
+		uint32_t eyeTexWidth = 0;
+		uint32_t eyeTexHeight = 0;
+		float eyeAspect = 1;
+		// map bake state so a tool can confirm its written map is live
+		int mapCols = 0;
+		int mapRows = 0;
+		bool mapActive = false;
 	};
 	DiagnosticInfo diagnosticInfo;
 
