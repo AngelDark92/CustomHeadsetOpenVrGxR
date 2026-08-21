@@ -33,6 +33,8 @@ pub fn run() {
             driver_installer::uninstall_driver_transactional,
             driver_installer::verify_driver_install,
             driver_installer::write_json_file_transactional,
+            driver_installer::preview_driver_cleanup,
+            driver_installer::execute_driver_cleanup,
             js_api::run_process_sync,
         ])
         .run(tauri::generate_context!())

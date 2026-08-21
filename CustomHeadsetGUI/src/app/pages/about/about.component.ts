@@ -73,4 +73,64 @@ export class AboutComponent {
       this.dialog.message($localize`Uninstall success`, $localize`Successfully uninstalled the driver`)
     }
   }
+  async cleanExistingInstallations() {
+    try {
+      const preview = await this.sds.previewExistingInstallationsCleanup();
+      if (preview.steamVrRunning) {
+        await this.dialog.message(
+          $localize`Cleanup Blocked`,
+          $localize`SteamVR is running. Close SteamVR completely, then preview the cleanup again.`,
+        );
+        return;
+      }
+      if (preview.blockers.length) {
+        await this.dialog.message(
+          $localize`Cleanup Blocked`,
+          $localize`The cleanup cannot continue safely:` + `\n\n${preview.blockers.join('\n')}`,
+        );
+        return;
+      }
+      if (!preview.actions.length) {
+        await this.dialog.message(
+          $localize`Nothing to Clean`,
+          $localize`No existing CustomHeadsetOpenVR or Galaxy XR driver installations were found.`,
+        );
+        return;
+      }
+      const message = [
+        $localize`The following exact installations and files will be removed:`,
+        '',
+        ...preview.actions.map(action => `• ${action}`),
+        '',
+        $localize`The following data will be preserved:`,
+        ...preview.preserved.map(item => `• ${item}`),
+        '',
+        $localize`This cannot be undone. Continue only if SteamVR is closed.`,
+      ].join('\n');
+      const confirmed = await this.dialog.confirm(
+        $localize`Clean Existing Driver Installations`,
+        message,
+        $localize`Clean Installations`,
+        'warn',
+      );
+      if (!confirmed) return;
+
+      const report = await this.sds.cleanExistingInstallations(preview.planToken);
+      const result = [
+        $localize`Cleanup completed.`,
+        '',
+        $localize`Removed:`,
+        ...(report.removed.length ? report.removed.map(path => `• ${path}`) : [$localize`• None`]),
+        '',
+        $localize`Unregistered:`,
+        ...(report.unregistered.length ? report.unregistered.map(path => `• ${path}`) : [$localize`• None`]),
+      ];
+      if (report.warnings.length) {
+        result.push('', $localize`Warnings:`, ...report.warnings.map(warning => `• ${warning}`));
+      }
+      await this.dialog.message($localize`Cleanup Complete`, result.join('\n'));
+    } catch (error) {
+      await this.dialog.message($localize`Cleanup Failed`, `${error}`);
+    }
+  }
 }

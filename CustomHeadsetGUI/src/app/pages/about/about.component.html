@@ -34,11 +34,11 @@
         <span>{{version}}</span>
         <span>&nbsp;&nbsp;</span>
         @if(aus.updateInfo();as updateInfo){
-        <button mat-stroked-button (click)="uninstallDriver()" [disabled]="sds.installingDriver()">
+        <button mat-stroked-button (click)="uninstallDriver()" [disabled]="sds.installingDriver() || sds.cleaningDriver()">
             <span i18n>Uninstall Driver</span>
         </button>
         @if(updateInfo.installAvailable){
-        <button mat-stroked-button (click)="installDriver()" [disabled]="sds.installingDriver()">
+        <button mat-stroked-button (click)="installDriver()" [disabled]="sds.installingDriver() || sds.cleaningDriver()">
             <span i18n>Install {{updateInfo.currentVersion}}</span>
         </button>
         <mat-icon class="warn-color">priority_high</mat-icon>
@@ -47,11 +47,22 @@
         }@else {
         <span i18n>Not installed</span>
         <span>&nbsp;&nbsp;</span>
-        <button mat-stroked-button (click)="installDriver()" [disabled]="sds.installingDriver()">
+        <button mat-stroked-button (click)="installDriver()" [disabled]="sds.installingDriver() || sds.cleaningDriver()">
             <span i18n>Install</span>
         </button>
         <mat-icon class="warn-color">priority_high</mat-icon>
         }
+    </div>
+</div>
+<div class="field">
+    <div class="title">
+        <span i18n>Existing Driver Cleanup</span>
+        <app-field-tip i18n-info info="Preview and remove validated legacy, copied, or transaction-owned CustomHeadsetOpenVR and Galaxy XR driver installations. Unrelated drivers, SteamVR settings, Galaxy XR settings, and pairing data are preserved." />
+    </div>
+    <div class="control">
+        <button mat-stroked-button color="warn" (click)="cleanExistingInstallations()" [disabled]="sds.installingDriver() || sds.cleaningDriver()">
+            <span i18n>Clean Existing Driver Installations</span>
+        </button>
     </div>
 </div>
 <div class="field">
@@ -62,13 +73,13 @@
         @if(driverVersionMismatch()){
         <mat-icon class="warn-color">priority_high</mat-icon>
         <span>&nbsp;&nbsp;</span>
-        <button mat-stroked-button (click)="sds.launchSteamVR()">
+        <button mat-stroked-button (click)="sds.launchSteamVR()" [disabled]="sds.cleaningDriver()">
             <span i18n>Launch SteamVR</span>
         </button>
         }
         @if(aus.updateInfo();as updateInfo){
         <span>&nbsp;&nbsp;</span>
-        <button mat-stroked-button (click)="installDriver()" [disabled]="sds.installingDriver()">
+        <button mat-stroked-button (click)="installDriver()" [disabled]="sds.installingDriver() || sds.cleaningDriver()">
             <span i18n>Re-Install Driver</span>
         </button>
         }
@@ -85,7 +96,7 @@
     </div>
     <div class="control">
         <span>&nbsp;&nbsp;</span>
-        <button mat-stroked-button (click)="sds.restartCompositor()"><span i18n>Restart Compositor</span></button>
+        <button mat-stroked-button (click)="sds.restartCompositor()" [disabled]="sds.cleaningDriver()"><span i18n>Restart Compositor</span></button>
     </div>
 </div>
 <div class="field">

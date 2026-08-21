@@ -51,6 +51,32 @@ export async function write_json_file_transactional(path: string, contents: stri
     await invoke('write_json_file_transactional', { path, contents });
 }
 
+export interface DriverCleanupPreview {
+    planToken: string;
+    actions: string[];
+    preserved: string[];
+    blockers: string[];
+    steamVrRunning: boolean;
+}
+
+export interface DriverCleanupReport {
+    removed: string[];
+    unregistered: string[];
+    preserved: string[];
+    warnings: string[];
+}
+
+export async function preview_driver_cleanup(steamvrDir: string): Promise<DriverCleanupPreview> {
+    return await invoke('preview_driver_cleanup', { steamvrDir }) as DriverCleanupPreview;
+}
+
+export async function execute_driver_cleanup(
+    steamvrDir: string,
+    planToken: string,
+): Promise<DriverCleanupReport> {
+    return await invoke('execute_driver_cleanup', { steamvrDir, planToken }) as DriverCleanupReport;
+}
+
 
 export async function run_process_sync(path: string, args: string[]): Promise<number> {
     return await invoke('run_process_sync', { path, args }) as number;

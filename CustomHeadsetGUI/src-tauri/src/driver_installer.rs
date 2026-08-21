@@ -4,7 +4,9 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
+use sysinfo::{ProcessesToUpdate, System};
 
 const ACTIVE_DRIVER_NAME: &str = "CustomHeadsetOpenVR";
 const RESOURCE_DRIVER_NAME: &str = "galaxyxrresources";
@@ -77,6 +79,32 @@ pub struct InstallReceipt {
     vrcft_module_installed: bool,
     vrcft_module_path: Option<String>,
     vrcft_module_sha256: Option<String>,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CleanupPreview {
+    plan_token: String,
+    actions: Vec<String>,
+    preserved: Vec<String>,
+    blockers: Vec<String>,
+    steam_vr_running: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CleanupReport {
+    removed: Vec<String>,
+    unregistered: Vec<String>,
+    preserved: Vec<String>,
+    warnings: Vec<String>,
+}
+
+struct CleanupPlan {
+    preview: CleanupPreview,
+    targets: Vec<PathBuf>,
+    registrations: Vec<PathBuf>,
+    vrpathreg: PathBuf,
 }
 
 fn receipt_schema_version() -> u32 {
@@ -811,6 +839,58 @@ mod tests {
         validate_package(&active, ACTIVE_SPEC).expect("active package validation failed");
         validate_package(&resources, RESOURCE_SPEC).expect("resource package validation failed");
     }
+
+    #[test]
+    fn cleanup_identity_accepts_only_valid_allowlisted_packages() {
+        let root = std::env::temp_dir().join(format!("galaxyxr-cleanup-test-{}", unique_suffix()));
+        let active = root.join(ACTIVE_DRIVER_NAME);
+        let resources = root.join(RESOURCE_DRIVER_NAME);
+        let unrelated = root.join("UnrelatedDriver");
+
+        fs::create_dir_all(active.join("bin").join("win64")).unwrap();
+        fs::write(
+            active.join("driver.vrdrivermanifest"),
+            r#"{"name":"CustomHeadsetOpenVR"}"#,
+        )
+        .unwrap();
+        fs::write(
+            active
+                .join("bin")
+                .join("win64")
+                .join("driver_CustomHeadsetOpenVR.dll"),
+            b"test",
+        )
+        .unwrap();
+
+        fs::create_dir_all(&resources).unwrap();
+        fs::write(
+            resources.join("driver.vrdrivermanifest"),
+            r#"{"name":"galaxyxrresources","resourceOnly":true}"#,
+        )
+        .unwrap();
+
+        fs::create_dir_all(&unrelated).unwrap();
+        fs::write(
+            unrelated.join("driver.vrdrivermanifest"),
+            r#"{"name":"UnrelatedDriver"}"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            cleanup_manifest_identity(&active, Some(ACTIVE_DRIVER_NAME)).unwrap(),
+            ACTIVE_DRIVER_NAME
+        );
+        assert_eq!(
+            cleanup_manifest_identity(&resources, Some(RESOURCE_DRIVER_NAME)).unwrap(),
+            RESOURCE_DRIVER_NAME
+        );
+        assert!(cleanup_manifest_identity(&active, Some(RESOURCE_DRIVER_NAME)).is_err());
+        assert!(cleanup_manifest_identity(&unrelated, None).is_err());
+
+        fs::create_dir_all(resources.join("bin")).unwrap();
+        assert!(cleanup_manifest_identity(&resources, Some(RESOURCE_DRIVER_NAME)).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
 }
 
 #[tauri::command]
@@ -910,4 +990,543 @@ pub fn uninstall_driver_transactional(steamvr_dir: String) -> Result<bool, Strin
         let _ = fs::remove_file(detached);
     }
     Ok(true)
+}
+
+fn steamvr_process_running() -> bool {
+    let mut system = System::new_all();
+    system.refresh_processes(ProcessesToUpdate::All, false);
+    system.processes().values().any(|process| {
+        matches!(
+            process
+                .name()
+                .to_string_lossy()
+                .to_ascii_lowercase()
+                .as_str(),
+            "vrmonitor.exe"
+                | "vrmonitor"
+                | "vrserver.exe"
+                | "vrserver"
+                | "vrcompositor.exe"
+                | "vrcompositor"
+        )
+    })
+}
+
+fn cleanup_manifest_identity(root: &Path, expected_name: Option<&str>) -> Result<String, String> {
+    let metadata = fs::symlink_metadata(root)
+        .map_err(|e| format!("inspect cleanup target {}: {e}", root.display()))?;
+    reject_link(&metadata, root)?;
+    if !metadata.is_dir() {
+        return Err(format!(
+            "cleanup target is not a directory: {}",
+            root.display()
+        ));
+    }
+    let manifest_path = root.join("driver.vrdrivermanifest");
+    let manifest: serde_json::Value = serde_json::from_slice(
+        &fs::read(&manifest_path)
+            .map_err(|e| format!("read cleanup manifest {}: {e}", manifest_path.display()))?,
+    )
+    .map_err(|e| format!("parse cleanup manifest {}: {e}", manifest_path.display()))?;
+    let name = manifest
+        .get("name")
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| format!("cleanup manifest has no name: {}", manifest_path.display()))?;
+    if !matches!(
+        name,
+        ACTIVE_DRIVER_NAME | RESOURCE_DRIVER_NAME | "GalaxyXRNative"
+    ) {
+        return Err(format!(
+            "cleanup manifest identity is not allowlisted: {name}"
+        ));
+    }
+    if expected_name.is_some_and(|expected| expected != name) {
+        return Err(format!(
+            "cleanup path/manifest identity mismatch: expected {}, found {name}",
+            expected_name.unwrap()
+        ));
+    }
+    let resource_only = manifest
+        .get("resourceOnly")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false);
+    if (name == RESOURCE_DRIVER_NAME) != resource_only {
+        return Err(format!("cleanup manifest resourceOnly mismatch for {name}"));
+    }
+    if resource_only {
+        if root.join("bin").exists() {
+            return Err(format!(
+                "resource-only cleanup target contains binaries: {}",
+                root.display()
+            ));
+        }
+    } else {
+        let win64 = root.join("bin").join("win64");
+        let has_driver_dll = win64.is_dir()
+            && fs::read_dir(&win64)
+                .map_err(|e| format!("read cleanup DLL directory {}: {e}", win64.display()))?
+                .filter_map(Result::ok)
+                .any(|entry| {
+                    let name = entry.file_name().to_string_lossy().to_ascii_lowercase();
+                    name.starts_with("driver_") && name.ends_with(".dll")
+                });
+        if !has_driver_dll {
+            return Err(format!(
+                "active cleanup target has no win64 driver DLL: {}",
+                root.display()
+            ));
+        }
+    }
+    Ok(name.to_string())
+}
+
+fn cleanup_path_fingerprint(path: &Path) -> Result<String, String> {
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|e| format!("inspect cleanup path {}: {e}", path.display()))?;
+    reject_link(&metadata, path)?;
+    if metadata.is_dir() {
+        Ok(tree_identity(&hash_tree(path)?))
+    } else if metadata.is_file() {
+        hash_file(path)
+    } else {
+        Err(format!("unsupported cleanup target: {}", path.display()))
+    }
+}
+
+fn same_canonical_path(left: &Path, right: &Path) -> bool {
+    match (fs::canonicalize(left), fs::canonicalize(right)) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => false,
+    }
+}
+
+fn push_cleanup_target(
+    targets: &mut Vec<PathBuf>,
+    actions: &mut Vec<String>,
+    token_entries: &mut Vec<String>,
+    path: PathBuf,
+    description: String,
+) -> Result<(), String> {
+    if targets
+        .iter()
+        .any(|existing| same_canonical_path(existing, &path))
+    {
+        return Ok(());
+    }
+    let fingerprint = cleanup_path_fingerprint(&path)?;
+    token_entries.push(format!("remove|{}|{fingerprint}", path.display()));
+    actions.push(description);
+    targets.push(path);
+    Ok(())
+}
+
+fn build_cleanup_plan(steamvr_dir: &str) -> Result<CleanupPlan, String> {
+    let steamvr_root =
+        fs::canonicalize(steamvr_dir).map_err(|e| format!("resolve SteamVR directory: {e}"))?;
+    let drivers_root = steamvr_root.join("drivers");
+    if !drivers_root.is_dir() {
+        return Err(format!(
+            "SteamVR drivers directory is missing: {}",
+            drivers_root.display()
+        ));
+    }
+    let vrpathreg = steamvr_root.join("bin").join("win64").join("vrpathreg.exe");
+    let mut actions = Vec::new();
+    let mut preserved = vec![
+        "SteamVR settings are preserved".to_string(),
+        "Galaxy XR settings, pairing keys, and pairing manifests are preserved".to_string(),
+        "driver_vrlink and unrelated SteamVR drivers are preserved".to_string(),
+    ];
+    let mut blockers = Vec::new();
+    let mut targets = Vec::new();
+    let mut registrations = Vec::new();
+    let mut token_entries = Vec::new();
+
+    for name in [ACTIVE_DRIVER_NAME, RESOURCE_DRIVER_NAME, "GalaxyXRNative"] {
+        let target = drivers_root.join(name);
+        if !target.exists() {
+            continue;
+        }
+        match cleanup_manifest_identity(&target, Some(name)) {
+            Ok(_) => {
+                if let Err(error) = push_cleanup_target(
+                    &mut targets,
+                    &mut actions,
+                    &mut token_entries,
+                    target.clone(),
+                    format!("Remove installed {name} package: {}", target.display()),
+                ) {
+                    blockers.push(error);
+                }
+            }
+            Err(error) => blockers.push(error),
+        }
+    }
+
+    let local_appdata = std::env::var_os("LOCALAPPDATA").ok_or("LOCALAPPDATA is unavailable")?;
+    let local_appdata = PathBuf::from(local_appdata);
+    let openvrpaths_path = local_appdata.join("openvr").join("openvrpaths.vrpath");
+    if openvrpaths_path.is_file() {
+        let value: serde_json::Value = serde_json::from_slice(
+            &fs::read(&openvrpaths_path)
+                .map_err(|e| format!("read {}: {e}", openvrpaths_path.display()))?,
+        )
+        .map_err(|e| format!("parse {}: {e}", openvrpaths_path.display()))?;
+        for registered in value
+            .get("external_drivers")
+            .and_then(|value| value.as_array())
+            .into_iter()
+            .flatten()
+            .filter_map(|value| value.as_str())
+        {
+            let path = PathBuf::from(registered);
+            match cleanup_manifest_identity(&path, None) {
+                Ok(name) => match fs::canonicalize(&path) {
+                    Ok(canonical) => {
+                        let fingerprint = cleanup_path_fingerprint(&canonical)?;
+                        token_entries
+                            .push(format!("unregister|{}|{fingerprint}", canonical.display()));
+                        actions.push(format!(
+                            "Unregister exact {name} path: {}",
+                            canonical.display()
+                        ));
+                        registrations.push(canonical);
+                    }
+                    Err(error) => blockers.push(format!(
+                        "resolve registered cleanup path {}: {error}",
+                        path.display()
+                    )),
+                },
+                Err(_) => preserved.push(format!(
+                    "Unrelated external driver preserved: {}",
+                    path.display()
+                )),
+            }
+        }
+    }
+    if !registrations.is_empty() && !vrpathreg.is_file() {
+        blockers.push(format!("vrpathreg is missing: {}", vrpathreg.display()));
+    }
+
+    let appdata = PathBuf::from(std::env::var_os("APPDATA").ok_or("APPDATA is unavailable")?);
+    let expected_vrcft_module = appdata
+        .join("VRCFaceTracking")
+        .join("CustomLibs")
+        .join("GalaxyXR.VRCFaceTracking.dll");
+    let receipt = load_receipt()?;
+    let receipt_file = receipt_path()?;
+    if let Some(receipt) = receipt.as_ref() {
+        for spec in [ACTIVE_SPEC, RESOURCE_SPEC] {
+            let target = drivers_root.join(spec.name);
+            let Some(package) = receipt.package(spec.name) else {
+                blockers.push(format!(
+                    "managed receipt does not own required package {}",
+                    spec.name
+                ));
+                continue;
+            };
+            if !target.is_dir() {
+                blockers.push(format!("managed package is missing: {}", target.display()));
+                continue;
+            }
+            match cleanup_path_fingerprint(&target) {
+                Ok(hash) if package.path == target.to_string_lossy() && package.sha256 == hash => {}
+                Ok(_) => blockers.push(format!(
+                    "managed package drifted; refusing cleanup: {}",
+                    target.display()
+                )),
+                Err(error) => blockers.push(error),
+            }
+        }
+        if let Some(module_path) = receipt.vrcft_module_path.as_deref() {
+            let module = PathBuf::from(module_path);
+            let expected = receipt.vrcft_module_sha256.as_deref();
+            match (
+                module.is_file(),
+                expected,
+                cleanup_path_fingerprint(&module),
+            ) {
+                (true, Some(expected), Ok(actual))
+                    if expected == actual
+                        && same_canonical_path(&module, &expected_vrcft_module) =>
+                {
+                    if let Err(error) = push_cleanup_target(
+                        &mut targets,
+                        &mut actions,
+                        &mut token_entries,
+                        module.clone(),
+                        format!("Remove receipt-owned VRCFT module: {}", module.display()),
+                    ) {
+                        blockers.push(error);
+                    }
+                }
+                _ => blockers.push(format!(
+                    "receipt-owned VRCFT module is missing or drifted: {}",
+                    module.display()
+                )),
+            }
+        }
+        if receipt_file.is_file() {
+            if let Err(error) = push_cleanup_target(
+                &mut targets,
+                &mut actions,
+                &mut token_entries,
+                receipt_file.clone(),
+                format!("Remove managed install receipt: {}", receipt_file.display()),
+            ) {
+                blockers.push(error);
+            }
+        }
+    } else {
+        if expected_vrcft_module.is_file() {
+            preserved.push(format!(
+                "Unowned VRCFT module preserved: {}",
+                expected_vrcft_module.display()
+            ));
+        }
+    }
+
+    let legacy_root = local_appdata.join("CustomHeadsetOpenVR");
+    let active_path = legacy_root.join("driver").join("active.json");
+    if active_path.is_file() {
+        let active: serde_json::Value = serde_json::from_slice(
+            &fs::read(&active_path).map_err(|e| format!("read {}: {e}", active_path.display()))?,
+        )
+        .map_err(|e| format!("parse {}: {e}", active_path.display()))?;
+        let driver_path = active.get("driverPath").and_then(|value| value.as_str());
+        let expected_hash = active
+            .get("driverDllSha256")
+            .and_then(|value| value.as_str());
+        let journal_path = legacy_root.join("GalaxyXR").join("install-state.json");
+        let journal: Option<serde_json::Value> = if journal_path.is_file() {
+            Some(
+                serde_json::from_slice(
+                    &fs::read(&journal_path)
+                        .map_err(|e| format!("read {}: {e}", journal_path.display()))?,
+                )
+                .map_err(|e| format!("parse {}: {e}", journal_path.display()))?,
+            )
+        } else {
+            None
+        };
+        let proven = driver_path
+            .zip(expected_hash)
+            .and_then(|(driver_path, expected_hash)| {
+                let driver = PathBuf::from(driver_path);
+                let versions = legacy_root.join("driver").join("versions");
+                let leaf = driver.file_name()?.to_string_lossy();
+                let token_ok =
+                    leaf.len() == 64 && leaf.bytes().all(|byte| byte.is_ascii_hexdigit());
+                let contained = driver
+                    .parent()
+                    .is_some_and(|parent| same_canonical_path(parent, &versions));
+                let dll = driver
+                    .join("bin")
+                    .join("win64")
+                    .join("driver_CustomHeadsetOpenVR.dll");
+                let hash_ok = hash_file(&dll).ok().is_some_and(|hash| {
+                    hash.eq_ignore_ascii_case(expected_hash) && hash.eq_ignore_ascii_case(&leaf)
+                });
+                let journal_ok = journal.as_ref().is_some_and(|journal| {
+                    journal.get("status").and_then(|value| value.as_str()) == Some("Successful")
+                        && journal
+                            .get("driverRegistrationPath")
+                            .and_then(|value| value.as_str())
+                            .is_some_and(|path| same_canonical_path(Path::new(path), &driver))
+                });
+                (token_ok && contained && hash_ok && journal_ok).then_some(driver)
+            });
+        if let Some(driver) = proven {
+            if let Err(error) = cleanup_manifest_identity(&driver, Some(ACTIVE_DRIVER_NAME)) {
+                blockers.push(error);
+            } else {
+                if let Err(error) = push_cleanup_target(
+                    &mut targets,
+                    &mut actions,
+                    &mut token_entries,
+                    driver.clone(),
+                    format!("Remove proven legacy staged driver: {}", driver.display()),
+                ) {
+                    blockers.push(error);
+                }
+                if let Err(error) = push_cleanup_target(
+                    &mut targets,
+                    &mut actions,
+                    &mut token_entries,
+                    active_path.clone(),
+                    format!("Remove legacy active pointer: {}", active_path.display()),
+                ) {
+                    blockers.push(error);
+                }
+                preserved.push(format!(
+                    "Legacy recovery ledger/backups preserved: {}",
+                    journal_path.display()
+                ));
+            }
+        } else {
+            blockers.push(format!(
+                "legacy active driver could not be proven safe to clean: {}",
+                active_path.display()
+            ));
+        }
+    }
+
+    actions.sort();
+    preserved.sort();
+    blockers.sort();
+    token_entries.sort();
+    let mut hasher = Sha256::new();
+    for entry in token_entries {
+        hasher.update(entry.as_bytes());
+        hasher.update([b'\n']);
+    }
+    let plan_token = format!("{:x}", hasher.finalize());
+    Ok(CleanupPlan {
+        preview: CleanupPreview {
+            plan_token,
+            actions,
+            preserved,
+            blockers,
+            steam_vr_running: steamvr_process_running(),
+        },
+        targets,
+        registrations,
+        vrpathreg,
+    })
+}
+
+#[tauri::command]
+pub fn preview_driver_cleanup(steamvr_dir: String) -> Result<CleanupPreview, String> {
+    Ok(build_cleanup_plan(&steamvr_dir)?.preview)
+}
+
+fn rollback_cleanup(
+    vrpathreg: &Path,
+    detached: &[(PathBuf, PathBuf)],
+    unregistered: &[PathBuf],
+) -> Vec<String> {
+    let mut errors = Vec::new();
+    for (original, detached_path) in detached.iter().rev() {
+        if let Err(error) = fs::rename(detached_path, original) {
+            errors.push(format!(
+                "restore {} from {}: {error}",
+                original.display(),
+                detached_path.display()
+            ));
+        }
+    }
+    for removed in unregistered.iter().rev() {
+        match Command::new(vrpathreg)
+            .arg("adddriver")
+            .arg(removed)
+            .status()
+        {
+            Ok(status) if status.success() => {}
+            Ok(status) => errors.push(format!(
+                "restore registration {}: vrpathreg exited with {status}",
+                removed.display()
+            )),
+            Err(error) => errors.push(format!(
+                "restore registration {}: {error}",
+                removed.display()
+            )),
+        }
+    }
+    errors
+}
+
+#[tauri::command]
+pub fn execute_driver_cleanup(
+    steamvr_dir: String,
+    plan_token: String,
+) -> Result<CleanupReport, String> {
+    let plan = build_cleanup_plan(&steamvr_dir)?;
+    if plan.preview.steam_vr_running {
+        return Err("SteamVR is running. Close SteamVR before cleaning installations.".into());
+    }
+    if !plan.preview.blockers.is_empty() {
+        return Err(format!(
+            "cleanup is blocked:\n{}",
+            plan.preview.blockers.join("\n")
+        ));
+    }
+    if plan.preview.plan_token != plan_token {
+        return Err("cleanup plan changed after preview; preview again before continuing".into());
+    }
+
+    let mut unregistered = Vec::new();
+    for registration in &plan.registrations {
+        let status = Command::new(&plan.vrpathreg)
+            .arg("removedriver")
+            .arg(registration)
+            .status();
+        let status = match status {
+            Ok(status) => status,
+            Err(error) => {
+                let rollback_errors = rollback_cleanup(&plan.vrpathreg, &[], &unregistered);
+                return Err(format!(
+                    "run vrpathreg for {}: {error}; rollback errors: {:?}",
+                    registration.display(),
+                    rollback_errors
+                ));
+            }
+        };
+        if !status.success() {
+            let rollback_errors = rollback_cleanup(&plan.vrpathreg, &[], &unregistered);
+            return Err(format!(
+                "failed to unregister exact driver path: {}; rollback errors: {:?}",
+                registration.display(),
+                rollback_errors
+            ));
+        }
+        unregistered.push(registration.clone());
+    }
+
+    let mut detached: Vec<(PathBuf, PathBuf)> = Vec::new();
+    for target in &plan.targets {
+        let file_name = target
+            .file_name()
+            .ok_or_else(|| format!("cleanup target has no file name: {}", target.display()))?
+            .to_string_lossy();
+        let tombstone = target
+            .parent()
+            .ok_or_else(|| format!("cleanup target has no parent: {}", target.display()))?
+            .join(format!(".{file_name}.{}.cleanup", unique_suffix()));
+        if let Err(error) = fs::rename(target, &tombstone) {
+            let rollback_errors = rollback_cleanup(&plan.vrpathreg, &detached, &unregistered);
+            return Err(format!(
+                "detach cleanup target {}: {error}; rollback errors: {:?}",
+                target.display(),
+                rollback_errors
+            ));
+        }
+        detached.push((target.clone(), tombstone));
+    }
+
+    let mut warnings = Vec::new();
+    for (_, tombstone) in &detached {
+        let result = if tombstone.is_dir() {
+            fs::remove_dir_all(tombstone)
+        } else {
+            fs::remove_file(tombstone)
+        };
+        if let Err(error) = result {
+            warnings.push(format!(
+                "cleanup debt remains at {}: {error}",
+                tombstone.display()
+            ));
+        }
+    }
+    Ok(CleanupReport {
+        removed: detached
+            .into_iter()
+            .map(|(original, _)| original.to_string_lossy().into_owned())
+            .collect(),
+        unregistered: unregistered
+            .into_iter()
+            .map(|path| path.to_string_lossy().into_owned())
+            .collect(),
+        preserved: plan.preview.preserved,
+        warnings,
+    })
 }
