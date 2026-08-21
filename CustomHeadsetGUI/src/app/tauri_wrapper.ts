@@ -16,3 +16,7 @@ export async function kill_process(process_name: string): Promise<boolean> {
 export async function launch_process(path: string, args: string[]): Promise<boolean> {
     return await invoke('launch_process', { path, args }) as boolean;
 }
+
+export async function run_process_sync(path: string, args: string[]): Promise<number> {
+    return await invoke('run_process_sync', { path, args }) as number;
+}

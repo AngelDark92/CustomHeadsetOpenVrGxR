@@ -1,4 +1,5 @@
 import { ChangeDetectorRef, Component, computed, effect, HostBinding, inject, input, model, OnDestroy, output, signal } from "@angular/core";
+import { customHeadsetDriverName } from '../../../environment';
 import { AppSettingService } from "../../services/app-setting.service";
 import { DriverInfoService } from "../../services/driver-info.service";
 import { DistortionProfileEntry, DriverSettingService } from "../../services/driver-setting.service";
@@ -152,7 +153,7 @@ export abstract class DeviceConfigComponentBase<T extends { enable: boolean }> i
             const driverNames = this.driverNames();
             if (steamVrConfig) {
                 let shiftallEnabled = driverNames.map(name => this.sds.getSteamVRDriverEnableState(steamVrConfig, name));
-                let customEnabled = this.sds.getSteamVRDriverEnableState(steamVrConfig, 'CustomHeadsetOpenVR')
+                let customEnabled = this.sds.getSteamVRDriverEnableState(steamVrConfig, customHeadsetDriverName)
                 this.driverWarning.set((shiftallEnabled.some(x => x) || !customEnabled) && (config?.meganeX8K?.enable ?? false));
                 this.driverEnablePrompt.set(shiftallEnabled.every(x => !x) && !(config?.meganeX8K?.enable ?? true));
             }
@@ -197,7 +198,7 @@ export abstract class DeviceConfigComponentBase<T extends { enable: boolean }> i
         for (const name of this.driverNames()) {
             await this.sds.disableSteamVRDriver(name);
         }
-        await this.sds.enableSteamVRDriver('CustomHeadsetOpenVR');
+        await this.sds.enableSteamVRDriver(customHeadsetDriverName);
     }
     async enableDriver() {
         const driverNames = this.driverNames();
