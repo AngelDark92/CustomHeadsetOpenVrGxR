@@ -1517,6 +1517,7 @@ void ConfigLoader::WriteInfo(){
 		{"nonNativeHeadsetFound", info.nonNativeHeadsetFound},
 		{"isDashboardOpen", info.isDashboardOpen},
 		{"debugLog", info.debugLog},
+		{"driverName", info.driverName},
 		{"driverResources", info.driverResources},
 		{"steamvrResources", info.steamvrResources},
 		{"driverVersion", driverVersion}

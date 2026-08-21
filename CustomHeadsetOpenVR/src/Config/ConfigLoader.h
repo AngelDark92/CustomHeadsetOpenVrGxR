@@ -27,6 +27,9 @@ public:
 		uint32_t outputResolutionX = 0;
 		uint32_t outputResolutionY = 0;
 		std::string debugLog = "";
+		// the actual name this driver is registered under in SteamVR (CustomHeadsetOpenVR or GalaxyXRNative)
+		// discovered at Init time from the driver handle; the default is a fallback if discovery fails
+		std::string driverName = "CustomHeadsetOpenVR";
 		std::string driverResources = "";
 		std::string steamvrResources = "";
 		Config::HeadsetType connectedHeadset = Config::HeadsetType::None;

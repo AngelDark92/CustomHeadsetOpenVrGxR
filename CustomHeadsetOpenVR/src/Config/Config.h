@@ -5,6 +5,14 @@
 #include <mutex>
 #include <tuple>
 
+// vendor build selection
+// build.js passes /DVENDOR_GALAXYXR through ExternalCompilerOptions for the GalaxyXRNative vendor build.
+// when no vendor define is set this is the vendor-neutral build (driver name CustomHeadsetOpenVR).
+// this mirrors the vendor mechanism in upstream CustomHeadsetOpenVR so the two drivers can coexist.
+#if !defined(VENDOR_GALAXYXR)
+#define VENDOR_NEUTRAL
+#endif
+
 struct ConfigColor{
 	double r = 1.0;
 	double g = 1.0;

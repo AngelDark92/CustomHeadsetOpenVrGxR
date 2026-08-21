@@ -30,6 +30,7 @@
     <ClInclude Include="src\Driver\ZeroCopy.h" />
     <ClInclude Include="src\Driver\NvencTap.h" />
     <ClInclude Include="src\Driver\EyeTrackingTap.h" />
+    <ClInclude Include="src\Driver\DriverLockout.h" />
     <ClInclude Include="src\Driver\DriverLog.h" />
     <ClInclude Include="src\Driver\Hooking\Hooking.h" />
     <ClInclude Include="src\Driver\Hooking\InterfaceHookInjector.h" />
@@ -62,6 +63,7 @@
     <ClCompile Include="src\Driver\ZeroCopy.cpp" />
     <ClCompile Include="src\Driver\NvencTap.cpp" />
     <ClCompile Include="src\Driver\EyeTrackingTap.cpp" />
+    <ClCompile Include="src\Driver\DriverLockout.cpp" />
     <ClCompile Include="src\Driver\DriverLog.cpp" />
     <ClCompile Include="src\Driver\HidModifier.cpp" />
     <ClCompile Include="src\Driver\HmdDriverFactory.cpp" />
