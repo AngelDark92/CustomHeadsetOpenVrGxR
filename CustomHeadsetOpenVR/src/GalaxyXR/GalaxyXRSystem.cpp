@@ -11,17 +11,95 @@
 #include <iterator>
 #include <limits>
 #include <sstream>
+#include <vector>
 
 #ifdef _WIN32
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
+#include <WinSock2.h>
+#include <Ws2tcpip.h>
 #include <Windows.h>
 #include <bcrypt.h>
+#include <iphlpapi.h>
+#pragma comment(lib, "iphlpapi.lib")
 #endif
 
 namespace galaxyxr {
 namespace {
+
+constexpr std::int64_t TransportRetryIntervalNs = 5'000'000'000LL;
+
+enum class ListenAddressStatus {
+	Local,
+	Invalid,
+	NonLocal,
+	Unavailable
+};
+
+ListenAddressStatus ValidateLocalListenAddress(const std::string& address){
+#ifdef _WIN32
+	IN_ADDR configuredAddress{};
+	if(InetPtonA(AF_INET, address.c_str(), &configuredAddress) != 1 ||
+		configuredAddress.S_un.S_addr == INADDR_ANY ||
+		configuredAddress.S_un.S_addr == INADDR_NONE){
+		return ListenAddressStatus::Invalid;
+	}
+	if((ntohl(configuredAddress.S_un.S_addr) & 0xff000000U) == 0x7f000000U){
+		return ListenAddressStatus::Local;
+	}
+
+	ULONG bufferBytes = 15 * 1024;
+	std::vector<std::uint8_t> buffer(bufferBytes);
+	ULONG result = GetAdaptersAddresses(
+		AF_INET,
+		GAA_FLAG_SKIP_ANYCAST |
+			GAA_FLAG_SKIP_MULTICAST |
+			GAA_FLAG_SKIP_DNS_SERVER,
+		nullptr,
+		reinterpret_cast<IP_ADAPTER_ADDRESSES*>(buffer.data()),
+		&bufferBytes);
+	if(result == ERROR_BUFFER_OVERFLOW && bufferBytes <= 1024 * 1024){
+		buffer.resize(bufferBytes);
+		result = GetAdaptersAddresses(
+			AF_INET,
+			GAA_FLAG_SKIP_ANYCAST |
+				GAA_FLAG_SKIP_MULTICAST |
+				GAA_FLAG_SKIP_DNS_SERVER,
+			nullptr,
+			reinterpret_cast<IP_ADAPTER_ADDRESSES*>(buffer.data()),
+			&bufferBytes);
+	}
+	if(result != NO_ERROR && result != ERROR_NO_DATA){
+		return ListenAddressStatus::Unavailable;
+	}
+	if(result == ERROR_NO_DATA){
+		return ListenAddressStatus::NonLocal;
+	}
+
+	for(auto* adapter = reinterpret_cast<IP_ADAPTER_ADDRESSES*>(buffer.data());
+		adapter;
+		adapter = adapter->Next){
+		for(auto* unicast = adapter->FirstUnicastAddress;
+			unicast;
+			unicast = unicast->Next){
+			if(!unicast->Address.lpSockaddr ||
+				unicast->Address.lpSockaddr->sa_family != AF_INET){
+				continue;
+			}
+			const auto* localAddress = reinterpret_cast<const SOCKADDR_IN*>(
+				unicast->Address.lpSockaddr);
+			if(localAddress->sin_addr.S_un.S_addr == configuredAddress.S_un.S_addr){
+				return ListenAddressStatus::Local;
+			}
+		}
+	}
+	return ListenAddressStatus::NonLocal;
+#else
+	(void)address;
+	return ListenAddressStatus::Unavailable;
+#endif
+}
 
 std::string LoadPairingToken(const Config::GalaxyXRConfig& configuration){
 	if(!configuration.telemetry.pairingTokenFile.empty()){
@@ -261,9 +339,25 @@ void GalaxyXRSystem::RunFrame(const Config::GalaxyXRConfig& configuration){
 	}
 
 	const std::string requestedSignature = TransportSignature(configuration);
+	const std::int64_t transportNowNs = NowNs();
+	const bool transportSignatureChanged =
+		lastTransportAttemptSignature != requestedSignature;
+	if(transportSignatureChanged){
+		lastTransportAttemptSignature = requestedSignature;
+		nextTransportAttemptNs = 0;
+		if(!transport.IsRunning()){
+			activeTransportSignature.clear();
+		}
+	}
 	if(transport.IsRunning() && activeTransportSignature != requestedSignature){
 		transport.Stop();
 		activeTransportSignature.clear();
+	}
+	if(!configuration.telemetry.enable){
+		StopFeatureState();
+		activeTransportSignature = "<disabled>";
+		nextTransportAttemptNs = 0;
+		return;
 	}
 	if(configuration.telemetry.enable &&
 		(!configuration.telemetry.requirePairing ||
@@ -280,33 +374,34 @@ void GalaxyXRSystem::RunFrame(const Config::GalaxyXRConfig& configuration){
 			DriverLog(
 				"GXR Transport: disabled; pairing is mandatory, distinct TCP/UDP ports must be in [1,65535], and staleAfterMs must be in [10,1000]");
 		}
+		nextTransportAttemptNs = transportNowNs + TransportRetryIntervalNs;
 		return;
 	}
-	if(configuration.telemetry.enable && !transport.IsRunning()){
+	if(configuration.telemetry.enable &&
+		!transport.IsRunning() &&
+		(transportSignatureChanged || transportNowNs >= nextTransportAttemptNs)){
+		// Arm the retry before validation/start so every failure path is bounded.
+		nextTransportAttemptNs = transportNowNs + TransportRetryIntervalNs;
 		std::array<std::uint8_t, Sha256Bytes> pairingKey{};
-		std::array<std::uint8_t, Sha256Bytes> supportedApkSha256{};
-		std::array<std::uint8_t, Sha256Bytes> supportedBridgeSha256{};
+		std::vector<TransportConfiguration::ClientAdmission> allowedClients;
+		for(const auto& configured : configuration.telemetry.allowedClients){
+			TransportConfiguration::ClientAdmission allowed;
+			if(configured.versionCode <= 0 ||
+				!ParseHexKey32(configured.apkSha256, allowed.apkSha256) ||
+				!ParseHexKey32(configured.bridgeSha256, allowed.bridgeSha256) ||
+				std::all_of(allowed.apkSha256.begin(), allowed.apkSha256.end(), [](std::uint8_t value){ return value == 0; }) ||
+				std::all_of(allowed.bridgeSha256.begin(), allowed.bridgeSha256.end(), [](std::uint8_t value){ return value == 0; })){
+				continue;
+			}
+			allowed.versionCode = static_cast<std::uint32_t>(configured.versionCode);
+			allowedClients.push_back(allowed);
+		}
 		const std::string pairingToken = LoadPairingToken(configuration);
-		const bool validAdmission =
-			configuration.telemetry.supportedClientVersionCode > 0 &&
-			ParseHexKey32(
-				configuration.telemetry.supportedApkSha256,
-				supportedApkSha256) &&
-			ParseHexKey32(
-				configuration.telemetry.supportedBridgeSha256,
-				supportedBridgeSha256) &&
-			!std::all_of(
-				supportedApkSha256.begin(),
-				supportedApkSha256.end(),
-				[](std::uint8_t value){ return value == 0; }) &&
-			!std::all_of(
-				supportedBridgeSha256.begin(),
-				supportedBridgeSha256.end(),
-				[](std::uint8_t value){ return value == 0; });
+		const bool validAdmission = !allowedClients.empty();
 		if(!validAdmission){
 			if(activeTransportSignature != "<invalid-client-provenance>"){
 				DriverLog(
-					"GXR Transport: disabled until supportedClientVersionCode and exact nonzero supportedApkSha256/supportedBridgeSha256 values are configured");
+					"GXR Transport: disabled until allowedClients contains at least one exact versionCode/APK/bridge SHA-256 record");
 				activeTransportSignature = "<invalid-client-provenance>";
 			}
 		}else if(!ParseHexKey32(pairingToken, pairingKey)){
@@ -316,26 +411,41 @@ void GalaxyXRSystem::RunFrame(const Config::GalaxyXRConfig& configuration){
 				activeTransportSignature = "<invalid-pairing>";
 			}
 		}else{
-			TransportConfiguration transportConfiguration;
-			transportConfiguration.listenAddress = configuration.telemetry.listenAddress;
-			transportConfiguration.controlPort = configuration.telemetry.controlPort;
-			transportConfiguration.trackingPort = configuration.telemetry.trackingPort;
-			transportConfiguration.pairingKey = pairingKey;
-			transportConfiguration.staleAfterMs = configuration.eye.staleAfterMs;
-			transportConfiguration.hostVersion = driverVersion;
-			transportConfiguration.supportedClientVersionCode =
-				static_cast<std::uint32_t>(
-					configuration.telemetry.supportedClientVersionCode);
-			transportConfiguration.supportedApkSha256 = supportedApkSha256;
-			transportConfiguration.supportedBridgeSha256 = supportedBridgeSha256;
-			if(!ComputeCurrentModuleSha256(transportConfiguration.hostDllSha256)){
-				if(activeTransportSignature != "<host-hash-unavailable>"){
+			const ListenAddressStatus listenAddressStatus =
+				ValidateLocalListenAddress(configuration.telemetry.listenAddress);
+			if(listenAddressStatus == ListenAddressStatus::Invalid){
+				if(activeTransportSignature != "<invalid-listen-address>"){
 					DriverLog(
-						"GXR Transport: disabled because the loaded host driver SHA-256 could not be established");
-					activeTransportSignature = "<host-hash-unavailable>";
+						"GXR Transport: configured listenAddress '%s' is not a usable unicast IPv4 address; transport remains disabled",
+						configuration.telemetry.listenAddress.c_str());
+					activeTransportSignature = "<invalid-listen-address>";
 				}
-			}else if(transport.Start(transportConfiguration)){
-				activeTransportSignature = requestedSignature;
+			}else if(listenAddressStatus == ListenAddressStatus::NonLocal){
+				if(activeTransportSignature != "<non-local-listen-address>"){
+					DriverLog(
+						"GXR Transport: configured listenAddress '%s' is not assigned to a local IPv4 interface; transport remains disabled",
+						configuration.telemetry.listenAddress.c_str());
+					activeTransportSignature = "<non-local-listen-address>";
+				}
+			}else{
+				TransportConfiguration transportConfiguration;
+				transportConfiguration.listenAddress = configuration.telemetry.listenAddress;
+				transportConfiguration.controlPort = configuration.telemetry.controlPort;
+				transportConfiguration.trackingPort = configuration.telemetry.trackingPort;
+				transportConfiguration.pairingKey = pairingKey;
+				transportConfiguration.staleAfterMs = configuration.eye.staleAfterMs;
+				transportConfiguration.hostVersion = driverVersion;
+				transportConfiguration.allowedClients = std::move(allowedClients);
+				if(!ComputeCurrentModuleSha256(transportConfiguration.hostDllSha256)){
+					if(activeTransportSignature != "<host-hash-unavailable>"){
+						DriverLog(
+							"GXR Transport: disabled because the loaded host driver SHA-256 could not be established");
+						activeTransportSignature = "<host-hash-unavailable>";
+					}
+				}else if(transport.Start(transportConfiguration)){
+					activeTransportSignature = requestedSignature;
+					nextTransportAttemptNs = 0;
+				}
 			}
 		}
 	}
@@ -492,6 +602,8 @@ void GalaxyXRSystem::Cleanup(){
 	}
 	previousAuthenticated = false;
 	activeTransportSignature.clear();
+	lastTransportAttemptSignature.clear();
+	nextTransportAttemptNs = 0;
 	activePosePolicySignature.clear();
 	lastPublishedFaceSequence = 0;
 	faceOutputEnabled = false;
@@ -696,11 +808,13 @@ std::string GalaxyXRSystem::TransportSignature(
 		<< configuration.telemetry.listenAddress << '|'
 		<< configuration.telemetry.controlPort << '|'
 		<< configuration.telemetry.trackingPort << '|'
+		<< configuration.telemetry.requirePairing << '|'
 		<< configuration.telemetry.pairingTokenFile << '|'
 		<< configuration.telemetry.pairingTokenHex << '|'
-		<< configuration.telemetry.supportedClientVersionCode << '|'
-		<< configuration.telemetry.supportedApkSha256 << '|'
-		<< configuration.telemetry.supportedBridgeSha256;
+		<< configuration.eye.staleAfterMs;
+	for(const auto& client : configuration.telemetry.allowedClients){
+		value << '|' << client.versionCode << ':' << client.apkSha256 << ':' << client.bridgeSha256;
+	}
 	return value.str();
 }
 

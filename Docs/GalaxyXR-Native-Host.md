@@ -11,9 +11,11 @@ OpenXR network protocol.
 - No authenticated session means the wrappers are pass-through.
 - A HELLO must identify package `com.valvesoftware.steamlinkvr`, manufacturer
   `Samsung`, and model `Samsung Galaxy XR`.
-- The listener stays closed until `supportedClientVersionCode`,
-  `supportedApkSha256`, and `supportedBridgeSha256` provide an exact nonzero
-  admission allowlist. HELLO must match all three values.
+- The listener stays closed until `allowedClients` contains at least one exact
+  nonzero `versionCode`/`apkSha256`/`bridgeSha256` record. HELLO must match all
+  three values from the same record; cross-paired hashes are rejected.
+- `listenAddress` must be a usable unicast IPv4 assigned to this PC. Invalid or
+  stale adapter addresses are reported once and retried at most every five seconds.
 - The TCP control peer and UDP source IPv4 address must match.
 - Only one session is accepted. Sequence duplicates, reordering, wrap, stale
   samples, invalid counts, non-finite values, bad quaternion norms, and bad
@@ -23,6 +25,31 @@ OpenXR network protocol.
   never guessed or patched.
 
 ## GXRP v1.0
+
+Native Steam Link 5002318/5002322 need the optional `Galaxy XR native telemetry`
+APK patch. It installs only `libgxr_xr_bridge.so` and its implicit API-layer
+manifest, preserving Valve's native controller/hand configuration. The patch
+requires the PC LAN IPv4, ports, and a private 64-hex pairing token. After the
+final APK is signed, create the non-secret host admission record with:
+
+```powershell
+.\tools\New-GalaxyXRAdmissionReport.ps1 -VersionCode 5002322 `
+  -ApkPath C:\path\SteamLink-GalaxyXR.apk `
+  -BridgeLibraryPath C:\path\libgxr_xr_bridge.so
+```
+
+Copy the generated `allowedClient` object into
+`galaxyXR.telemetry.allowedClients`. The report deliberately contains no
+pairing token.
+
+The available precompiled bridge reads the pairing token from application
+manifest metadata. The patched APK is therefore a private, single-user
+artifact: anyone who obtains it can extract the token and impersonate the
+client. Do not commit, upload, or distribute it. GXRP authentication protects
+against network peers that do not possess the APK; it does not protect a
+distributed artifact. A distributable production design requires bridge source
+changes that provision the token at runtime from app-private,
+Android-Keystore-backed storage.
 
 Control uses TCP frames prefixed by a little-endian `u32 messageBytes`.
 Tracking/presentation uses one UDP datagram per envelope and payload.

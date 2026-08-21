@@ -121,6 +121,23 @@ export class SystemDiagnosticService implements OnDestroy {
     }
     return undefined;
   }
+  private async findConflictingExternalGalaxyDrivers(): Promise<string[]> {
+    const openVrPaths = await this.getOpenvrpaths();
+    const conflicts: string[] = [];
+    for (const registeredPath of openVrPaths?.external ?? []) {
+      try {
+        const manifestPath = await join(registeredPath, 'driver.vrdrivermanifest');
+        if (!await exists(manifestPath)) continue;
+        const manifest = JSON.parse(cleanJsonComments(await readTextFile(manifestPath)));
+        if (manifest?.name === 'CustomHeadsetOpenVR' || manifest?.name === 'galaxyxrresources') {
+          conflicts.push(registeredPath);
+        }
+      } catch {
+        // An unreadable unrelated external registration is not ours to mutate or classify.
+      }
+    }
+    return conflicts;
+  }
   public async disableSteamVRDriver(driverName: string) {
     await this.updateSteamVRSettings(settings => {
       const name = this.getDriverFieldName(driverName);
@@ -192,15 +209,27 @@ export class SystemDiagnosticService implements OnDestroy {
     this.installing = true
     let installSucceeded = false;
     try {
+      const registrationConflicts = await this.findConflictingExternalGalaxyDrivers();
+      if (registrationConflicts.length) {
+        await this.dialog.message(
+          $localize`Install Failed`,
+          $localize`SteamVR has a duplicate externally registered Galaxy driver. Remove this exact registration before installing the managed packages:` + `\n${registrationConflicts.join('\n')}`,
+        );
+        return false;
+      }
       const executablePath = await get_executable_path();
       const driverCandidates = [
         await join(executablePath, '../CustomHeadsetOpenVR'),
         await join(executablePath, '../../CustomHeadsetOpenVR'),
       ];
       let driverDir: string | undefined;
+      let resourceDriverDir: string | undefined;
       for (const candidate of driverCandidates) {
-        if (await exists(await join(candidate, 'driver.vrdrivermanifest'))) {
+        const companion = await join(candidate, '..', 'galaxyxrresources');
+        if (await exists(await join(candidate, 'driver.vrdrivermanifest')) &&
+            await exists(await join(companion, 'driver.vrdrivermanifest'))) {
           driverDir = candidate;
+          resourceDriverDir = companion;
           break;
         }
       }
@@ -209,6 +238,7 @@ export class SystemDiagnosticService implements OnDestroy {
           const path = await open({ directory: true, multiple: false })
           if (path) {
             driverDir = path;
+            resourceDriverDir = await join(path, '..', 'galaxyxrresources');
           } else {
             return false;
           }
@@ -216,7 +246,9 @@ export class SystemDiagnosticService implements OnDestroy {
           return false;
         }
       }
-      if (await exists(await join(driverDir, 'driver.vrdrivermanifest'))) {
+      if (await exists(await join(driverDir, 'driver.vrdrivermanifest')) &&
+          resourceDriverDir &&
+          await exists(await join(resourceDriverDir, 'driver.vrdrivermanifest'))) {
         try {
           const moduleCandidates = [
             await join(executablePath, '../GalaxyXR.VRCFaceTracking.dll'),
@@ -227,7 +259,7 @@ export class SystemDiagnosticService implements OnDestroy {
           for (const candidate of moduleCandidates) {
             if (await exists(candidate)) { modulePath = candidate; break; }
           }
-          await install_driver_transactional(driverDir, steamVrPath, modulePath);
+          await install_driver_transactional(driverDir, resourceDriverDir, steamVrPath, modulePath);
           installSucceeded = true;
         } catch (e) {
           const detail = `${e}`;

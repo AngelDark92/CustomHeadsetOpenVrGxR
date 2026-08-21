@@ -75,6 +75,8 @@ private:
 	bool configured = false;
 	bool previousAuthenticated = false;
 	std::string activeTransportSignature;
+	std::string lastTransportAttemptSignature;
+	std::int64_t nextTransportAttemptNs = 0;
 	std::string activePosePolicySignature;
 	std::uint64_t lastPublishedFaceSequence = 0;
 	bool faceOutputEnabled = false;

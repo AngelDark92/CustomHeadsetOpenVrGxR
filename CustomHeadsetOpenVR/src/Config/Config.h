@@ -1124,6 +1124,11 @@ public:
 	public:
 		class TelemetryConfig{
 		public:
+			struct AllowedClient{
+				int versionCode = 0;
+				std::string apkSha256;
+				std::string bridgeSha256;
+			};
 			bool enable = true;
 			std::string listenAddress = "127.0.0.1";
 			int controlPort = 29981;
@@ -1131,7 +1136,9 @@ public:
 			bool requirePairing = true;
 			std::string pairingTokenHex = "";
 			std::string pairingTokenFile = "GalaxyXR/pairing.key";
-			int supportedClientVersionCode = 5002276;
+			std::vector<AllowedClient> allowedClients;
+			// Legacy single-record keys remain readable for settings migration.
+			int supportedClientVersionCode = 0;
 			std::string supportedApkSha256 = "";
 			std::string supportedBridgeSha256 = "";
 		};

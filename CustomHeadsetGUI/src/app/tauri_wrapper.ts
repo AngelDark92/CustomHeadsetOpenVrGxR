@@ -18,9 +18,8 @@ export async function launch_process(path: string, args: string[]): Promise<bool
 }
 
 export interface DriverInstallReceipt {
-    driverPath: string;
-    packageSha256: string;
-    fileCount: number;
+    schemaVersion: number;
+    packages: Array<{ name: string; path: string; sha256: string; fileCount: number }>;
     vrcftModuleInstalled: boolean;
     vrcftModulePath?: string;
     vrcftModuleSha256?: string;
@@ -28,11 +27,13 @@ export interface DriverInstallReceipt {
 
 export async function install_driver_transactional(
     sourceDir: string,
+    resourceSourceDir: string,
     steamvrDir: string,
     vrcftModulePath?: string,
 ): Promise<DriverInstallReceipt> {
     return await invoke('install_driver_transactional', {
         sourceDir,
+        resourceSourceDir,
         steamvrDir,
         vrcftModulePath: vrcftModulePath ?? null,
     }) as DriverInstallReceipt;

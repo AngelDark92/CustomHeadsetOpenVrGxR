@@ -228,6 +228,26 @@ void ConfigLoader::ParseConfig(){
 				if(telemetry["supportedClientVersionCode"].is_number_integer()){ galaxyXR.telemetry.supportedClientVersionCode = telemetry["supportedClientVersionCode"].get<int>(); }
 				if(telemetry["supportedApkSha256"].is_string()){ galaxyXR.telemetry.supportedApkSha256 = telemetry["supportedApkSha256"].get<std::string>(); }
 				if(telemetry["supportedBridgeSha256"].is_string()){ galaxyXR.telemetry.supportedBridgeSha256 = telemetry["supportedBridgeSha256"].get<std::string>(); }
+				if(telemetry["allowedClients"].is_array()){
+					for(const auto& entry : telemetry["allowedClients"]){
+						if(!entry.is_object() || !entry["versionCode"].is_number_integer() ||
+							!entry["apkSha256"].is_string() || !entry["bridgeSha256"].is_string()){
+							continue;
+						}
+						Config::GalaxyXRConfig::TelemetryConfig::AllowedClient client;
+						client.versionCode = entry["versionCode"].get<int>();
+						client.apkSha256 = entry["apkSha256"].get<std::string>();
+						client.bridgeSha256 = entry["bridgeSha256"].get<std::string>();
+						galaxyXR.telemetry.allowedClients.push_back(std::move(client));
+					}
+				}
+				if(galaxyXR.telemetry.allowedClients.empty() &&
+					galaxyXR.telemetry.supportedClientVersionCode > 0){
+					galaxyXR.telemetry.allowedClients.push_back({
+						galaxyXR.telemetry.supportedClientVersionCode,
+						galaxyXR.telemetry.supportedApkSha256,
+						galaxyXR.telemetry.supportedBridgeSha256});
+				}
 			}
 			if(json& eye = galaxyXRData["eye"]; eye.is_object()){
 				if(eye["source"].is_string()){ galaxyXR.eye.source = eye["source"].get<std::string>(); }

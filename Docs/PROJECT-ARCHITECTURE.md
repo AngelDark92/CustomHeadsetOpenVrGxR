@@ -3,7 +3,8 @@
 ## What this project is
 
 This repository builds one active SteamVR server-driver package named
-`CustomHeadsetOpenVR`. For Samsung Galaxy XR, it augments the HMD and controller
+`CustomHeadsetOpenVR` plus one resource-only companion named
+`galaxyxrresources`. For Samsung Galaxy XR, the active driver augments the HMD and controller
 objects already created by Valve's `driver_vrlink`; it does not create a second
 wireless streaming stack. An authenticated companion bridge on the headset
 sends identity, display, timing, pose, eye, and face frames through GXRP. The
@@ -24,14 +25,15 @@ and all runtime admission gates pass.
 | `CustomHeadsetOpenVR/src/Headsets/GalaxyXR.*` | Galaxy HMD shim: activation, identity, display forwarding/override. |
 | `CustomHeadsetOpenVR/src/Headsets/GalaxyXRVRLinkCompatibility.*` | Exact-build, x64-only VRLink compatibility verifier/hook. |
 | `CustomHeadsetOpenVR/src/GalaxyXR/` | GXRP protocol, transport, admission profile, clock, display, pose, eye, face, diagnostics. |
-| `CustomHeadsetOpenVR/DriverFiles/` | The exact driver package copied to SteamVR. |
+| `CustomHeadsetOpenVR/DriverFiles/` | Active DLL package; contains no Galaxy product defaults. |
+| `GalaxyXRResources/DriverFiles/` | Resource-only Valve external-vendor package: Galaxy product settings, inputs, icons, and models. |
 | `VRCFT/GalaxyXR.VRCFaceTracking/` | VRCFaceTracking v5 consumer and Android XR-to-Unified Expressions mapping. |
 | `ThirdParty/VRCFaceTracking/5.2.3.0/` | Pinned SDK/Core assemblies, license, and provenance. |
 | `CustomHeadsetGUI/` | Angular UI plus Tauri/Rust native installer. |
 | `tests/GalaxyXRProtocolTests.cpp` | Host protocol, security, clock, mapping-layout, and fuzz regression tests. |
 | `protocol/golden/` | Cross-platform GXRP envelope and KDF fixtures. |
-| `tools/` | Resource generator, VRCFT SDK acquisition, and optional diagnostic OSC adapter. |
-| `output/` | Generated driver package. Never treat it as source. |
+| `tools/` | Resource validation, VRCFT SDK acquisition, and optional diagnostic OSC adapter. |
+| `output/` | Generated `CustomHeadsetOpenVR` and `galaxyxrresources` packages. Never treat it as source. |
 
 ## How SteamVR loads it
 
@@ -41,44 +43,46 @@ driver package. A build copies `DriverFiles` into
 `bin/win32`. SteamVR loads that DLL as an OpenVR server driver and calls the
 provider in `src/Driver/DeviceProvider.cpp`.
 
-SteamVR resolves icons, render models, input profiles, localization, and
-defaults relative to the package resource root `{CustomHeadsetOpenVR}`:
+SteamVR loads the sibling `galaxyxrresources` manifest before device activation
+because it is `resourceOnly`, `alwaysActivate`, has empty `hmd_presence`, and
+contains no DLL. SteamVR resolves Galaxy icons, render models, input profiles,
+and product defaults relative to `{galaxyxrresources}`:
 
 - `resources/settings/default.vrsettings` supplies Galaxy identity, display,
   and controller defaults for the VRLink-related settings sections.
 - `resources/driver.vrresources` maps HMD/controller states to Galaxy icons.
 - `resources/input/` defines the HMD and controller input profiles.
-- `resources/rendermodels/vst_controller_left|right/` contains the reused
-  controller models and textures.
-- `resources/icons/galaxyxr/` contains generated HMD/controller status icons.
+- `resources/rendermodels/galaxy_xr_hmd/` contains the stylized headset model;
+  `vst_controller_left|right/` contain controller models and textures.
+- `resources/icons/galaxyxr/` contains prebuilt HMD/controller status icons.
 
-The status icons are derived from
-`resources/icons/galaxyxr/galaxy_xr_headset_master.png` by
-`tools/Generate-GalaxyXRStatusIcons.ps1`. That script emits the olive/gray
-SteamVR sources plus the runtime hashed twins (`.b4bfb144` / off `.6e6c89c9`)
-using DreamAir's green-blue gradient, and stamps 1x badges from 1x art and 2x
-badges from 2x art.
+The checked-in prebuilt status icons under
+`CustomHeadsetOpenVR/DriverFiles/resources/icons/galaxyxr/` are authoritative.
+The normal MSBuild pre-build step stages those resources into the output
+package; the build does not synthesize or recolor icon files.
 
 ## Runtime flow
 
 1. SteamVR loads `CustomHeadsetOpenVR` beside `driver_vrlink`.
 2. The provider's tracked-device hook sees VRLink's HMD/controllers and keeps
    the original objects as their owners.
-3. When `galaxyXR.enable` is true, the provider wraps the HMD with
+3. The resource-only package classifies `xrvst2`/`xrvst2ue` as Galaxy XR before
+   activation; this static identity does not authenticate tracking data.
+4. When `galaxyXR.enable` is true, the provider wraps the HMD with
    `GalaxyXRShim`. Existing GenericHeadset behavior remains beneath it.
-4. `GalaxyXRSystem::RunFrame` configures the bounded host services. It starts
+5. `GalaxyXRSystem::RunFrame` configures the bounded host services. It starts
    no transport until pairing and exact client provenance are configured.
-5. The headset bridge connects on GXRP control TCP (default 29981), proves the
+6. The headset bridge connects on GXRP control TCP (default 29981), proves the
    pairing key and exact client identity, receives a derived session key, then
    confirms a revisioned, nonempty capability snapshot.
-6. Authenticated tracking arrives on GXRP UDP (default 29982). Packets are
+7. Authenticated tracking arrives on GXRP UDP (default 29982). Packets are
    HMAC-authenticated, session-bound, sequence-checked, size-bounded, and
    rejected when stale or tied to the wrong capability revision.
-7. Only when the authenticated Galaxy profile also matches the activated HMD
+8. Only when the authenticated Galaxy profile also matches the activated HMD
    serial and the VRLink compatibility verifier reports a known active hook may
-   the shim expose Galaxy identity/display data or apply timing/pose changes.
-8. Disconnect, authentication loss, staleness, deactivation, or cleanup
-   invalidates eye/face output and restores the original HMD identity.
+   the shim expose display/eye/face data or apply timing/pose changes.
+9. Disconnect, authentication loss, staleness, deactivation, or cleanup
+   invalidates eye/face output; the resource-only static identity remains.
 
 ## GXRP security and wire ownership
 
@@ -94,9 +98,10 @@ requires:
 - one or two nonempty view descriptions;
 - tracking tied to the current capability revision.
 
-Configuration additionally requires a 32-byte pairing key, one allowed client
-version code, exact nonzero APK and bridge SHA-256 digests, and a hash of the
-loaded host DLL. Secrets are read from `%APPDATA%/CustomHeadset/GalaxyXR` by
+Configuration additionally requires a 32-byte pairing key, at least one
+`allowedClients` record containing an exact version code plus nonzero APK and
+bridge SHA-256 digests, and a hash of the loaded host DLL. Legacy single-record
+settings migrate in memory. Secrets are read from `%APPDATA%/CustomHeadset/GalaxyXR` by
 default and must never be logged or committed.
 
 ## Headset identity, display, and pose
@@ -177,16 +182,17 @@ measured provenance; do not put example secrets or hashes in the repository.
 
 ## Installer and package transaction
 
-The Angular service locates the sibling built driver and optional VRCFT module,
+The Angular service locates both sibling SteamVR packages and the optional VRCFT module,
 then invokes Rust commands through `tauri_wrapper.ts`.
-`src-tauri/src/driver_installer.rs` validates package identity and required
+`src-tauri/src/driver_installer.rs` validates both package identities and required
 resources, rejects links, hashes the full source tree, copies it into a
 same-volume staging directory, re-hashes it, renames the previous installation
 to a backup, activates the stage, validates again, and rolls back on activation
 failure. SteamVR driver enablement is changed only after installation succeeds.
 The commit writes `%APPDATA%/CustomHeadset/install-state.json` with the exact
-driver tree identity and any owned VRCFT module hash. Readiness and later
-replacement both re-hash the installed tree against this receipt.
+package tree identities and any owned VRCFT module hash. Readiness and later
+replacement re-hash both installed trees against this receipt. The active DLL
+package stays non-resource-only; the companion stays binary-free and resource-only.
 An existing package without this receipt is treated as unowned and is not
 overwritten; move or remove a legacy installation explicitly before the first
 managed install.
@@ -208,19 +214,24 @@ operations and need separate logs.
 | Change Galaxy config/default | `src/Config/Config.h`, `ConfigLoader.cpp` | GUI type/default if exposed; docs and config tests. |
 | Change admission/handshake | `GalaxyXRProtocol.*`, `GalaxyXRTransport.*`, `GalaxyXRProfile.*` | Android bridge, golden vectors, protocol tests. |
 | Change wire structure | `GalaxyXRProtocol.*`, `GalaxyXRTypes.h` | Android encoder/decoder, golden fixtures, bounds/fuzz tests. |
-| Change identity or SteamVR properties | `Headsets/GalaxyXR.cpp` | `default.vrsettings`, localization, icons, live property capture. |
+| Change identity or SteamVR properties | `GalaxyXRResources/.../default.vrsettings`, `Headsets/GalaxyXR.cpp` | Native APK identity patch, icons, models, live property capture. |
 | Support a new VRLink DLL | `GalaxyXRVRLinkCompatibility.cpp` | Exact x64 hash/bytes/RVA tests; fail-closed unknown-build test. |
 | Change view size/FOV/timing | `GalaxyXRDisplay.*` | capability payload/tests; preserve pass-through fallback. |
 | Change pose prediction | `GalaxyXRPoseTiming.*` | device registry/clock tests and real motion capture. |
 | Change native eye output | `GalaxyXREyePublisher.*` | Android gaze convention tests and stale-invalid test. |
 | Change face shared memory | `GalaxyXRFaceOutput.*` | C# reader, VRCFT module, layout/one-hot/stale tests. |
 | Change Android-to-VRCFT mapping | `VRCFT/.../AndroidXrUnifiedMapper.cs` | Khronos enum order and 68 one-hot/tongue tests. |
-| Change HMD/controller artwork | `DriverFiles/resources/icons/galaxyxr/` | `driver.vrresources`; regenerate/inspect every state. |
-| Change controller inputs | `DriverFiles/resources/input/` | render-model paths, bindings, SteamVR input test. |
-| Change controller model | `resources/rendermodels/vst_controller_*` | profile JSON and SteamVR render-model inspection. |
+| Change HMD/controller artwork | `CustomHeadsetOpenVR/DriverFiles/resources/icons/galaxyxr/` | `driver.vrresources`; replace the prebuilt assets and inspect every state. |
+| Change controller inputs | `GalaxyXRResources/DriverFiles/resources/input/` | render-model paths, bindings, SteamVR input test. |
+| Change headset/controller model | `GalaxyXRResources/.../rendermodels/` | profile JSON and SteamVR render-model inspection. |
 | Change install behavior | `src-tauri/src/driver_installer.rs` | Angular wrapper/service, rollback tests, cargo/Angular builds. |
 | Change provider integration | `Driver/DeviceProvider.cpp` | lifecycle ordering, pass-through behavior, x64/x86 driver builds. |
 | Add native Galaxy source | `CustomHeadsetOpenVR.vcxproj` | solution/test project and both architectures. |
+
+The current precompiled Android GXRP bridge accepts its pairing token only from
+APK manifest metadata. Treat every telemetry-enabled APK as a private,
+single-user artifact: possession reveals the token. A distributable build needs
+bridge source changes for runtime, app-private Android Keystore provisioning.
 
 ## Build and verification
 
@@ -228,12 +239,11 @@ Use a Developer PowerShell or an explicit MSBuild path. These commands do not
 deploy to SteamVR:
 
 The repeatable entry point is `tools/Build-GalaxyXR.ps1`. It validates the
-committed `DriverFiles` resource graph, builds/tests both native architectures,
+committed active resource graph, builds/tests both native architectures,
 builds the VRCFT module, stages that module under `output/VRCFT`, and runs
 `npm run build` in `CustomHeadsetGUI` (Tauri release exe) unless `-SkipGui` is
-specified. Status icons are taken from `DriverFiles/resources/icons/`; regenerate
-them separately with `tools/Generate-GalaxyXRStatusIcons.ps1` when artwork
-changes.
+specified. Status icons are taken directly from the prebuilt assets in
+`CustomHeadsetOpenVR/DriverFiles/resources/icons/`.
 
 ```powershell
 git submodule update --init --recursive
@@ -265,7 +275,7 @@ Pop-Location
 
 Before calling runtime integration successful, retain evidence for all of:
 
-1. the package registered once under SteamVR and the expected DLL loaded;
+1. both packages exist exactly once under SteamVR and only the active package loads a DLL;
 2. VRLink remains the source driver while Galaxy identity/resources appear;
 3. HMD and both controller icons/models/input profiles resolve;
 4. authenticated GXRP capability/tracking sequences remain fresh;

@@ -17,6 +17,11 @@
 namespace galaxyxr {
 
 struct TransportConfiguration {
+	struct ClientAdmission {
+		std::uint32_t versionCode = 0;
+		std::array<std::uint8_t, Sha256Bytes> apkSha256{};
+		std::array<std::uint8_t, Sha256Bytes> bridgeSha256{};
+	};
 	std::string listenAddress = "127.0.0.1";
 	std::uint16_t controlPort = 29981;
 	std::uint16_t trackingPort = 29982;
@@ -24,9 +29,7 @@ struct TransportConfiguration {
 	std::uint32_t staleAfterMs = 100;
 	std::string hostVersion;
 	std::array<std::uint8_t, Sha256Bytes> hostDllSha256{};
-	std::uint32_t supportedClientVersionCode = 0;
-	std::array<std::uint8_t, Sha256Bytes> supportedApkSha256{};
-	std::array<std::uint8_t, Sha256Bytes> supportedBridgeSha256{};
+	std::vector<ClientAdmission> allowedClients;
 };
 
 class GalaxyXRTransport {

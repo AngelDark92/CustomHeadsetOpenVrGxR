@@ -164,18 +164,18 @@ void GalaxyXRShim::TryApplyIdentity(){
 
 	const galaxyxr::SessionSnapshot session =
 		galaxyxr::GalaxyXRSystem::Instance().Profile().GetSession();
-	const std::string stableSerial =
-		galaxyxr::SelectPublicSerial(
-			session.client.deviceSerial,
-			activeSerial,
-			"VRLINKHMDGALAXYXR");
+	// SteamVR caches identity during activation. Keep the serial that driver_vrlink used when it
+	// added the HMD; the authenticated Android hardware serial is admission/diagnostic data only.
+	const std::string stableSerial = addedSerial.empty()
+		? "VRLINKHMDGALAXYXR"
+		: addedSerial;
 	SetString(vr::Prop_TrackingSystemName_String, "androidxr");
 	SetString(vr::Prop_SerialNumber_String, stableSerial);
 	SetString(vr::Prop_ManufacturerName_String, "Samsung");
-	SetString(vr::Prop_ModelNumber_String, "Samsung Galaxy XR");
-	SetString(vr::Prop_RenderModelName_String, "generic_hmd");
-	SetString(vr::Prop_ResourceRoot_String, "CustomHeadsetOpenVR");
-	SetString(vr::Prop_InputProfilePath_String, "{CustomHeadsetOpenVR}/input/galaxy_xr_hmd_profile.json");
+	SetString(vr::Prop_ModelNumber_String, "Galaxy XR");
+	SetString(vr::Prop_RenderModelName_String, "{galaxyxrresources}/rendermodels/galaxy_xr_hmd");
+	SetString(vr::Prop_ResourceRoot_String, "galaxyxrresources");
+	SetString(vr::Prop_InputProfilePath_String, "{galaxyxrresources}/input/galaxy_xr_hmd_profile.json");
 	SetString(vr::Prop_ControllerType_String, "galaxy_xr_hmd");
 	SetString(vr::Prop_RegisteredDeviceType_String, "androidxr/" + stableSerial);
 	identityApplied = true;

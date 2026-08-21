@@ -653,11 +653,17 @@ bool GalaxyXRTransport::EstablishSession(const DecodedPacket& packet){
 	if(DecodeHelloPayload(packet.payload, client) != DecodeError::None){
 		return false;
 	}
-	if(!MatchesClientAdmission(
-		client,
-		configuration.supportedClientVersionCode,
-		configuration.supportedApkSha256,
-		configuration.supportedBridgeSha256)){
+	const bool admitted = std::any_of(
+		configuration.allowedClients.begin(),
+		configuration.allowedClients.end(),
+		[&client](const TransportConfiguration::ClientAdmission& allowed){
+			return MatchesClientAdmission(
+				client,
+				allowed.versionCode,
+				allowed.apkSha256,
+				allowed.bridgeSha256);
+		});
+	if(!admitted){
 		DriverLog(
 			"GXR Session: HELLO refused because client version/APK/bridge provenance did not match the configured allowlist");
 		return false;
