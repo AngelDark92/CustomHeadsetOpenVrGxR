@@ -258,6 +258,11 @@ export class SystemDiagnosticService implements OnDestroy {
       if (await exists(await join(driverDir, 'driver.vrdrivermanifest'))) {
         // Remove any previous install of this driver first (copied or registered)
         await this.uninstallDriver()
+        // Vendor builds: also remove legacy copies of this fork that were
+        // installed under the CustomHeadsetOpenVR name (issue #1)
+        if (vendor) {
+          await this.cleanupLegacyForkInstall(steamVrPath);
+        }
         if (driverCopyInstallationMethod) {
           // Copy driver into SteamVR drivers folder (vendor-neutral behavior)
           const steamVrDriverDir = await join(steamVrPath, 'drivers');
@@ -352,6 +357,68 @@ export class SystemDiagnosticService implements OnDestroy {
     } catch (e) {
       console.warn('Failed to check driver registration from openvrpaths:', e);
       return "";
+    }
+  }
+  /**
+   * Legacy installs of this fork were copied into SteamVR/drivers under the
+   * name CustomHeadsetOpenVR, colliding with the upstream vendor-neutral
+   * driver of the same name. Detect such an install by its fingerprint (the
+   * vrlink shaders only this fork ships) and remove it. A genuine upstream
+   * CustomHeadsetOpenVR install can never match the fingerprint and is never
+   * touched. Runs only in vendor builds, during install.
+   */
+  public async cleanupLegacyForkInstall(steamVrPath: string): Promise<void> {
+    const isForkInstall = async (dir: string): Promise<boolean> => {
+      try {
+        const manifestPath = await join(dir, 'driver.vrdrivermanifest');
+        if (!await exists(manifestPath)) return false;
+        const manifest = JSON.parse(cleanJsonComments(await readTextFile(manifestPath)));
+        if (manifest['name'] !== 'CustomHeadsetOpenVR') return false;
+        // fingerprint: both fork-only shaders must be present
+        const fp1 = await join(dir, 'resources', 'shaders', 'd3d11', 'vrlink_layer_ps.hlsl');
+        const fp2 = await join(dir, 'resources', 'shaders', 'd3d11', 'vrlink_fxaa_ps.hlsl');
+        return await exists(fp1) && await exists(fp2);
+      } catch (e) {
+        console.warn('Fingerprint check failed for', dir, e);
+        return false;
+      }
+    };
+    // 1. Copied install in SteamVR/drivers/CustomHeadsetOpenVR
+    try {
+      const copiedPath = await join(steamVrPath, 'drivers', 'CustomHeadsetOpenVR');
+      if (await exists(copiedPath) && await isForkInstall(copiedPath)) {
+        console.log('Removing legacy fork install at', copiedPath);
+        await remove(copiedPath, { recursive: true });
+      }
+    } catch (e) {
+      console.warn('Failed to remove legacy copied fork install:', e);
+    }
+    // 2. Registered external driver dirs named CustomHeadsetOpenVR with the fingerprint:
+    // surgically drop only those entries from openvrpaths.external_drivers
+    // (removedriverswithname would also remove a genuine upstream registration)
+    try {
+      const openvrpaths = await this.getOpenvrpaths();
+      const drivers = openvrpaths?.external_drivers;
+      if (Array.isArray(drivers)) {
+        const keep: string[] = [];
+        let removedAny = false;
+        for (const driverPath of drivers) {
+          const lastFolder = await basename(driverPath);
+          if (lastFolder === 'CustomHeadsetOpenVR' && await isForkInstall(driverPath)) {
+            console.log('Unregistering legacy fork install at', driverPath);
+            removedAny = true;
+            continue;
+          }
+          keep.push(driverPath);
+        }
+        if (removedAny) {
+          openvrpaths.external_drivers = keep;
+          const openVrConfigPath = await join(await appLocalDataDir(), '../openvr/openvrpaths.vrpath');
+          await writeTextFile(openVrConfigPath, JSON.stringify(openvrpaths, undefined, 1).replaceAll('  ', '\t'));
+        }
+      }
+    } catch (e) {
+      console.warn('Failed to unregister legacy fork install:', e);
     }
   }
   private async getVrpathregPath(steamVrPath: string): Promise<string | undefined> {
