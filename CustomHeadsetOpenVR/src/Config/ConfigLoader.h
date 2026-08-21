@@ -109,6 +109,10 @@ public:
 	void WatcherThreadDistortions();
 	// get folder with trailin slash for config files
 	std::string GetConfigFolder();
+	// one-time copy of settings.json + Distortion/ from the legacy CustomHeadset
+	// folder into the vendor config folder. no-op in neutral builds and when the
+	// vendor folder already has settings. called from Start().
+	void MigrateLegacyConfig();
 private:
 	bool hasLoggedConfigFileNotFound = false;
 	std::mutex infoWriteLock;

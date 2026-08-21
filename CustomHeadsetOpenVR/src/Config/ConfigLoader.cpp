@@ -18,14 +18,66 @@ using ordered_json = nlohmann::ordered_json;
 
 
 std::string ConfigLoader::GetConfigFolder(){
+	// vendor builds keep their config in a separate folder so they can coexist
+	// with the vendor-neutral CustomHeadsetOpenVR driver without sharing state
+	#ifdef VENDOR_GALAXYXR
+	std::string configFolder = "GalaxyXR/CustomHeadset/";
+	#else
+	std::string configFolder = "CustomHeadset/";
+	#endif
 	#ifdef _WIN32
 	char* appdataPath = std::getenv("APPDATA");
-	std::string configPath = appdataPath == nullptr ? "./" : (std::string(appdataPath) + "/CustomHeadset/");
+	std::string configPath = appdataPath == nullptr ? "./" : (std::string(appdataPath) + "/" + configFolder);
 	#elif __linux__
 	char* appdataPath = std::getenv("HOME");
-	std::string configPath = appdataPath == nullptr ? "./" : (std::string(appdataPath) + "/.config/CustomHeadset/");
+	std::string configPath = appdataPath == nullptr ? "./" : (std::string(appdataPath) + "/.config/" + configFolder);
 	#endif
 	return configPath;
+}
+
+// legacy path used by this fork before the vendor split (also the neutral driver's path)
+static std::string GetLegacyConfigFolder(){
+	#ifdef _WIN32
+	char* appdataPath = std::getenv("APPDATA");
+	return appdataPath == nullptr ? "./" : (std::string(appdataPath) + "/CustomHeadset/");
+	#elif __linux__
+	char* appdataPath = std::getenv("HOME");
+	return appdataPath == nullptr ? "./" : (std::string(appdataPath) + "/.config/CustomHeadset/");
+	#endif
+}
+
+// one-time migration for the vendor build: users of this fork stored settings
+// in the legacy CustomHeadset folder before the driver was renamed. if the
+// vendor folder has no settings yet, copy settings.json and the distortion
+// profiles over (copy, never move: the legacy folder may also be in use by
+// the vendor-neutral driver, whose settings share the same base schema).
+// info.json/diagnostic.json are regenerated at runtime and are not migrated.
+void ConfigLoader::MigrateLegacyConfig(){
+	#ifdef VENDOR_GALAXYXR
+	try{
+		std::string vendorFolder = GetConfigFolder();
+		std::string vendorSettings = vendorFolder + "settings.json";
+		if(std::filesystem::exists(vendorSettings)){
+			return;
+		}
+		std::string legacyFolder = GetLegacyConfigFolder();
+		std::string legacySettings = legacyFolder + "settings.json";
+		if(!std::filesystem::exists(legacySettings)){
+			return;
+		}
+		DriverLog("Migrating settings from %s to %s", legacyFolder.c_str(), vendorFolder.c_str());
+		std::filesystem::create_directories(vendorFolder);
+		std::filesystem::copy_file(legacySettings, vendorSettings, std::filesystem::copy_options::skip_existing);
+		std::string legacyDistortion = legacyFolder + "Distortion";
+		if(std::filesystem::exists(legacyDistortion) && std::filesystem::is_directory(legacyDistortion)){
+			std::filesystem::copy(legacyDistortion, vendorFolder + "Distortion",
+				std::filesystem::copy_options::recursive | std::filesystem::copy_options::skip_existing);
+		}
+		DriverLog("Settings migration complete");
+	}catch(const std::exception& e){
+		DriverLog("Settings migration failed: %s", e.what());
+	}
+	#endif
 }
 
 void parseBaseHeadsetConfig(json headsetData, Config::BaseHeadsetConfig& headsetConfig){
@@ -1876,6 +1928,10 @@ void ConfigLoader::Start(){
 		return;
 	}
 	started = true;
+	
+	// migrate legacy settings before the default-config check below, so an
+	// existing user's settings are found instead of writing fresh defaults
+	MigrateLegacyConfig();
 	
 	try{
 		// create directory
