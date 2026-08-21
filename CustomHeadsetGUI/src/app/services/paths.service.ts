@@ -1,6 +1,7 @@
 import { Injectable } from '@angular/core';
 import { appDataDir, join } from '@tauri-apps/api/path';
 import { exists, mkdir } from '@tauri-apps/plugin-fs';
+import { vendor } from '../../environment';
 
 @Injectable({
   providedIn: 'root'
@@ -39,14 +40,22 @@ export class PathsService {
     this._settingPath = await this.getDriverAppDirPath('settings.json');
     this._diagnosticPath = await this.getDriverAppDirPath('diagnostic.json');
     if (!await exists(this.appDataDirPath)) {
-      await mkdir(this.appDataDirPath);
+      await mkdir(this.appDataDirPath, { recursive: true });
     }
     if (!await exists(this.distortionDirPath)) {
-      await mkdir(this.distortionDirPath)
+      await mkdir(this.distortionDirPath, { recursive: true })
     }
   }
   private async getDriverAppDirPath(rel?: string) {
-    const seg = [await appDataDir(), '../CustomHeadset']
+    // must mirror ConfigLoader::GetConfigFolder in the driver: vendor builds
+    // keep their config in a separate folder from the vendor-neutral driver
+    let dataDir = 'CustomHeadset'
+    switch(vendor){
+      case 'galaxyxr':
+        dataDir = 'GalaxyXR/CustomHeadset'
+        break;
+    }
+    const seg = [await appDataDir(), '../' + dataDir]
     if (rel) {
       seg.push(rel)
     }
