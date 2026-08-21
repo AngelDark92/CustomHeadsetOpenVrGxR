@@ -25,13 +25,26 @@ except ImportError:  # pragma: no cover
 # paths / files
 
 def config_folder():
-    """%APPDATA%/CustomHeadset (or ~/.config/CustomHeadset elsewhere)."""
+    """Resolve the driver config folder.
+
+    Order: CUSTOMHEADSET_CONFIG_DIR env override, then the GalaxyXRNative
+    vendor folder (GalaxyXR/CustomHeadset) when it exists, then the legacy
+    CustomHeadset folder. Mirrors ConfigLoader::GetConfigFolder in the driver.
+    """
+    override = os.environ.get("CUSTOMHEADSET_CONFIG_DIR")
+    if override:
+        return override
     if os.name == "nt":
         base = os.environ.get("APPDATA")
         if not base:
             base = os.path.expanduser("~")
-        return os.path.join(base, "CustomHeadset")
-    return os.path.join(os.path.expanduser("~"), ".config", "CustomHeadset")
+    else:
+        base = os.path.join(os.path.expanduser("~"), ".config")
+    vendor = os.path.join(base, "GalaxyXR", "CustomHeadset")
+    legacy = os.path.join(base, "CustomHeadset")
+    if os.path.isdir(vendor):
+        return vendor
+    return legacy
 
 
 def settings_path():

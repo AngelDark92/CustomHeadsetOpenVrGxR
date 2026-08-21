@@ -225,6 +225,24 @@ function buildDriverTask() {
 				console.log(`Set driver name to "${driverName}" in manifest.`)
 			}
 
+			// Update default.vrsettings: SteamVR matches its sections by driver
+			// name, so the renamed driver would otherwise get no defaults
+			// (losing loadPriority) while shipping defaults for the neutral
+			// driver's section.
+			let defaultSettingsPath = path.join(driverOutput, "resources", "settings", "default.vrsettings")
+			if (driverName !== "CustomHeadsetOpenVR" && fs.existsSync(defaultSettingsPath)) {
+				let defaults = JSON.parse(fs.readFileSync(defaultSettingsPath, "utf8"))
+				if (defaults["driver_CustomHeadsetOpenVR"]) {
+					defaults[`driver_${driverName}`] = defaults["driver_CustomHeadsetOpenVR"]
+					delete defaults["driver_CustomHeadsetOpenVR"]
+					if (typeof defaults[`driver_${driverName}`]["Note1"] === "string") {
+						defaults[`driver_${driverName}`]["Note1"] = "The settings have moved to Appdata/Roaming/GalaxyXR/CustomHeadset/settings.json"
+					}
+					fs.writeFileSync(defaultSettingsPath, JSON.stringify(defaults, null, 2).replaceAll("  ", "\t"))
+					console.log(`Renamed default.vrsettings section to driver_${driverName}.`)
+				}
+			}
+
 			console.log("Driver build complete.")
 			resolve()
 		})
