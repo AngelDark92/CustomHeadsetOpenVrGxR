@@ -50,3 +50,8 @@ export async function verify_driver_install(steamvrDir: string): Promise<boolean
 export async function write_json_file_transactional(path: string, contents: string): Promise<void> {
     await invoke('write_json_file_transactional', { path, contents });
 }
+
+
+export async function run_process_sync(path: string, args: string[]): Promise<number> {
+    return await invoke('run_process_sync', { path, args }) as number;
+}

@@ -166,6 +166,25 @@ private:
 	int lutRowCount = 1;
 	bool lutBaked = false;
 
+	// dense displacement map: the control lattice from the config is
+	// bicubic upsampled at bake time into a 2 slice (left/right) R32G32
+	// float texture array the shader samples with one bilinear tap.
+	// rebaked when the map or the gain change. dispActive false = the
+	// map is empty/malformed/disabled and the shader skips the tap.
+	bool BakeMapIfNeeded(const StreamFrameConfig &config);
+	ID3D11Texture2D* dispTexture = nullptr;
+	ID3D11ShaderResourceView* dispSRV = nullptr;
+	std::string lastMapKey = "";
+	bool mapBaked = false;
+	bool dispActive = false;
+	static const int dispTexSize = 256;
+
+	// calibration pattern echo for the diagnostic handshake: the index
+	// shown last frame and how many consecutive frames it has been shown
+	int calibPatternShown = -1;
+	uint32_t calibPatternFrames = 0;
+	uint64_t lastDiagUpdateMs = 0;
+
 	// scratch texture cache, keyed by size + format family. multiple sizes are
 	// live simultaneously during app transitions and dashboard flattening
 	// (scene frames alternate between vrcompositor's set and the app's set);

@@ -82,6 +82,7 @@ double EvaluateDistortionCurve(const std::vector<StreamFrameDistortionPoint> &po
 #include <fstream>
 #include <chrono>
 #include <cstring>
+#include <cmath>
 #include <algorithm>
 #include <cstdio>
 #include "../Config/ConfigLoader.h"
@@ -226,6 +227,15 @@ struct FrameProcessorConstants{
 	// sboys camera grid: opaque background flag; bfBlackPoint =
 	// adjustable black point in sRGB code units (0 = off)
 	float gridOpaque, bfBlackPoint, padL, padM;
+	// displacement map: enable flag + array slice for this eye; general
+	// brightness multiplier; blackout override
+	float dispEnable, dispEye, brightness, blackout;
+	// gray-code sweep: pattern index (-1 off), bits per axis, pattern
+	// white level (linear), 1 = this eye shows the pattern (else black)
+	float calibPattern, calibBits, calibLevel, calibEyeActive;
+	// capture mode: desaturate + dim scene under the grid; grid line
+	// level (linear) for the sboys pattern
+	float gridDesat, gridLevel, captureOtherBlack, padO;
 };
 
 // map a layer texture format to the scratch format and shader mode used to
@@ -523,6 +533,8 @@ bool FrameProcessor::EnsureShaders(){
 		bool hasSegments = source.find("SampleLutSegmented(") != std::string::npos;
 		bool hasFxaa = source.find("fxaaEnable > 0.5") != std::string::npos;
 		bool hasAuxMarkers = source.find("dotMode > 2.5") != std::string::npos;
+		bool hasDispMap = source.find("dispEnable > 0.5") != std::string::npos;
+		bool hasCalib = source.find("calibPattern > -0.5") != std::string::npos;
 		DriverLog("FrameProcessor: pixel shader ready (%s, gaze ring support: %s, calib dot support: %s, warped overlays: %s, tuner ring: %s, world grid: %s, align shift: %s, band segments: %s, fxaa: %s, fxaaPass: %s)",
 			fileTime ? "from file" : "embedded", hasGazeRing ? "yes" : "NO - stale hlsl?",
 			hasCalibDot ? "yes" : "NO - stale hlsl?", hasWarpedOverlay ? "yes" : "NO - stale hlsl?",
@@ -530,6 +542,10 @@ bool FrameProcessor::EnsureShaders(){
 			hasAlignShift ? "yes" : "NO - stale hlsl?", hasSegments ? "yes" : "NO - stale hlsl?", hasFxaa ? "yes" : "NO - stale hlsl?", fxaaShader ? "yes" : "NO - file missing?");
 		if(!hasAuxMarkers){
 			DriverLog("FrameProcessor: aux markers (center cross / tip marker): NO - stale hlsl?");
+		}
+		if(!hasDispMap || !hasCalib){
+			DriverLog("FrameProcessor: displacement map: %s, calibration patterns/blackout: %s",
+				hasDispMap ? "yes" : "NO - stale hlsl?", hasCalib ? "yes" : "NO - stale hlsl?");
 		}
 	}
 	return pixelShader != nullptr;
@@ -879,6 +895,151 @@ bool FrameProcessor::BakeLutIfNeeded(const StreamFrameConfig &config){
 	lutBaked = true;
 	hdFrameTags |= TagLutBake;
 	DriverLog("FrameProcessor: baked distortion lut (%s, %d rows)", spline ? "spline" : "k1k2", rowCount);
+	return true;
+}
+
+// Catmull-Rom weight for the 4 taps around a sample position
+static inline void CatmullRomWeights(double t, double w[4]){
+	double t2 = t * t, t3 = t2 * t;
+	w[0] = 0.5 * (-t3 + 2.0 * t2 - t);
+	w[1] = 0.5 * (3.0 * t3 - 5.0 * t2 + 2.0);
+	w[2] = 0.5 * (-3.0 * t3 + 4.0 * t2 + t);
+	w[3] = 0.5 * (t3 - t2);
+}
+
+// bicubic (Catmull-Rom, clamped edges) upsample of one eye's control lattice
+// into the dense texture; identity (zeros) when the lattice is unusable
+static void UpsampleDisplacement(const std::vector<double> &lattice, int cols, int rows,
+	double gain, int size, std::vector<float> &out){
+	out.assign((size_t)size * size * 2, 0.0f);
+	if(cols < 2 || rows < 2 || lattice.size() != (size_t)cols * rows * 2){
+		return;
+	}
+	auto at = [&](int c, int r, int k){
+		if(c < 0){ c = 0; }
+		if(c > cols - 1){ c = cols - 1; }
+		if(r < 0){ r = 0; }
+		if(r > rows - 1){ r = rows - 1; }
+		return lattice[((size_t)r * cols + c) * 2 + k];
+	};
+	for(int y = 0; y < size; y++){
+		// texel centers map onto the lattice so that texel 0 = knot 0 and
+		// texel size-1 = knot rows-1 (the shader samples with uv * (1 -
+		// 1/size) + 0.5/size to hit centers exactly)
+		double fy = (double)y / (size - 1) * (rows - 1);
+		int r0 = (int)fy;
+		if(r0 > rows - 2){ r0 = rows - 2; }
+		double ty = fy - r0;
+		double wy[4];
+		CatmullRomWeights(ty, wy);
+		for(int x = 0; x < size; x++){
+			double fx = (double)x / (size - 1) * (cols - 1);
+			int c0 = (int)fx;
+			if(c0 > cols - 2){ c0 = cols - 2; }
+			double tx = fx - c0;
+			double wx[4];
+			CatmullRomWeights(tx, wx);
+			for(int k = 0; k < 2; k++){
+				double acc = 0.0;
+				for(int j = 0; j < 4; j++){
+					double rowAcc = 0.0;
+					for(int i = 0; i < 4; i++){
+						rowAcc += wx[i] * at(c0 - 1 + i, r0 - 1 + j, k);
+					}
+					acc += wy[j] * rowAcc;
+				}
+				out[((size_t)y * size + x) * 2 + k] = (float)(acc * gain);
+			}
+		}
+	}
+}
+
+// serialize everything the displacement texture depends on
+static std::string BuildMapKey(const StreamFrameConfig &config){
+	const StreamFrameDisplacementMap &map = config.distortion.map;
+	std::string key = std::to_string(map.enable) + "|" + std::to_string(map.cols) + "x" + std::to_string(map.rows)
+		+ "|g" + std::to_string(config.distortion.gain) + "|";
+	// hash the values rather than dumping ~4k numbers into the key
+	uint64_t h = 1469598103934665603ull;
+	auto mix = [&](const std::vector<double> &v){
+		for(double d : v){
+			uint64_t bits;
+			memcpy(&bits, &d, sizeof(bits));
+			h ^= bits;
+			h *= 1099511628211ull;
+		}
+		h ^= (uint64_t)v.size();
+		h *= 1099511628211ull;
+	};
+	mix(map.left);
+	mix(map.right);
+	key += std::to_string(h);
+	return key;
+}
+
+bool FrameProcessor::BakeMapIfNeeded(const StreamFrameConfig &config){
+	std::string key = BuildMapKey(config);
+	if(mapBaked && key == lastMapKey){
+		return true;
+	}
+	const StreamFrameDisplacementMap &map = config.distortion.map;
+	bool leftOk = map.left.size() == (size_t)map.cols * map.rows * 2;
+	bool rightOk = map.right.size() == (size_t)map.cols * map.rows * 2;
+	dispActive = map.enable && map.cols >= 2 && map.rows >= 2 && (leftOk || rightOk);
+	lastMapKey = key;
+	mapBaked = true;
+	if(!dispActive){
+		// nothing to sample; the texture (if any) is left alone but unused
+		if(map.cols > 0 || !map.left.empty() || !map.right.empty()){
+			DriverLog("FrameProcessor: displacement map inactive (enable=%d cols=%d rows=%d left=%zu right=%zu values)",
+				(int)map.enable, map.cols, map.rows, map.left.size(), map.right.size());
+		}
+		return true;
+	}
+	if(!dispTexture){
+		D3D11_TEXTURE2D_DESC desc = {};
+		desc.Width = dispTexSize;
+		desc.Height = dispTexSize;
+		desc.MipLevels = 1;
+		desc.ArraySize = 2;
+		desc.Format = DXGI_FORMAT_R32G32_FLOAT;
+		desc.SampleDesc.Count = 1;
+		desc.Usage = D3D11_USAGE_DEFAULT;
+		desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+		if(FAILED(device->CreateTexture2D(&desc, nullptr, &dispTexture))){
+			PROCESSOR_ERROR("FrameProcessor: failed to create displacement texture");
+			dispActive = false;
+			return false;
+		}
+		D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+		srvDesc.Format = DXGI_FORMAT_R32G32_FLOAT;
+		srvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2DARRAY;
+		srvDesc.Texture2DArray.MipLevels = 1;
+		srvDesc.Texture2DArray.ArraySize = 2;
+		if(FAILED(device->CreateShaderResourceView(dispTexture, &srvDesc, &dispSRV))){
+			PROCESSOR_ERROR("FrameProcessor: failed to create displacement srv");
+			dispTexture->Release();
+			dispTexture = nullptr;
+			dispActive = false;
+			return false;
+		}
+	}
+	std::vector<float> data;
+	double maxAbs[2] = {0, 0};
+	for(int eye = 0; eye < 2; eye++){
+		const std::vector<double> &lattice = eye == 0 ? map.left : map.right;
+		// a missing eye is identity (zeros), never the other eye's data
+		UpsampleDisplacement((eye == 0 ? leftOk : rightOk) ? lattice : std::vector<double>(), map.cols, map.rows,
+			config.distortion.gain, dispTexSize, data);
+		for(float v : data){
+			if(fabs(v) > maxAbs[eye]){ maxAbs[eye] = fabs(v); }
+		}
+		context->UpdateSubresource(dispTexture, D3D11CalcSubresource(0, eye, 1), nullptr, data.data(),
+			dispTexSize * 2 * sizeof(float), 0);
+	}
+	hdFrameTags |= TagLutBake;
+	DriverLog("FrameProcessor: baked displacement map (%dx%d lattice -> %d texels, gain %.3f, max |disp| L=%.5f R=%.5f uv, source=%s)",
+		map.cols, map.rows, dispTexSize, config.distortion.gain, maxAbs[0], maxAbs[1], map.source.c_str());
 	return true;
 }
 ID3D11Texture2D* FrameProcessor::OpenShared(vr::SharedTextureHandle_t handle){
@@ -1334,6 +1495,52 @@ bool FrameProcessor::ProcessEye(ID3D11Texture2D* texture, const vr::VRTextureBou
 	if(spacingDeg < 0.5){ spacingDeg = 0.5; }
 	if(spacingDeg > 30.0){ spacingDeg = 30.0; }
 	constants.gridSpacingRad = (float)(spacingDeg * 3.14159265358979 / 180.0);
+	// ---- camera calibration support ----
+	const StreamFrameCalibConfig &calib = settings.config.calib;
+	bool calibEyeActive = calib.eye < 0 || calib.eye == eye;
+	// capture mode preset: sboys hue grid in content space over a
+	// desaturated, dimmed scene, on the calibration eye only (the other
+	// eye keeps its normal grid setting so nothing surprising happens
+	// there)
+	constants.gridDesat = 0.0f;
+	constants.captureOtherBlack = 0.0f;
+	if(calib.captureMode && calibEyeActive && settings.gazeProjValid){
+		constants.pad2 = 3.0f;
+		constants.overlayWarped = 1.0f;
+		constants.gridDesat = 1.0f;
+	}else if(calib.captureMode && !calibEyeActive){
+		// the non-calibration eye is black in capture mode (eye by eye
+		// workflow, nothing leaks into the camera, panel spared)
+		constants.captureOtherBlack = 1.0f;
+	}
+	{
+		// pattern/grid white level: sRGB code fraction -> linear, so the
+		// encoded 8 bit value is the intended code
+		double c = calib.patternBrightness;
+		double lin = c <= 0.04045 ? c / 12.92 : pow((c + 0.055) / 1.055, 2.4);
+		// the sweep pattern is exact; the visual grid also follows the
+		// general brightness so one knob dims everything the eye sees
+		double b = settings.config.brightness;
+		if(b < 0.0){ b = 0.0; }
+		if(b > 4.0){ b = 4.0; }
+		constants.gridLevel = (float)(lin * b);
+		constants.calibLevel = (float)lin;
+	}
+	constants.calibBits = (float)calib.patternBits;
+	constants.calibEyeActive = calibEyeActive ? 1.0f : 0.0f;
+	// a pattern index past the sequence end shows black (safe default for
+	// an off-by-one in a tool)
+	int patternCount = 2 + 4 * calib.patternBits;
+	constants.calibPattern = (calib.pattern >= 0 && calib.pattern < patternCount) ? (float)calib.pattern : (calib.pattern >= 0 ? 0.0f : -1.0f);
+	constants.blackout = calib.blackout ? 1.0f : 0.0f;
+	{
+		double b = settings.config.brightness;
+		if(b < 0.0){ b = 0.0; }
+		if(b > 4.0){ b = 4.0; }
+		constants.brightness = (float)b;
+	}
+	constants.dispEnable = dispActive ? 1.0f : 0.0f;
+	constants.dispEye = (float)eye;
 	// state logging so "ring configured but not visible" is attributable
 	// from the log alone: config parsed? gaze valid? mapping in range?
 	if(eye == 0 && settings.config.eyeGaze.debugRing){
@@ -1436,8 +1643,8 @@ bool FrameProcessor::ProcessEye(ID3D11Texture2D* texture, const vr::VRTextureBou
 	context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 	context->VSSetShader(vertexShader, nullptr, 0);
 	context->PSSetShader(pixelShader, nullptr, 0);
-	ID3D11ShaderResourceView* srvs[2] = { fxaaQualityActive ? scratchFxSRV : (v3Active ? layerSRV : scratchInSRV), lutSRV };
-	context->PSSetShaderResources(0, 2, srvs);
+	ID3D11ShaderResourceView* srvs[3] = { fxaaQualityActive ? scratchFxSRV : (v3Active ? layerSRV : scratchInSRV), lutSRV, dispActive ? dispSRV : nullptr };
+	context->PSSetShaderResources(0, 3, srvs);
 	context->PSSetSamplers(0, 1, &sampler);
 	context->PSSetConstantBuffers(0, 1, &constantBuffer);
 	context->RSSetViewports(1, &viewport);
@@ -1549,6 +1756,9 @@ bool FrameProcessor::ProcessSceneLayer(vr::SharedTextureHandle_t leftEye, vr::Sh
 	if(!BakeLutIfNeeded(settings.config)){
 		return false;
 	}
+	// displacement map bake failure is not fatal: dispActive stays false
+	// and the radial path keeps running
+	BakeMapIfNeeded(settings.config);
 
 	// acquire the frame via the sync texture keyed mutex. this guarantees the
 	// app has finished rendering the layer textures, and our release followed by
@@ -1639,6 +1849,48 @@ bool FrameProcessor::ProcessSceneLayer(vr::SharedTextureHandle_t leftEye, vr::Sh
 
 	mutex->ReleaseSync(0);
 	mutex->Release();
+
+	// ---- calibration handshake: count consecutive frames the current
+	// pattern index has been drawn and publish it (with the projection
+	// tangents and texture geometry the tools need) into diagnostic.json
+	// via the 4 Hz diagnostic writer. cheap: a few field writes per frame.
+	{
+		int shown = settings.config.calib.pattern;
+		if(shown < -1){ shown = -1; }
+		if(shown == calibPatternShown){
+			if(calibPatternFrames < 0xFFFFFFF0u){ calibPatternFrames++; }
+		}else{
+			calibPatternShown = shown;
+			calibPatternFrames = 1;
+		}
+		ConfigLoader::DiagnosticInfo &diag = driverConfigLoader.diagnosticInfo;
+		diag.streamFrameActive = true;
+		diag.streamFrameCounter = frameCounter;
+		diag.calibPatternShown = calibPatternShown;
+		diag.calibPatternFrames = calibPatternFrames;
+		diag.calibBlackout = settings.config.calib.blackout;
+		diag.projValid = settings.gazeProjValid;
+		if(settings.gazeProjValid){
+			for(int e = 0; e < 2; e++){
+				for(int i = 0; i < 4; i++){
+					diag.proj[e][i] = settings.gazeProj[e][i];
+				}
+			}
+		}
+		if(left){
+			D3D11_TEXTURE2D_DESC ld = {};
+			left->GetDesc(&ld);
+			double uSize = leftBounds.uMax - leftBounds.uMin, vSize = leftBounds.vMax - leftBounds.vMin;
+			if(uSize <= 0){ uSize = 1; }
+			if(vSize <= 0){ vSize = 1; }
+			diag.eyeTexWidth = (uint32_t)(ld.Width * uSize + 0.5);
+			diag.eyeTexHeight = (uint32_t)(ld.Height * vSize + 0.5);
+			diag.eyeAspect = ld.Width ? (float)((double)ld.Height * vSize / ((double)ld.Width * uSize)) : 1.0f;
+		}
+		diag.mapCols = settings.config.distortion.map.cols;
+		diag.mapRows = settings.config.distortion.map.rows;
+		diag.mapActive = dispActive;
+	}
 
 	// deferred scratch eviction drain: the mutex is released, vrlink can
 	// consume the frame - release cost here is invisible to the pipeline

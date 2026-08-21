@@ -1,6 +1,6 @@
 [package]
 name = "custom-headset-gui"
-version = "1.7.5"
+version = "0.9.0-beta.1"
 description = "Custom Headset GUI"
 authors = ["hsin-yu chen"]
 license = ""

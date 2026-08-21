@@ -6,9 +6,11 @@
 // the error to the vrserver log. All values below arrive from the streamFrame
 // section of settings.json (also live reloaded) via the constant buffer.
 //
-// Pipeline: distortion resample (lut curve, optional annulus mask) -> CAS
-// sharpening -> color chain (matrix, saturation, tint, contrast, gamma) ->
-// dither -> output. The texture views are srgb, so values here are linear.
+// Pipeline: distortion resample (lut curve, optional annulus mask, then the
+// dense displacement map) -> CAS sharpening -> color chain (matrix,
+// saturation, tint, contrast, gamma) -> brightness -> dither -> overlays ->
+// calibration pattern -> dimming -> blackout -> output. The texture views
+// are srgb, so values here are linear.
 
 cbuffer Params : register(b0){
 	float saturation;      // saturation / 50, 1 = neutral
@@ -100,9 +102,24 @@ cbuffer Params : register(b0){
 	// sboys camera grid: opaque background flag; bfBlackPoint =
 	// adjustable black point in sRGB code units (0 = off)
 	float gridOpaque; float bfBlackPoint; float padL; float padM;
+	// dense displacement map (camera-measured correction): enable + the
+	// array slice for this eye. brightness = general multiplier on
+	// linear rgb, applied at all times. blackout = force black output.
+	float dispEnable; float dispEye; float brightness; float blackout;
+	// gray-code sweep pattern (camera auto calibration): index (-1 off,
+	// 0 black, 1 white, then per axis / bit / inverse), bits per axis,
+	// pattern white level (linear), 1 = this eye shows it (else black)
+	float calibPattern; float calibBits; float calibLevel; float calibEyeActive;
+	// capture mode: desaturate + dim scene under the grid; sboys grid
+	// line level (linear); captureOtherBlack = 1 on the non-calibration
+	// eye while capture mode is on (that eye renders black)
+	float gridDesat; float gridLevel; float captureOtherBlack; float padO;
 };
 Texture2D<float4> tex : register(t0);
 Texture2D<float4> lut : register(t1);
+// displacement map, slice 0 left / 1 right, R = du, G = dv (source sample
+// offset in bounds uv), 256x256 texels covering the eye's uv square
+Texture2DArray<float2> dispMap : register(t2);
 SamplerState samp : register(s0);
 
 // exact piecewise srgb conversions, used for gamma space operations and dither
@@ -198,6 +215,14 @@ float4 main(float4 pos : SV_Position, float2 uv : TEXCOORD0) : SV_Target0{
 	p *= s;
 	p.y /= aspect;
 	float2 nSrc = p + center + float2(alignShiftU, alignShiftV);
+	// ---- dense displacement map, composed after the radial warp. indexed
+	// by OUTPUT uv (the space the camera measures in); the offset is a
+	// source sample offset so content appears moved by -disp. texel
+	// centers sit on the lattice edges (texel 0 = uv 0, texel 255 = uv 1)
+	if(dispEnable > 0.5){
+		float2 duv = uv * (255.0 / 256.0) + (0.5 / 256.0);
+		nSrc += dispMap.SampleLevel(samp, float3(duv, dispEye), 0).xy;
+	}
 	// overlay coordinate: output space normally; content space when warped
 	// overlays are on (overlays then displace exactly like sampled content)
 	float2 ovUv = (overlayWarped > 0.5) ? nSrc : uv;
@@ -290,6 +315,11 @@ float4 main(float4 pos : SV_Position, float2 uv : TEXCOORD0) : SV_Target0{
 			g = pow(max(g, 0.0), 2.2 / outGamma);
 			color.rgb = SrgbToLinear(g);
 		}
+	}
+
+	// ---- general brightness (always on, independent of applyColor) ----
+	if(abs(brightness - 1.0) > 0.001){
+		color.rgb *= brightness;
 	}
 
 	// ---- dither ----
@@ -389,11 +419,17 @@ float4 main(float4 pos : SV_Position, float2 uv : TEXCOORD0) : SV_Target0{
 		float stepDeg = max(gridSpacingRad * 57.29577951308232, 0.25);
 		if(gridOpaque > 0.5){
 			color.rgb = SrgbToLinear(float3(0.1, 0.1, 0.1));
+		}else if(gridDesat > 0.5){
+			// capture mode: keep the world as a reference but make it
+			// grey and dim so the hue-coded lines cannot be confused
+			// with scene content in the camera view
+			float lum = dot(color.rgb, float3(0.2126, 0.7152, 0.0722));
+			color.rgb = lum * 0.35;
 		}
 		// white axis cross first; colored lines never overlap it
 		// (their box index is 0 there and 0 is skipped, like sboys)
 		if(abs(aH) < 0.1 || abs(aV) < 0.1){
-			color.rgb = 1.0;
+			color.rgb = gridLevel;
 		}
 		float lineW = 0.05; // fraction of one step, sboys default
 		float modH = frac(aH / stepDeg);
@@ -413,7 +449,7 @@ float4 main(float4 pos : SV_Position, float2 uv : TEXCOORD0) : SV_Target0{
 				abs(hue * 6.0 - 3.0) - 1.0,
 				2.0 - abs(hue * 6.0 - 2.0),
 				2.0 - abs(hue * 6.0 - 4.0)));
-			color.rgb = SrgbToLinear(hc);
+			color.rgb = SrgbToLinear(hc) * gridLevel;
 		}
 	}else if(debugGrid > 1.5){
 		float tx = projL + ovUv.x * (projR - projL);
@@ -509,8 +545,47 @@ float4 main(float4 pos : SV_Position, float2 uv : TEXCOORD0) : SV_Target0{
 		color.rgb = lerp(color.rgb, float3(1.0, 0.65, 0.1), ringMask * ringA);
 	}
 
+	// ---- gray-code sweep pattern (camera auto calibration): replaces the
+	// output entirely, in OUTPUT uv space so it encodes exactly which uv
+	// the panel shows at each physical position, independent of any warp
+	// or color setting. the non-calibration eye is black. ----
+	if(calibPattern > -0.5){
+		float3 pat = 0.0;
+		if(calibEyeActive > 0.5){
+			int idx = (int)round(calibPattern);
+			if(idx == 1){
+				pat = calibLevel;
+			}else if(idx >= 2){
+				int bits = clamp((int)round(calibBits), 1, 12);
+				int k = idx - 2;
+				int axis = k / (2 * bits);
+				int bit = (k / 2) % bits;
+				int inv = k % 2;
+				float coord = axis == 0 ? uv.x : uv.y;
+				uint levels = (uint)(1 << bits);
+				uint code = (uint)clamp((int)floor(coord * levels), 0, (int)levels - 1);
+				uint gray = code ^ (code >> 1);
+				uint b = (gray >> (uint)(bits - 1 - bit)) & 1u;
+				if(inv == 1){ b = 1u - b; }
+				pat = b == 1u ? calibLevel : 0.0;
+			}
+		}
+		color.rgb = pat;
+	}
+
+	// ---- capture mode: the other eye is black ----
+	if(captureOtherBlack > 0.5){
+		color.rgb = 0.0;
+	}
+
 	// ---- stationary dimming (uniform fade to black, no uneven oled wear) ----
 	color.rgb *= 1.0 - dimAmount;
+
+	// ---- blackout: panel protection while a camera rig stays mounted.
+	// last word, nothing after it touches the color ----
+	if(blackout > 0.5){
+		color.rgb = 0.0;
+	}
 
 	// manualSrgb output is written through a non srgb view: encode explicitly
 	if(manualSrgb > 0.5){

@@ -1,0 +1,14 @@
+{
+  "camera_id": 0,
+  "mode": "bypass",
+  "width": 3264,
+  "height": 2448,
+  "backend": "dshow",
+  "fps": 30,
+  "fourcc": "MJPG",
+  "exposure": null,
+  "gain": null,
+  "auto_white_balance": null,
+  "warmup_frames": 5,
+  "calibration_file": "output/calibration_data.pkl"
+}

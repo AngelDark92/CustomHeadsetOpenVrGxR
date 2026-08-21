@@ -1,5 +1,6 @@
 #include "DeviceProvider.h"
 #include "DriverLog.h"
+#include "DriverLockout.h"
 #include "DeviceShim.h"
 #include "EyeTrackingTap.h"
 #include "CompositorPlugin.h"
@@ -21,17 +22,66 @@
 #include <chrono>
 #include <cmath>
 #include <cstring>
+#include <filesystem>
 
+// set when this vendor-specific driver detected that the vendor-neutral
+// CustomHeadsetOpenVR driver is enabled. all driver activity is skipped.
+bool lockedOut = false;
 
 // general driver functions
 vr::EVRInitError CustomHeadsetDeviceProvider::Init(vr::IVRDriverContext *pDriverContext){
 	// initialise this driver
 	VR_INIT_SERVER_DRIVER_CONTEXT(pDriverContext);
+	
+	// discover the name this driver is registered under (CustomHeadsetOpenVR or GalaxyXRNative)
+	// so resource paths and settings sections work in both neutral and vendor builds
+	vr::DriverHandle_t driverHandle = vr::VRDriverHandle();
+	std::string driverName;
+	uint32_t driverCount = vr::VRDriverManager()->GetDriverCount();
+	for(uint32_t i = 0; i < driverCount; i++){
+		char name[128];
+		vr::VRDriverManager()->GetDriverName(i, name, sizeof(name));
+		if(vr::VRDriverManager()->GetDriverHandle(name) == driverHandle){
+			driverName = name;
+			break;
+		}
+	}
+	if(driverName.empty()){
+		driverName = driverConfigLoader.info.driverName;
+		DriverLog("Could not discover driver name from handle, falling back to %s", driverName.c_str());
+	}
+	driverConfigLoader.info.driverName = driverName;
+	
 	char driverPath[2048];
 	vr::VRResources()->GetResourceFullPath("", "", driverPath, sizeof(driverPath));
 	driverConfigLoader.info.steamvrResources = driverPath;
-	vr::VRResources()->GetResourceFullPath("{CustomHeadsetOpenVR}", "", driverPath, sizeof(driverPath));
+	vr::VRResources()->GetResourceFullPath(("{" + driverName + "}").c_str(), "", driverPath, sizeof(driverPath));
 	driverConfigLoader.info.driverResources = driverPath;
+	
+	DriverLog("Initializing %s", driverName.c_str());
+	
+	// Driver lockout: When this is a vendor-specific driver (not vendor-neutral),
+	// check if the vendor-neutral driver (CustomHeadsetOpenVR) is enabled.
+	// If the neutral driver is enabled, this vendor driver is locked out.
+	#ifndef VENDOR_NEUTRAL
+	DriverLog("Running in vendor-specific driver mode");
+	if(IsNeutralDriverEnabled()){
+		DriverLog("Vendor-specific driver locked out because the vendor-neutral driver (CustomHeadsetOpenVR) is enabled.");
+		lockedOut = true;
+		// still write info.json so the GUI can see this driver and offer the one-click switch
+		try{
+			std::filesystem::create_directories(driverConfigLoader.GetConfigFolder());
+		}catch(const std::exception& e){
+			DriverLog("Failed to create config folder while locked out: %s", e.what());
+		}
+		driverConfigLoader.WriteInfo();
+		return vr::VRInitError_None;
+	}
+	#endif
+	
+	// write a setting so that the section of this driver is always defined in the settings file for other drivers to detect
+	WriteHasBeenRunSetting(driverName.c_str());
+	
 	driverConfigLoader.Start();
 	// inject hooks into functions
 	InjectHooks(this, pDriverContext);
@@ -100,6 +150,11 @@ void DebugEventLog(const vr::VREvent_t& vrevent){
 }
 
 void CustomHeadsetDeviceProvider::RunFrame(){
+	// when locked out by the vendor-neutral driver nothing was initialized, so do nothing
+	if(lockedOut){
+		return;
+	}
+	
 	// acquire driverConfig.configLock for the duration of this function
 	std::lock_guard<std::mutex> lock(driverConfigLock);
 	

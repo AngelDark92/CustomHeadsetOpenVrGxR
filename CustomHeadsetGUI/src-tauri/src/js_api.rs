@@ -181,3 +181,24 @@ pub fn launch_process(path: String, args: Vec<String>) -> bool {
         }
     }
 }
+
+
+#[command]
+pub fn run_process_sync(path: String, args: Vec<String>) -> Result<i32, String> {
+    use std::path::PathBuf;
+    
+    let path_buf = PathBuf::from(path);
+    
+    println!("Running {:?} with args {:?}", path_buf, args);
+    
+    match Command::new(&path_buf).args(&args).output() {
+        Ok(output) => {
+            println!("Finished {:?} with exit code {:?}", path_buf, output.status.code());
+            Ok(output.status.code().unwrap_or(-1))
+        }
+        Err(e) => {
+            println!("Failed to run {:?}: {}", path_buf, e);
+            Err(e.to_string())
+        }
+    }
+}

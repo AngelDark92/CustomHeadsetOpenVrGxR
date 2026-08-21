@@ -526,6 +526,25 @@ export class StreamFrameComponent {
         s.distortion.curves[key] = { k1: num(c?.k1, 0), k2: num(c?.k2, 0), points: parsePoints(c?.points) };
       }
     }
+    // dense displacement map (version 2 profiles, camera calibrated).
+    // absent = the profile is radial only, so any previous map is dropped
+    // (a profile is a complete correction, not a patch)
+    const m = d.map;
+    const eyeArray = (arr: any, len: number) => Array.isArray(arr) && arr.length === len && arr.every((v: any) => Number.isFinite(v))
+      ? arr.map((v: any) => Number(v)) : [];
+    if (m && Number.isInteger(m.cols) && Number.isInteger(m.rows) && m.cols >= 2 && m.rows >= 2) {
+      const len = m.cols * m.rows * 2;
+      s.distortion.map = {
+        enable: m.enable !== false,
+        cols: m.cols,
+        rows: m.rows,
+        left: eyeArray(m.left, len),
+        right: eyeArray(m.right, len),
+        source: typeof m.source === 'string' ? m.source : '',
+      };
+    } else {
+      delete s.distortion.map;
+    }
     s.k1 = num(parsed.k1, 0);
     s.k2 = num(parsed.k2, 0);
     s.centerOffsetXLeft = num(parsed.centerOffsetXLeft, 0);

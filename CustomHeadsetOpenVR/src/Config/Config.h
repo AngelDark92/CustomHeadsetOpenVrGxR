@@ -5,6 +5,14 @@
 #include <mutex>
 #include <tuple>
 
+// vendor build selection
+// build.js passes /DVENDOR_GALAXYXR through ExternalCompilerOptions for the GalaxyXRNative vendor build.
+// when no vendor define is set this is the vendor-neutral build (driver name CustomHeadsetOpenVR).
+// this mirrors the vendor mechanism in upstream CustomHeadsetOpenVR so the two drivers can coexist.
+#if !defined(VENDOR_GALAXYXR)
+#define VENDOR_NEUTRAL
+#endif
+
 struct ConfigColor{
 	double r = 1.0;
 	double g = 1.0;
@@ -116,6 +124,61 @@ struct StreamFrameCenterTuneConfig{
 	double breatheAmp = 0.05;
 };
 
+// dense per-eye displacement map: the primary (camera-measured) distortion
+// correction representation. a regular cols x rows lattice of control
+// points over the eye's bounds-normalized uv square (row major, v major:
+// index = (row * cols + col) * 2, +0 = du, +1 = dv), each holding the
+// SOURCE SAMPLE OFFSET in uv units at that output position: the output
+// pixel at uv samples the content at uv + disp(uv), i.e. content appears
+// moved by -disp. bicubic (Catmull-Rom) upsampled at bake, sampled with
+// one bilinear tap per pixel, applied after (composed with) the radial
+// path so radial curves stay valid as a smooth prior or legacy profile.
+// scaled by distortion.gain like the curves. an empty or malformed map
+// (wrong length) is identity. produced by tools/gxr_sweep.py (Gray-code
+// camera fit) or tools/gxr_overlay.py (manual editing against the camera).
+struct StreamFrameDisplacementMap{
+	bool enable = true;
+	int cols = 0;
+	int rows = 0;
+	std::vector<double> left = {};
+	std::vector<double> right = {};
+	// provenance, informational only ("graycode", "manual", ...)
+	std::string source = "";
+};
+
+// camera calibration support: everything the tools/ python scripts drive
+// through settings.json (hot reloaded) while a camera sits in front of one
+// lens. see Docs/CameraCalibration.md.
+struct StreamFrameCalibConfig{
+	// force the output of both eyes to opaque black regardless of every
+	// other setting: panel protection while the camera rig stays assembled
+	// between sessions. checked last in the shader, nothing overrides it.
+	bool blackout = false;
+	// which eye the calibration outputs (pattern, capture-mode grid) target:
+	// -1 both, 0 left, 1 right. the other eye is black while a pattern is
+	// showing so it never leaks into the camera. eye-by-eye workflow.
+	int eye = -1;
+	// grey level (sRGB code fraction, 0..1) of the calibration pattern's
+	// white and of the sboys grid lines. independent of the general
+	// brightness so the camera exposure can be pinned once.
+	double patternBrightness = 1.0;
+	// manual editing preset: sboys hue grid drawn in CONTENT space (so the
+	// map warps it exactly like game content), scene behind it desaturated
+	// and dimmed so the grid reads clearly against whatever world the user
+	// is standing in (no opaque grey: keeps the world as an extra visual
+	// reference). does not touch the correction gain.
+	bool captureMode = false;
+	// gray-code sweep pattern index, -1 off. rendered in OUTPUT space
+	// (encodes exactly which output uv the panel shows) at patternBrightness,
+	// opaque, bypassing the warp/color chain. sequence: 0 black, 1 white,
+	// then for axis u then v, for bit 0..bits-1 (MSB first): pattern,
+	// inverse. so 2 + 4 * bits patterns; the driver echoes the shown index
+	// and a frame count into diagnostic.json for the capture handshake.
+	int pattern = -1;
+	// bits per axis of the sweep code, 1..12
+	int patternBits = 10;
+};
+
 // one distortion curve: k1/k2 polynomial coefficients and/or spline points,
 // which of the two is evaluated follows the global distortion mode
 struct StreamFrameCurve{
@@ -158,6 +221,8 @@ struct StreamFrameDistortionConfig{
 	StreamFrameAnnulusConfig annulus = {};
 	StreamFrameDistortionTuneConfig tune = {};
 	StreamFrameCenterTuneConfig centerTune = {};
+	// dense displacement map, composed after the radial curves
+	StreamFrameDisplacementMap map = {};
 };
 
 struct StreamFrameCASConfig{
@@ -208,6 +273,10 @@ struct StreamFrameConfig{
 	bool contrastLinear = false;
 	// gamma of the output, 2.2 is neutral
 	double gamma = 2.2;
+	// general brightness multiplier on linear rgb, 1 = neutral, applied
+	// at all times after the color chain (also while the dashboard is
+	// open). the light-sensitive-eyes / dark-room knob.
+	double brightness = 1.0;
 	// per channel tint multiplier
 	ConfigColor colorMultiplier = {};
 	// 3x3 linear rgb color matrix, row major. active when exactly 9 values.
@@ -271,6 +340,8 @@ struct StreamFrameConfig{
 	double k1 = 0;
 	double k2 = 0;
 	StreamFrameDistortionConfig distortion = {};
+	// camera calibration support (blackout, patterns, capture preset)
+	StreamFrameCalibConfig calib = {};
 	// optical center offset from the texture center, in uv units, per eye
 	double centerOffsetXLeft = 0;
 	double centerOffsetXRight = 0;

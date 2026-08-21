@@ -33,6 +33,7 @@ pub fn run() {
             driver_installer::uninstall_driver_transactional,
             driver_installer::verify_driver_install,
             driver_installer::write_json_file_transactional,
+            js_api::run_process_sync,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

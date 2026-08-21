@@ -30,6 +30,7 @@
     <ClInclude Include="src\Driver\ZeroCopy.h" />
     <ClInclude Include="src\Driver\NvencTap.h" />
     <ClInclude Include="src\Driver\EyeTrackingTap.h" />
+    <ClInclude Include="src\Driver\DriverLockout.h" />
     <ClInclude Include="src\Driver\DriverLog.h" />
     <ClInclude Include="src\Driver\Hooking\Hooking.h" />
     <ClInclude Include="src\Driver\Hooking\InterfaceHookInjector.h" />
@@ -78,6 +79,7 @@
     <ClCompile Include="src\Driver\ZeroCopy.cpp" />
     <ClCompile Include="src\Driver\NvencTap.cpp" />
     <ClCompile Include="src\Driver\EyeTrackingTap.cpp" />
+    <ClCompile Include="src\Driver\DriverLockout.cpp" />
     <ClCompile Include="src\Driver\DriverLog.cpp" />
     <ClCompile Include="src\Driver\HidModifier.cpp" />
     <ClCompile Include="src\Driver\HmdDriverFactory.cpp" />
@@ -198,6 +200,7 @@
       <PreprocessorDefinitions>_SILENCE_ALL_CXX17_DEPRECATION_WARNINGS;_CRT_SECURE_NO_WARNINGS;WIN32;_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp17</LanguageStandard>
+      <AdditionalOptions>$(ExternalCompilerOptions) %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -208,8 +211,8 @@
       <Command>IF EXIST "$(SolutionDir)output\$(ProjectName)\resources" RMDIR /S /Q "$(SolutionDir)output\$(ProjectName)\resources"
 XCOPY "$(ProjectDir)DriverFiles" "$(SolutionDir)output\$(ProjectName)" /S /Y /I /exclude:..\CustomHeadsetOpenVR\CopyExcludes.txt</Command>
     </PreBuildEvent>
-    <PostBuildEvent Condition="'$(DeployToSteamVR)'=='true'">
-      <Command>XCOPY "$(SolutionDir)output\$(ProjectName)" "C:\Program Files (x86)\Steam\steamapps\common\SteamVR\drivers\$(ProjectName)" /S /Y /I</Command>
+    <PostBuildEvent>
+      <Command>if not "$(SkipPostBuild)"=="true" XCOPY "$(SolutionDir)output\$(ProjectName)" "C:\Program Files (x86)\Steam\steamapps\common\SteamVR\drivers\$(ProjectName)" /S /Y /I</Command>
     </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
@@ -222,6 +225,7 @@ XCOPY "$(ProjectDir)DriverFiles" "$(SolutionDir)output\$(ProjectName)" /S /Y /I 
       <ConformanceMode>true</ConformanceMode>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <LanguageStandard>stdcpp17</LanguageStandard>
+      <AdditionalOptions>$(ExternalCompilerOptions) %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -234,8 +238,8 @@ XCOPY "$(ProjectDir)DriverFiles" "$(SolutionDir)output\$(ProjectName)" /S /Y /I 
       <Command>IF EXIST "$(SolutionDir)output\$(ProjectName)\resources" RMDIR /S /Q "$(SolutionDir)output\$(ProjectName)\resources"
 XCOPY "$(ProjectDir)DriverFiles" "$(SolutionDir)output\$(ProjectName)" /S /Y /I /exclude:..\CustomHeadsetOpenVR\CopyExcludes.txt</Command>
     </PreBuildEvent>
-    <PostBuildEvent Condition="'$(DeployToSteamVR)'=='true'">
-      <Command>XCOPY "$(SolutionDir)output\$(ProjectName)" "C:\Program Files (x86)\Steam\steamapps\common\SteamVR\drivers\$(ProjectName)" /S /Y /I</Command>
+    <PostBuildEvent>
+      <Command>if not "$(SkipPostBuild)"=="true" XCOPY "$(SolutionDir)output\$(ProjectName)" "C:\Program Files (x86)\Steam\steamapps\common\SteamVR\drivers\$(ProjectName)" /S /Y /I</Command>
     </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
@@ -245,6 +249,7 @@ XCOPY "$(ProjectDir)DriverFiles" "$(SolutionDir)output\$(ProjectName)" /S /Y /I 
       <PreprocessorDefinitions>_SILENCE_ALL_CXX17_DEPRECATION_WARNINGS;_CRT_SECURE_NO_WARNINGS;_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp17</LanguageStandard>
+      <AdditionalOptions>$(ExternalCompilerOptions) %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -255,8 +260,8 @@ XCOPY "$(ProjectDir)DriverFiles" "$(SolutionDir)output\$(ProjectName)" /S /Y /I 
       <Command>IF EXIST "$(SolutionDir)output\$(ProjectName)\resources" RMDIR /S /Q "$(SolutionDir)output\$(ProjectName)\resources"
 XCOPY "$(ProjectDir)DriverFiles" "$(SolutionDir)output\$(ProjectName)" /S /Y /I /exclude:..\CustomHeadsetOpenVR\CopyExcludes.txt</Command>
     </PreBuildEvent>
-    <PostBuildEvent Condition="'$(DeployToSteamVR)'=='true'">
-      <Command>XCOPY "$(SolutionDir)output\$(ProjectName)" "C:\Program Files (x86)\Steam\steamapps\common\SteamVR\drivers\$(ProjectName)" /S /Y /I</Command>
+    <PostBuildEvent>
+      <Command>if not "$(SkipPostBuild)"=="true" XCOPY "$(SolutionDir)output\$(ProjectName)" "C:\Program Files (x86)\Steam\steamapps\common\SteamVR\drivers\$(ProjectName)" /S /Y /I</Command>
     </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
@@ -269,6 +274,7 @@ XCOPY "$(ProjectDir)DriverFiles" "$(SolutionDir)output\$(ProjectName)" /S /Y /I 
       <ConformanceMode>true</ConformanceMode>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <LanguageStandard>stdcpp17</LanguageStandard>
+      <AdditionalOptions>$(ExternalCompilerOptions) %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -281,8 +287,8 @@ XCOPY "$(ProjectDir)DriverFiles" "$(SolutionDir)output\$(ProjectName)" /S /Y /I 
       <Command>IF EXIST "$(SolutionDir)output\$(ProjectName)\resources" RMDIR /S /Q "$(SolutionDir)output\$(ProjectName)\resources"
 XCOPY "$(ProjectDir)DriverFiles" "$(SolutionDir)output\$(ProjectName)" /S /Y /I /exclude:..\CustomHeadsetOpenVR\CopyExcludes.txt</Command>
     </PreBuildEvent>
-    <PostBuildEvent Condition="'$(DeployToSteamVR)'=='true'">
-      <Command>XCOPY "$(SolutionDir)output\$(ProjectName)" "C:\Program Files (x86)\Steam\steamapps\common\SteamVR\drivers\$(ProjectName)" /S /Y /I</Command>
+    <PostBuildEvent>
+      <Command>if not "$(SkipPostBuild)"=="true" XCOPY "$(SolutionDir)output\$(ProjectName)" "C:\Program Files (x86)\Steam\steamapps\common\SteamVR\drivers\$(ProjectName)" /S /Y /I</Command>
     </PostBuildEvent>
   </ItemDefinitionGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

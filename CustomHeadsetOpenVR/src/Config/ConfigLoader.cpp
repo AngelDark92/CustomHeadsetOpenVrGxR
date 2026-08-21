@@ -18,14 +18,66 @@ using ordered_json = nlohmann::ordered_json;
 
 
 std::string ConfigLoader::GetConfigFolder(){
+	// vendor builds keep their config in a separate folder so they can coexist
+	// with the vendor-neutral CustomHeadsetOpenVR driver without sharing state
+	#ifdef VENDOR_GALAXYXR
+	std::string configFolder = "GalaxyXR/CustomHeadset/";
+	#else
+	std::string configFolder = "CustomHeadset/";
+	#endif
 	#ifdef _WIN32
 	char* appdataPath = std::getenv("APPDATA");
-	std::string configPath = appdataPath == nullptr ? "./" : (std::string(appdataPath) + "/CustomHeadset/");
+	std::string configPath = appdataPath == nullptr ? "./" : (std::string(appdataPath) + "/" + configFolder);
 	#elif __linux__
 	char* appdataPath = std::getenv("HOME");
-	std::string configPath = appdataPath == nullptr ? "./" : (std::string(appdataPath) + "/.config/CustomHeadset/");
+	std::string configPath = appdataPath == nullptr ? "./" : (std::string(appdataPath) + "/.config/" + configFolder);
 	#endif
 	return configPath;
+}
+
+// legacy path used by this fork before the vendor split (also the neutral driver's path)
+static std::string GetLegacyConfigFolder(){
+	#ifdef _WIN32
+	char* appdataPath = std::getenv("APPDATA");
+	return appdataPath == nullptr ? "./" : (std::string(appdataPath) + "/CustomHeadset/");
+	#elif __linux__
+	char* appdataPath = std::getenv("HOME");
+	return appdataPath == nullptr ? "./" : (std::string(appdataPath) + "/.config/CustomHeadset/");
+	#endif
+}
+
+// one-time migration for the vendor build: users of this fork stored settings
+// in the legacy CustomHeadset folder before the driver was renamed. if the
+// vendor folder has no settings yet, copy settings.json and the distortion
+// profiles over (copy, never move: the legacy folder may also be in use by
+// the vendor-neutral driver, whose settings share the same base schema).
+// info.json/diagnostic.json are regenerated at runtime and are not migrated.
+void ConfigLoader::MigrateLegacyConfig(){
+	#ifdef VENDOR_GALAXYXR
+	try{
+		std::string vendorFolder = GetConfigFolder();
+		std::string vendorSettings = vendorFolder + "settings.json";
+		if(std::filesystem::exists(vendorSettings)){
+			return;
+		}
+		std::string legacyFolder = GetLegacyConfigFolder();
+		std::string legacySettings = legacyFolder + "settings.json";
+		if(!std::filesystem::exists(legacySettings)){
+			return;
+		}
+		DriverLog("Migrating settings from %s to %s", legacyFolder.c_str(), vendorFolder.c_str());
+		std::filesystem::create_directories(vendorFolder);
+		std::filesystem::copy_file(legacySettings, vendorSettings, std::filesystem::copy_options::skip_existing);
+		std::string legacyDistortion = legacyFolder + "Distortion";
+		if(std::filesystem::exists(legacyDistortion) && std::filesystem::is_directory(legacyDistortion)){
+			std::filesystem::copy(legacyDistortion, vendorFolder + "Distortion",
+				std::filesystem::copy_options::recursive | std::filesystem::copy_options::skip_existing);
+		}
+		DriverLog("Settings migration complete");
+	}catch(const std::exception& e){
+		DriverLog("Settings migration failed: %s", e.what());
+	}
+	#endif
 }
 
 void parseBaseHeadsetConfig(json headsetData, Config::BaseHeadsetConfig& headsetConfig){
@@ -624,6 +676,46 @@ void ConfigLoader::ParseConfig(){
 						newConfig.streamFrame.distortion.curves[curveItem.key()] = curve;
 					}
 				}
+				if(distortionData["map"].is_object()){
+					json mapData = distortionData["map"];
+					StreamFrameDisplacementMap &map = newConfig.streamFrame.distortion.map;
+					if(mapData["enable"].is_boolean()){
+						map.enable = mapData["enable"].get<bool>();
+					}
+					if(mapData["cols"].is_number_integer()){
+						map.cols = mapData["cols"].get<int>();
+					}
+					if(mapData["rows"].is_number_integer()){
+						map.rows = mapData["rows"].get<int>();
+					}
+					if(mapData["source"].is_string()){
+						map.source = mapData["source"].get<std::string>();
+					}
+					auto readEye = [&](const char *key, std::vector<double> &out){
+						if(!mapData[key].is_array()){
+							return;
+						}
+						out.clear();
+						out.reserve(mapData[key].size());
+						for(auto &v : mapData[key]){
+							if(v.is_number()){
+								out.push_back(v.get<double>());
+							}else{
+								// a non numeric entry corrupts the layout, treat as identity
+								out.clear();
+								return;
+							}
+						}
+					};
+					readEye("left", map.left);
+					readEye("right", map.right);
+					// clamp to something the bake will accept; the bake also
+					// re-validates lengths (cols * rows * 2) per eye
+					if(map.cols < 0){ map.cols = 0; }
+					if(map.rows < 0){ map.rows = 0; }
+					if(map.cols > 257){ map.cols = 0; }
+					if(map.rows > 257){ map.rows = 0; }
+				}
 				if(distortionData["annulus"].is_object()){
 					json annulusData = distortionData["annulus"];
 					if(annulusData["enable"].is_boolean()){
@@ -675,6 +767,36 @@ void ConfigLoader::ParseConfig(){
 			}
 			if(streamFrameData["processAtSubmitLayer"].is_boolean()){
 				newConfig.streamFrame.processAtSubmitLayer = streamFrameData["processAtSubmitLayer"].get<bool>();
+			}
+			if(streamFrameData["brightness"].is_number()){
+				newConfig.streamFrame.brightness = streamFrameData["brightness"].get<double>();
+			}
+			if(streamFrameData["calib"].is_object()){
+				json calibData = streamFrameData["calib"];
+				StreamFrameCalibConfig &calib = newConfig.streamFrame.calib;
+				if(calibData["blackout"].is_boolean()){
+					calib.blackout = calibData["blackout"].get<bool>();
+				}
+				if(calibData["eye"].is_number_integer()){
+					calib.eye = calibData["eye"].get<int>();
+					if(calib.eye < -1 || calib.eye > 1){ calib.eye = -1; }
+				}
+				if(calibData["patternBrightness"].is_number()){
+					calib.patternBrightness = calibData["patternBrightness"].get<double>();
+					if(calib.patternBrightness < 0.0){ calib.patternBrightness = 0.0; }
+					if(calib.patternBrightness > 1.0){ calib.patternBrightness = 1.0; }
+				}
+				if(calibData["captureMode"].is_boolean()){
+					calib.captureMode = calibData["captureMode"].get<bool>();
+				}
+				if(calibData["pattern"].is_number_integer()){
+					calib.pattern = calibData["pattern"].get<int>();
+				}
+				if(calibData["patternBits"].is_number_integer()){
+					calib.patternBits = calibData["patternBits"].get<int>();
+					if(calib.patternBits < 1){ calib.patternBits = 1; }
+					if(calib.patternBits > 12){ calib.patternBits = 12; }
+				}
 			}
 			if(streamFrameData["poseLogging"].is_boolean()){
 				newConfig.streamFrame.poseLogging = streamFrameData["poseLogging"].get<bool>();
@@ -1530,6 +1652,7 @@ void ConfigLoader::WriteInfo(){
 		{"nonNativeHeadsetFound", info.nonNativeHeadsetFound},
 		{"isDashboardOpen", info.isDashboardOpen},
 		{"debugLog", info.debugLog},
+		{"driverName", info.driverName},
 		{"driverResources", info.driverResources},
 		{"steamvrResources", info.steamvrResources},
 		{"driverVersion", driverVersion}
@@ -1637,6 +1760,22 @@ void ConfigLoader::WriteDiagnosticInfo(){
 				{"z", diagnosticInfo.focalPointZ},
 			}},
 		}},
+		{"streamFrame", {
+			{"active", diagnosticInfo.streamFrameActive},
+			{"frameCounter", diagnosticInfo.streamFrameCounter},
+			{"calibPatternShown", diagnosticInfo.calibPatternShown},
+			{"calibPatternFrames", diagnosticInfo.calibPatternFrames},
+			{"calibBlackout", diagnosticInfo.calibBlackout},
+			{"projValid", diagnosticInfo.projValid},
+			{"projLeft", {diagnosticInfo.proj[0][0], diagnosticInfo.proj[0][1], diagnosticInfo.proj[0][2], diagnosticInfo.proj[0][3]}},
+			{"projRight", {diagnosticInfo.proj[1][0], diagnosticInfo.proj[1][1], diagnosticInfo.proj[1][2], diagnosticInfo.proj[1][3]}},
+			{"eyeTexWidth", diagnosticInfo.eyeTexWidth},
+			{"eyeTexHeight", diagnosticInfo.eyeTexHeight},
+			{"eyeAspect", diagnosticInfo.eyeAspect},
+			{"mapCols", diagnosticInfo.mapCols},
+			{"mapRows", diagnosticInfo.mapRows},
+			{"mapActive", diagnosticInfo.mapActive},
+		}},
 	};
 	diagnosticFile << data.dump(1, '\t');
 	diagnosticFile.close();
@@ -1698,8 +1837,15 @@ void ConfigLoader::WatcherThread(){
 				ReadInfo();
 				hasReloadedInfo = true;
 			}
+			// advance AFTER processing; the old form checked the NEXT
+			// entry's offset before processing it, so the last entry of a
+			// multi-entry buffer (e.g. temp file + rename to settings.json)
+			// was silently dropped and hot reload appeared flaky
+			if(pNotify->NextEntryOffset == 0){
+				break;
+			}
 			pNotify = (FILE_NOTIFY_INFORMATION*)((char*)pNotify + pNotify->NextEntryOffset);
-		}while(pNotify->NextEntryOffset != 0);
+		}while(true);
 		//DriverLog("Waiting for next change...");
 		std::this_thread::sleep_for(std::chrono::milliseconds(40));
 	}
@@ -1734,8 +1880,11 @@ void ConfigLoader::WatcherThreadDistortions(){
 				ParseConfig();
 				break;
 			}
+			if(pNotify->NextEntryOffset == 0){
+				break;
+			}
 			pNotify = (FILE_NOTIFY_INFORMATION*)((char*)pNotify + pNotify->NextEntryOffset);
-		}while(pNotify->NextEntryOffset != 0);
+		}while(true);
 		std::this_thread::sleep_for(std::chrono::milliseconds(40));
 	}
 }
@@ -1862,6 +2011,10 @@ void ConfigLoader::Start(){
 		return;
 	}
 	started = true;
+	
+	// migrate legacy settings before the default-config check below, so an
+	// existing user's settings are found instead of writing fresh defaults
+	MigrateLegacyConfig();
 	
 	try{
 		// create directory
