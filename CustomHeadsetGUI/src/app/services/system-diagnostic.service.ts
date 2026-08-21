@@ -186,6 +186,54 @@ export class SystemDiagnosticService implements OnDestroy {
   private getDriverFieldName(driverName: string) {
     return `driver_${driverName}`;
   }
+  /**
+   * For vendor-specific drivers: whether the vendor-neutral CustomHeadsetOpenVR
+   * driver is enabled (which locks this vendor driver out).
+   */
+  public getNeutralDriverEnabled(settings: any): boolean {
+    if (!settings) {
+      return false;
+    }
+    const neutralDriverKey = this.getDriverFieldName('CustomHeadsetOpenVR');
+    const driverSetting = settings[neutralDriverKey];
+    if (!driverSetting) {
+      // Driver not present in settings at all - treat as disabled
+      return false;
+    }
+    if (driverSetting['blocked_by_safe_mode']) {
+      return false;
+    }
+    return driverSetting['enable'] ?? true;
+  }
+  /**
+   * For vendor-specific drivers: disable the neutral driver and enable the vendor driver.
+   * This implements the driver lockout swap behavior.
+   */
+  public async enableVendorDriverAndDisableNeutral() {
+    await this.updateSteamVRSettings(settings => {
+      let changed = false;
+      // Disable the vendor-neutral driver
+      const neutralKey = this.getDriverFieldName('CustomHeadsetOpenVR');
+      if (!settings[neutralKey]) {
+        settings[neutralKey] = {};
+      }
+      if (settings[neutralKey]['enable'] !== false) {
+        settings[neutralKey]['enable'] = false;
+        changed = true;
+      }
+      // Enable the vendor-specific driver
+      const vendorKey = this.getDriverFieldName(customHeadsetDriverName);
+      if (!settings[vendorKey]) {
+        settings[vendorKey] = {};
+      }
+      if (settings[vendorKey]['enable'] !== true) {
+        settings[vendorKey]['enable'] = true;
+        changed = true;
+      }
+      delete settings[vendorKey]['blocked_by_safe_mode'];
+      return changed;
+    });
+  }
   private installing = false
   async installDriver() {
     if (this.installing) return false;
