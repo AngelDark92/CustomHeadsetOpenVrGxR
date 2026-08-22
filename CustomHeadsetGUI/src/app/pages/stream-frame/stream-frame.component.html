@@ -32,6 +32,22 @@
     </div>
 </div>
 <div class="field">
+    <div class="title">
+        <span i18n>Stream Quality Preset</span>
+        <app-field-tip info="Encode width, transport width and bandwidth presets validated by the community settings tool. Default uses vrlink's built-in automatic settings. Ultra uses an above-transport source width: requires Wi-Fi 7 6 GHz, and if driver_vrlink.txt shows NVENC Invalid Level or buffer starvation, fall back to High. Takes effect at the next SteamVR start or headset connect." />
+    </div>
+    <div class="control">
+        <mat-select [(ngModel)]="galaxyXr.streamQuality" (ngModelChange)="save()" style="width: 220px;">
+            <mat-option value="default" i18n>Default (vrlink automatic)</mat-option>
+            <mat-option value="stable">Stable &mdash; 2048 / 250 Mbit/s</mat-option>
+            <mat-option value="quality">Quality &mdash; 2560 / 300 Mbit/s</mat-option>
+            <mat-option value="high">High &mdash; 3072 / 300 Mbit/s</mat-option>
+            <mat-option value="highest">Highest &mdash; 3072 / 350 Mbit/s</mat-option>
+            <mat-option value="ultra">Ultra &mdash; 4032 / 350 Mbit/s (Wi-Fi 7)</mat-option>
+        </mat-select>
+    </div>
+</div>
+<div class="field">
     <div class="note" i18n>Native identity changes take effect after restarting SteamVR.</div>
 </div>
 }

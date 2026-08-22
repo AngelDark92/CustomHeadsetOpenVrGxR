@@ -386,6 +386,12 @@ void ConfigLoader::ParseConfig(){
 			if(galaxyXrData["nativeInputProfile"].is_boolean()){
 				newConfig.galaxyXr.nativeInputProfile = galaxyXrData["nativeInputProfile"].get<bool>();
 			}
+			if(galaxyXrData["nativeResolution"].is_boolean()){
+				newConfig.galaxyXr.nativeResolution = galaxyXrData["nativeResolution"].get<bool>();
+			}
+			if(galaxyXrData["streamQuality"].is_string()){
+				newConfig.galaxyXr.streamQuality = galaxyXrData["streamQuality"].get<std::string>();
+			}
 		}
 		if(data["streamFrame"].is_object()){
 			json streamFrameData = data["streamFrame"];

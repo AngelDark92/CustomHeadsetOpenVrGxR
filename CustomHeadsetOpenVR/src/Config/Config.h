@@ -288,6 +288,19 @@ struct GalaxyXrConfig{
 	// (only if they hold our value), returning vrlink to its own defaults.
 	// takes effect at SteamVR start.
 	bool nativeResolution = true;
+	// stream quality preset, mirroring the community Apply-Settings tiers.
+	// "default" leaves vrlink's built-in encode/bandwidth defaults (and
+	// removes any tier keys we previously wrote). the other tiers write
+	// encodeWidth / streamFormatWidth(1536, validated foveated transport
+	// maximum) / recommendedBandwidthMbit+targetBandwidth and disable the
+	// automatic width/bandwidth pickers:
+	//   stable  2048/1536/250   quality 2560/1536/300
+	//   high    3072/1536/300   highest 3072/1536/350 (chroma ceiling)
+	//   ultra   4032/1536/350 (above-transport source; needs Wi-Fi 7 6GHz,
+	//           watch driver_vrlink.txt for NVENC Invalid Level / buffer
+	//           starvation and fall back to high)
+	// effective at the next SteamVR start / headset connect.
+	std::string streamQuality = "default";
 };
 
 struct StreamFrameConfig{

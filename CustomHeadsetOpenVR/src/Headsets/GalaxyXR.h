@@ -32,6 +32,7 @@ private:
 	// write identity + icon properties; only touches values that differ
 	void ApplyIdentity();
 	bool appliedNativeResolution = false;
+	std::string appliedStreamQuality;
 
 	vr::PropertyContainerHandle_t container = vr::k_ulInvalidPropertyContainer;
 	bool active = false;

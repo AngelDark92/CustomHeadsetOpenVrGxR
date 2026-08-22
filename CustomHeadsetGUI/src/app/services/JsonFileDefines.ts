@@ -27,6 +27,7 @@ export type GalaxyXrConfig = {
   nativeIdentity: boolean,
   nativeInputProfile?: boolean,
   nativeResolution?: boolean,
+  streamQuality?: string,
 }
 export type ControllersConfig = {
   mirrorOffsetsForRightHand?: boolean,

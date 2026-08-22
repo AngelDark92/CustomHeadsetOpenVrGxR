@@ -31,6 +31,65 @@ static void SetDeviceIcons(vr::PropertyContainerHandle_t container, const std::s
 static const int kGalaxyXrRenderWidth = 3552;
 static const int kGalaxyXrRenderHeight = 3840;
 
+struct StreamTier { const char* name; int encodeWidth; int bandwidth; };
+// values from the community Apply-Settings tool (streamFormatWidth fixed 1536)
+static const StreamTier kStreamTiers[] = {
+	{"stable", 2048, 250}, {"quality", 2560, 300}, {"high", 3072, 300},
+	{"highest", 3072, 350}, {"ultra", 4032, 350},
+};
+
+static const StreamTier* FindTier(const std::string &name){
+	for(const auto &t : kStreamTiers){
+		if(name == t.name){ return &t; }
+	}
+	return nullptr;
+}
+
+// remove a vrlink int key only when it holds a value we could have written,
+// so user- or tool-owned values are never clobbered
+static void RemoveIntIfOurs(const char* key, std::initializer_list<int> ourValues){
+	vr::EVRSettingsError err = vr::VRSettingsError_None;
+	int32_t v = vr::VRSettings()->GetInt32("driver_vrlink", key, &err);
+	if(err != vr::VRSettingsError_None){ return; }
+	for(int ours : ourValues){
+		if(v == ours){
+			vr::VRSettings()->RemoveKeyInSection("driver_vrlink", key);
+			return;
+		}
+	}
+}
+
+static void ApplyStreamQualitySetting(){
+	const StreamTier* tier = FindTier(driverConfig.galaxyXr.streamQuality);
+	if(tier){
+		vr::VRSettings()->SetInt32("driver_vrlink", "encodeWidth", tier->encodeWidth);
+		vr::VRSettings()->SetInt32("driver_vrlink", "streamFormatWidth", 1536);
+		vr::VRSettings()->SetBool("driver_vrlink", "automaticStreamFormatWidth", false);
+		vr::VRSettings()->SetBool("driver_vrlink", "automaticBandwidth", false);
+		vr::VRSettings()->SetInt32("driver_vrlink", "recommendedBandwidthMbit", tier->bandwidth);
+		vr::VRSettings()->SetInt32("driver_vrlink", "targetBandwidth", tier->bandwidth);
+		DriverLog("GalaxyXR: stream quality '%s' (encodeWidth %d, streamFormatWidth 1536, %d Mbit/s; effective next start/connect)",
+			tier->name, tier->encodeWidth, tier->bandwidth);
+	}else{
+		// default (or unknown): remove tier keys we own so vrlink built-in
+		// defaults apply, matching the community tool's Default mode
+		RemoveIntIfOurs("encodeWidth", {2048, 2560, 3072, 4032});
+		RemoveIntIfOurs("streamFormatWidth", {1536});
+		RemoveIntIfOurs("recommendedBandwidthMbit", {250, 300, 350});
+		RemoveIntIfOurs("targetBandwidth", {250, 300, 350});
+		vr::EVRSettingsError err = vr::VRSettingsError_None;
+		bool a = vr::VRSettings()->GetBool("driver_vrlink", "automaticStreamFormatWidth", &err);
+		if(err == vr::VRSettingsError_None && !a){
+			vr::VRSettings()->RemoveKeyInSection("driver_vrlink", "automaticStreamFormatWidth");
+		}
+		err = vr::VRSettingsError_None;
+		a = vr::VRSettings()->GetBool("driver_vrlink", "automaticBandwidth", &err);
+		if(err == vr::VRSettingsError_None && !a){
+			vr::VRSettings()->RemoveKeyInSection("driver_vrlink", "automaticBandwidth");
+		}
+	}
+}
+
 // write or remove the global vrlink render override per config. safe to call
 // repeatedly; only writes on difference. changes are read by the compositor
 // at SteamVR start, so mid-session toggles take effect next launch.
@@ -39,9 +98,13 @@ static void ApplyNativeResolutionSetting(){
 	if(driverConfig.galaxyXr.nativeResolution){
 		int32_t w = vr::VRSettings()->GetInt32("driver_vrlink", "overrideRenderWidth", &err);
 		if(err != vr::VRSettingsError_None || w != kGalaxyXrRenderWidth){
+			vr::VRSettings()->SetInt32("driver_vrlink", "renderWidth", kGalaxyXrRenderWidth);
+			vr::VRSettings()->SetInt32("driver_vrlink", "renderHeight", kGalaxyXrRenderHeight);
 			vr::VRSettings()->SetInt32("driver_vrlink", "overrideRenderWidth", kGalaxyXrRenderWidth);
 			vr::VRSettings()->SetInt32("driver_vrlink", "overrideRenderHeight", kGalaxyXrRenderHeight);
-			DriverLog("GalaxyXR: wrote driver_vrlink override %dx%d (native resolution; effective next SteamVR start)",
+			vr::VRSettings()->SetInt32("driver_vrlink", "displayFrequency", 90);
+			vr::VRSettings()->SetInt32("steamvr", "preferredRefreshRate", 90);
+			DriverLog("GalaxyXR: wrote driver_vrlink render %dx%d @90 (native resolution; effective next SteamVR start)",
 				kGalaxyXrRenderWidth, kGalaxyXrRenderHeight);
 		}
 	}else{
@@ -49,8 +112,16 @@ static void ApplyNativeResolutionSetting(){
 		if(err == vr::VRSettingsError_None && w == kGalaxyXrRenderWidth){
 			// only remove values we wrote; a different value means the user or
 			// the community Apply-Settings tool owns it - leave it alone
+			vr::VRSettings()->RemoveKeyInSection("driver_vrlink", "renderWidth");
+			vr::VRSettings()->RemoveKeyInSection("driver_vrlink", "renderHeight");
 			vr::VRSettings()->RemoveKeyInSection("driver_vrlink", "overrideRenderWidth");
 			vr::VRSettings()->RemoveKeyInSection("driver_vrlink", "overrideRenderHeight");
+			RemoveIntIfOurs("displayFrequency", {90});
+			vr::EVRSettingsError rerr = vr::VRSettingsError_None;
+			int32_t rr = vr::VRSettings()->GetInt32("steamvr", "preferredRefreshRate", &rerr);
+			if(rerr == vr::VRSettingsError_None && rr == 90){
+				vr::VRSettings()->RemoveKeyInSection("steamvr", "preferredRefreshRate");
+			}
 			DriverLog("GalaxyXR: removed driver_vrlink render override (nativeResolution off)");
 		}
 	}
@@ -87,6 +158,8 @@ void GalaxyXRHmdShim::PosTrackedDeviceActivate(uint32_t &unObjectId, vr::EVRInit
 	ApplyIdentity();
 	ApplyNativeResolutionSetting();
 	appliedNativeResolution = driverConfig.galaxyXr.nativeResolution;
+	ApplyStreamQualitySetting();
+	appliedStreamQuality = driverConfig.galaxyXr.streamQuality;
 }
 
 void GalaxyXRHmdShim::ApplyIdentity(){
@@ -124,6 +197,10 @@ void GalaxyXRHmdShim::RunFrame(){
 	if(active && driverConfig.galaxyXr.nativeResolution != appliedNativeResolution){
 		appliedNativeResolution = driverConfig.galaxyXr.nativeResolution;
 		ApplyNativeResolutionSetting();
+	}
+	if(active && driverConfig.galaxyXr.streamQuality != appliedStreamQuality){
+		appliedStreamQuality = driverConfig.galaxyXr.streamQuality;
+		ApplyStreamQualitySetting();
 	}
 }
 
