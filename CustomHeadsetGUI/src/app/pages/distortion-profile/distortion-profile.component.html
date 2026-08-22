@@ -26,7 +26,7 @@
                             <td mat-cell *matCellDef="let profile" class="details-cell">
                                 <div class="details-device" matTooltip="Target Device" i18n-matTooltip>{{ profile.device ?? 'Unknown' }}</div>
                                 <div class="details-meta">
-                                    <span class="details-type" matTooltip="Distortion Algorithm" i18n-matTooltip>{{ profile.type ?? 'N/A' }}</span>
+                                    <span class="details-type" matTooltip="Distortion Algorithm" i18n-matTooltip>{{ profile.displayType ?? profile.type ?? 'N/A' }}</span>
                                     <span class="details-separator">·</span>
                                     <span class="details-points" matTooltip="Distortion Control Points" i18n-matTooltip>{{ profile.distortionPoints ?? 'N/A' }}</span>@if(profile.hasChromaticAberration){ <span class="ca-badge" matTooltip="Chromatic Aberration Correction" i18n-matTooltip>+CA</span> }
                                 </div>
@@ -95,7 +95,7 @@
                         <td mat-cell *matCellDef="let profile" class="details-cell">
                             <div class="details-device" matTooltip="Target Device" i18n-matTooltip>{{ profile.device ?? 'Unknown' }}</div>
                             <div class="details-meta">
-                                <span class="details-type" matTooltip="Distortion Algorithm" i18n-matTooltip>{{ profile.type ?? 'N/A' }}</span>
+                                <span class="details-type" matTooltip="Distortion Algorithm" i18n-matTooltip>{{ profile.displayType ?? profile.type ?? 'N/A' }}</span>
                                 <span class="details-separator">·</span>
                                 <span class="details-points" matTooltip="Distortion Control Points" i18n-matTooltip>{{ profile.distortionPoints ?? 'N/A' }}</span>@if(profile.hasChromaticAberration){ <span class="ca-badge" matTooltip="Chromatic Aberration Correction" i18n-matTooltip>+CA</span> }
                             </div>

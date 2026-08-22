@@ -23,6 +23,15 @@
     </div>
 </div>
 <div class="field">
+    <div class="title">
+        <span i18n>Native Render Resolution</span>
+        <app-field-tip info="Writes a global vrlink override so SteamVR renders at the Galaxy XR's native per-eye resolution (3552x3840@90) instead of the lower cap picked from the spoofed headset identity. Recommended on. Turning it off removes the override (only if it still holds this driver's value). Takes effect after restarting SteamVR." />
+    </div>
+    <div class="control">
+        <mat-slide-toggle [(ngModel)]="galaxyXr.nativeResolution" (ngModelChange)="save()"></mat-slide-toggle>
+    </div>
+</div>
+<div class="field">
     <div class="note" i18n>Native identity changes take effect after restarting SteamVR.</div>
 </div>
 }

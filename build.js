@@ -243,6 +243,20 @@ function buildDriverTask() {
 				}
 			}
 
+			// strip private reference assets from the staged release: any
+			// render model folder carrying a NOTFORSHIPPING.txt sentinel (left
+			// behind by the retired reference installer) is deleted with a warning
+			let stagedRm = path.join(driverOutput, "resources", "rendermodels")
+			if (fs.existsSync(stagedRm)) {
+				for (let entry of fs.readdirSync(stagedRm)) {
+					let sentinel = path.join(stagedRm, entry, "NOTFORSHIPPING.txt")
+					if (fs.existsSync(sentinel)) {
+						fs.rmSync(path.join(stagedRm, entry), { recursive: true, force: true })
+						console.warn(`WARNING: stripped private reference render model "${entry}" from staging (NOTFORSHIPPING).`)
+					}
+				}
+			}
+
 			console.log("Driver build complete.")
 			resolve()
 		})
@@ -321,6 +335,13 @@ function cleanStagingDir(dir) {
 		let fullPath = path.join(dir, entry.name)
 
 		if (entry.isDirectory()) {
+			// local reference assets (e.g. imported vst controller models) are
+			// never allowed into a release
+			if (entry.name.startsWith("NOTFORSHIPPING_")) {
+				fs.rmSync(fullPath, { recursive: true, force: true })
+				console.log(`Removed local reference: ${fullPath}`)
+				continue
+			}
 			cleanStagingDir(fullPath)
 		} else {
 			let ext = path.extname(entry.name).toLowerCase()

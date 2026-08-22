@@ -25,10 +25,13 @@ public:
 	virtual void PosTrackedDeviceActivate(uint32_t &unObjectId, vr::EVRInitError &returnValue) override;
 	virtual bool PreTrackedDeviceDeactivate() override;
 	virtual void HandleEvent(const vr::VREvent_t &event) override;
+	// config hot-reload for the native resolution override
+	virtual void RunFrame() override;
 
 private:
 	// write identity + icon properties; only touches values that differ
 	void ApplyIdentity();
+	bool appliedNativeResolution = false;
 
 	vr::PropertyContainerHandle_t container = vr::k_ulInvalidPropertyContainer;
 	bool active = false;

@@ -27,6 +27,35 @@ static void SetDeviceIcons(vr::PropertyContainerHandle_t container, const std::s
 	SetStringIfDifferent(container, vr::Prop_NamedIconPathDeviceAlertLow_String,       base + "_ready_low.png");
 }
 
+// the Galaxy XR native per-eye render geometry; see GalaxyXrConfig::nativeResolution
+static const int kGalaxyXrRenderWidth = 3552;
+static const int kGalaxyXrRenderHeight = 3840;
+
+// write or remove the global vrlink render override per config. safe to call
+// repeatedly; only writes on difference. changes are read by the compositor
+// at SteamVR start, so mid-session toggles take effect next launch.
+static void ApplyNativeResolutionSetting(){
+	vr::EVRSettingsError err = vr::VRSettingsError_None;
+	if(driverConfig.galaxyXr.nativeResolution){
+		int32_t w = vr::VRSettings()->GetInt32("driver_vrlink", "overrideRenderWidth", &err);
+		if(err != vr::VRSettingsError_None || w != kGalaxyXrRenderWidth){
+			vr::VRSettings()->SetInt32("driver_vrlink", "overrideRenderWidth", kGalaxyXrRenderWidth);
+			vr::VRSettings()->SetInt32("driver_vrlink", "overrideRenderHeight", kGalaxyXrRenderHeight);
+			DriverLog("GalaxyXR: wrote driver_vrlink override %dx%d (native resolution; effective next SteamVR start)",
+				kGalaxyXrRenderWidth, kGalaxyXrRenderHeight);
+		}
+	}else{
+		int32_t w = vr::VRSettings()->GetInt32("driver_vrlink", "overrideRenderWidth", &err);
+		if(err == vr::VRSettingsError_None && w == kGalaxyXrRenderWidth){
+			// only remove values we wrote; a different value means the user or
+			// the community Apply-Settings tool owns it - leave it alone
+			vr::VRSettings()->RemoveKeyInSection("driver_vrlink", "overrideRenderWidth");
+			vr::VRSettings()->RemoveKeyInSection("driver_vrlink", "overrideRenderHeight");
+			DriverLog("GalaxyXR: removed driver_vrlink render override (nativeResolution off)");
+		}
+	}
+}
+
 // ---------------- HMD ----------------
 
 void GalaxyXRHmdShim::PosTrackedDeviceActivate(uint32_t &unObjectId, vr::EVRInitError &returnValue){
@@ -56,6 +85,8 @@ void GalaxyXRHmdShim::PosTrackedDeviceActivate(uint32_t &unObjectId, vr::EVRInit
 	DriverLog("GalaxyXRHmdShim: activating identity override (was model=\"%s\" manufacturer=\"%s\")",
 		origModelNumber.c_str(), origManufacturer.c_str());
 	ApplyIdentity();
+	ApplyNativeResolutionSetting();
+	appliedNativeResolution = driverConfig.galaxyXr.nativeResolution;
 }
 
 void GalaxyXRHmdShim::ApplyIdentity(){
@@ -86,6 +117,14 @@ bool GalaxyXRHmdShim::PreTrackedDeviceDeactivate(){
 	}
 	active = false;
 	return true;
+}
+
+void GalaxyXRHmdShim::RunFrame(){
+	// config hot-reload: apply/remove the resolution override on toggle flips
+	if(active && driverConfig.galaxyXr.nativeResolution != appliedNativeResolution){
+		appliedNativeResolution = driverConfig.galaxyXr.nativeResolution;
+		ApplyNativeResolutionSetting();
+	}
 }
 
 void GalaxyXRHmdShim::HandleEvent(const vr::VREvent_t &event){

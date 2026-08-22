@@ -278,6 +278,16 @@ struct GalaxyXrConfig{
 	// currently makes SteamVR fall back to generic Touch handling.
 	// requires a SteamVR restart.
 	bool nativeInputProfile = false;
+	// write driver_vrlink.overrideRenderWidth/Height = 3552x3840 (the Galaxy
+	// XR native per-eye panel geometry) into steamvr.vrsettings. the APK's
+	// spoofed identity makes vrlink cap the render target at the spoofed
+	// model's geometry (e.g. 2160x2160); the global override replaces the
+	// capped value after model matching (validated by the community
+	// Apply-Settings tool, exp17 diagnostics). default ON: this is a
+	// correctness fix, not cosmetic. when turned OFF the keys are removed
+	// (only if they hold our value), returning vrlink to its own defaults.
+	// takes effect at SteamVR start.
+	bool nativeResolution = true;
 };
 
 struct StreamFrameConfig{
