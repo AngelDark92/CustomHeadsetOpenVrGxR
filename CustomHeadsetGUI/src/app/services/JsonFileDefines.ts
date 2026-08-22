@@ -25,8 +25,10 @@ export type Settings = {
 }
 export type GalaxyXrConfig = {
   nativeIdentity: boolean,
+  nativeInputProfile?: boolean,
 }
 export type ControllersConfig = {
+  mirrorOffsetsForRightHand?: boolean,
   rotationOffsetDeg: { x: number, y: number, z: number },
   positionOffsetCm: { x: number, y: number, z: number },
   aligner: { enable: boolean },

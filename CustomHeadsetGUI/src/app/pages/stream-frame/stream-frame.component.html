@@ -7,10 +7,19 @@
 <div class="field">
     <div class="title">
         <span i18n>Galaxy XR Native Identity</span>
-        <app-field-tip info="Shows the streamed headset as Samsung Galaxy XR in SteamVR with matching icons, and gives the controllers their real render models instead of generic ones. Purely cosmetic: does not change tracking, eye tracking, bindings, or controller type. Requires a SteamVR restart." />
+        <app-field-tip info="Uses the official Galaxy XR input profile: native galaxy_xr_controller type with Valve's bindings, remapping and correct grip/aim poses (fixes held-item orientation properly). Note: custom bindings you made for these controllers as Oculus Touch do not carry over automatically; rebind per game if needed. Requires a SteamVR restart." />
     </div>
     <div class="control">
         <mat-slide-toggle [(ngModel)]="galaxyXr.nativeIdentity" (ngModelChange)="save()"></mat-slide-toggle>
+    </div>
+</div>
+<div class="field">
+    <div class="title">
+        <span i18n>Official Controller Input Profile</span>
+        <app-field-tip info="Uses the official Steam Link Galaxy XR input profile (shipped with permission): real button layout in the bindings UI, official legacy bindings and per-app bindings, and correct grip/aim/tip poses for held items. Controller type stays oculus_touch, so existing custom bindings keep working. Requires a SteamVR restart." />
+    </div>
+    <div class="control">
+        <mat-slide-toggle [(ngModel)]="galaxyXr.nativeInputProfile" (ngModelChange)="save()"></mat-slide-toggle>
     </div>
 </div>
 <div class="field">

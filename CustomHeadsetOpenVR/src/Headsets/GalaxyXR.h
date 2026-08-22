@@ -35,6 +35,7 @@ private:
 	bool haveBackup = false;
 	std::string origModelNumber;
 	std::string origManufacturer;
+	std::string origHmdInputProfile;
 };
 
 class GalaxyXRControllerShim : public ShimDefinition{
@@ -59,4 +60,6 @@ private:
 	bool active = false;
 	bool haveBackup = false;
 	std::string origRenderModel;
+	std::string origInputProfile;
+	std::string origControllerType;
 };

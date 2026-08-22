@@ -383,6 +383,9 @@ void ConfigLoader::ParseConfig(){
 			if(galaxyXrData["renderModelVariant"].is_string()){
 				newConfig.galaxyXr.renderModelVariant = galaxyXrData["renderModelVariant"].get<std::string>();
 			}
+			if(galaxyXrData["nativeInputProfile"].is_boolean()){
+				newConfig.galaxyXr.nativeInputProfile = galaxyXrData["nativeInputProfile"].get<bool>();
+			}
 		}
 		if(data["streamFrame"].is_object()){
 			json streamFrameData = data["streamFrame"];
@@ -1073,6 +1076,9 @@ void ConfigLoader::ParseConfig(){
 			if(controllersData["spaceVelocityFix"].is_string()){
 				std::string svMode = controllersData["spaceVelocityFix"].get<std::string>();
 				newConfig.controllers.spaceVelocityFixMode = svMode == "world" ? 1 : (svMode == "driver" ? 2 : 0);
+			}
+			if(controllersData["mirrorOffsetsForRightHand"].is_boolean()){
+				newConfig.controllers.mirrorOffsetsForRightHand = controllersData["mirrorOffsetsForRightHand"].get<bool>();
 			}
 			if(controllersData["rotationOffsetDeg"].is_object()){
 				for(int i = 0; i < 3; i++){

@@ -1028,6 +1028,24 @@ bool CustomHeadsetDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 		|| positionOffsetCm[1] != 0 || positionOffsetCm[2] != 0;
 	if((hasRotationOffset || hasPositionOffset) && openVRID != vr::k_unTrackedDeviceIndex_Hmd
 			&& GetDeviceClass(openVRID) == (int)vr::TrackedDeviceClass_Controller){
+		// mirror the left-hand-authored offsets for the right controller:
+		// physical pairs are mirror images, so the tracked-origin-to-grip
+		// displacement mirrors too (position X and rotation Y/Z negate)
+		if(controllersConfig.mirrorOffsetsForRightHand){
+			int hand = -1;
+			{
+				std::lock_guard<std::mutex> handGuard(poseLogLock);
+				auto handFound = openVRIDHand.find(openVRID);
+				if(handFound != openVRIDHand.end()){
+					hand = handFound->second;
+				}
+			}
+			if(hand == 1){
+				positionOffsetCm[0] = -positionOffsetCm[0];
+				rotationOffsetDeg[1] = -rotationOffsetDeg[1];
+				rotationOffsetDeg[2] = -rotationOffsetDeg[2];
+			}
+		}
 		if(hasPositionOffset){
 			double local[3] = {
 				positionOffsetCm[0] / 100.0,

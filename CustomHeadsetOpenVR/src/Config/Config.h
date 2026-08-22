@@ -270,6 +270,14 @@ struct GalaxyXrConfig{
 	// used by tools/convert_rendermodels.py --live; cleared when the tuned
 	// transform is baked into the shipped assets.
 	std::string renderModelVariant = "";
+	// override the controllers' InputProfilePath to the shipped official
+	// samsung_input_profile.json (controller type stays oculus_touch, so
+	// existing Touch bindings keep working; adds official legacy bindings,
+	// per-app bindings and grip/aim/tip pose components). replaces the
+	// dangling {vrlink}/input/samsung_input_profile.json reference that
+	// currently makes SteamVR fall back to generic Touch handling.
+	// requires a SteamVR restart.
+	bool nativeInputProfile = false;
 };
 
 struct StreamFrameConfig{
@@ -1128,6 +1136,12 @@ struct ControllersConfig{
 	// identity by more than ~2 degrees, so vanilla devices are untouched.
 	// the field test decides which mode matches vrserver's real convention.
 	int spaceVelocityFixMode = 0;
+	// when true, the pose offsets below describe the LEFT controller and are
+	// mirrored for the right hand (position X negated; rotation Y/Z negated).
+	// physical controller pairs are mirror images, so the displacement
+	// between the tracked origin and the grip is mirrored too - identical
+	// offsets can only ever fit one hand.
+	bool mirrorOffsetsForRightHand = false;
 	double rotationOffsetDeg[3] = {0, 0, 0};
 	double positionOffsetCm[3] = {0, 0, 0};
 	ControllerAlignerConfig aligner = {};

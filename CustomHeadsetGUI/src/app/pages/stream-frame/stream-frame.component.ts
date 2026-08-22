@@ -330,7 +330,7 @@ export class StreamFrameComponent {
   get galaxyXr(): GalaxyXrConfig {
     if (this.rootSetting) {
       if (!this.rootSetting.galaxyXr) {
-        this.rootSetting.galaxyXr = { nativeIdentity: false };
+        this.rootSetting.galaxyXr = { nativeIdentity: false, nativeInputProfile: false };
       }
       return this.rootSetting.galaxyXr;
     }

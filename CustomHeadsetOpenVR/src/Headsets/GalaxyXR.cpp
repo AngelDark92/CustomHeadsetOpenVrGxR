@@ -50,6 +50,7 @@ void GalaxyXRHmdShim::PosTrackedDeviceActivate(uint32_t &unObjectId, vr::EVRInit
 
 	origModelNumber = vr::VRProperties()->GetStringProperty(container, vr::Prop_ModelNumber_String);
 	origManufacturer = vr::VRProperties()->GetStringProperty(container, vr::Prop_ManufacturerName_String);
+	origHmdInputProfile = vr::VRProperties()->GetStringProperty(container, vr::Prop_InputProfilePath_String);
 	haveBackup = true;
 	active = true;
 	DriverLog("GalaxyXRHmdShim: activating identity override (was model=\"%s\" manufacturer=\"%s\")",
@@ -65,6 +66,12 @@ void GalaxyXRHmdShim::ApplyIdentity(){
 	wrote |= SetStringIfDifferent(container, vr::Prop_ModelNumber_String, "Galaxy XR");
 	wrote |= SetStringIfDifferent(container, vr::Prop_ManufacturerName_String, "Samsung");
 	SetDeviceIcons(container, "headset_galaxy_xr_status");
+	if(driverConfig.galaxyXr.nativeInputProfile){
+		// repair the HMD's dangling {vrlink}/input/galaxy_xr_hmd_profile.json
+		// reference with our shipped official copy
+		wrote |= SetStringIfDifferent(container, vr::Prop_InputProfilePath_String,
+			"{" + driverConfigLoader.info.driverName + "}/input/galaxy_xr_hmd_profile.json");
+	}
 	if(wrote){
 		DriverLog("GalaxyXRHmdShim: identity applied");
 	}
@@ -75,6 +82,7 @@ bool GalaxyXRHmdShim::PreTrackedDeviceDeactivate(){
 		DriverLog("GalaxyXRHmdShim: restoring original identity on deactivate");
 		vr::VRProperties()->SetStringProperty(container, vr::Prop_ModelNumber_String, origModelNumber.c_str());
 		vr::VRProperties()->SetStringProperty(container, vr::Prop_ManufacturerName_String, origManufacturer.c_str());
+		vr::VRProperties()->SetStringProperty(container, vr::Prop_InputProfilePath_String, origHmdInputProfile.c_str());
 	}
 	active = false;
 	return true;
@@ -110,6 +118,8 @@ void GalaxyXRControllerShim::PosTrackedDeviceActivate(uint32_t &unObjectId, vr::
 	}
 
 	origRenderModel = vr::VRProperties()->GetStringProperty(container, vr::Prop_RenderModelName_String);
+	origInputProfile = vr::VRProperties()->GetStringProperty(container, vr::Prop_InputProfilePath_String);
+	origControllerType = vr::VRProperties()->GetStringProperty(container, vr::Prop_ControllerType_String);
 	haveBackup = true;
 	active = true;
 	DriverLog("GalaxyXRControllerShim: activating for %s (was rendermodel=\"%s\")", serial.c_str(), origRenderModel.c_str());
@@ -122,7 +132,17 @@ std::string GalaxyXRControllerShim::TargetModelName(){
 	// a non-empty renderModelVariant redirects to a tuning variant folder;
 	// SteamVR reloads the model whenever the name changes, which is what
 	// makes live alignment iteration possible.
-	std::string base = "galaxy_xr_controller";
+	// official animated Steam Link models (see resources/PERMISSIONS.md)
+	std::string base = "vst_controller";
+	// prefer the animated vst overlay when the build shipped it (see
+	// build.js --vst-models and PERMISSIONS.md; permission is conditional,
+	// so its absence must degrade silently to the MIT models)
+	{
+		std::string vstDir = driverConfigLoader.info.driverResources + "/rendermodels/galaxy_xr_controller_vst_" + (isLeft ? "left" : "right");
+		if(std::filesystem::exists(vstDir)){
+			base = "galaxy_xr_controller_vst";
+		}
+	}
 	std::string variant = driverConfig.galaxyXr.renderModelVariant;
 	if(!variant.empty()){
 		// a stale variant key (e.g. a tuning session that ended without
@@ -151,6 +171,21 @@ void GalaxyXRControllerShim::ApplyIdentity(){
 		appliedModel = model;
 		DriverLog("GalaxyXRControllerShim: rendermodel %s applied for %s", model.c_str(), serial.c_str());
 	}
+	if(driverConfig.galaxyXr.nativeInputProfile){
+		// the official native input profile: controller type
+		// galaxy_xr_controller with Valve's own legacy bindings, remapping
+		// and pose components (handgrip at the official z=0.098m/20.6deg,
+		// which corrects held-item orientation at the proper layer instead
+		// of pose offsets). note: the official remapping has no
+		// oculus_touch layout, so user-made custom Touch bindings do not
+		// auto-carry; per-game rebinding may be needed.
+		std::string profile = "{" + driverConfigLoader.info.driverName + "}/input/galaxy_xr_controller_profile.json";
+		bool wroteProfile = SetStringIfDifferent(container, vr::Prop_InputProfilePath_String, profile);
+		bool wroteType = SetStringIfDifferent(container, vr::Prop_ControllerType_String, "galaxy_xr_controller");
+		if(wroteProfile || wroteType){
+			DriverLog("GalaxyXRControllerShim: native input profile applied for %s", serial.c_str());
+		}
+	}
 }
 
 void GalaxyXRControllerShim::RunFrame(){
@@ -163,6 +198,8 @@ void GalaxyXRControllerShim::RunFrame(){
 bool GalaxyXRControllerShim::PreTrackedDeviceDeactivate(){
 	if(active && haveBackup){
 		vr::VRProperties()->SetStringProperty(container, vr::Prop_RenderModelName_String, origRenderModel.c_str());
+		vr::VRProperties()->SetStringProperty(container, vr::Prop_InputProfilePath_String, origInputProfile.c_str());
+		vr::VRProperties()->SetStringProperty(container, vr::Prop_ControllerType_String, origControllerType.c_str());
 	}
 	active = false;
 	return true;
