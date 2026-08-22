@@ -17,10 +17,14 @@ export type Settings = {
   generalHeadset: GeneralHeadsetConfig,
   customShader: CustomShaderConfig,
   streamFrame?: StreamFrameConfig,
+  galaxyXr?: GalaxyXrConfig,
   controllers?: ControllersConfig,
   forceTracking: boolean,
   takeCompositorScreenshots: boolean,
   watchDistortionProfiles: boolean,
+}
+export type GalaxyXrConfig = {
+  nativeIdentity: boolean,
 }
 export type ControllersConfig = {
   rotationOffsetDeg: { x: number, y: number, z: number },

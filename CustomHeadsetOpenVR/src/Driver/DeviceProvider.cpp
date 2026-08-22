@@ -9,6 +9,7 @@
 #include "Hooking/InterfaceHookInjector.h"
 
 #include "../Headsets/MeganeX8K.h"
+#include "../Headsets/GalaxyXR.h"
 #include "../Headsets/DreamAir.h"
 #include "../Headsets/GenericHeadset.h"
 #include "../Headsets/FakeHeadset.h"
@@ -4701,7 +4702,28 @@ bool CustomHeadsetDeviceProvider::HandleDeviceAdded(const char *&pchDeviceSerial
 		genericHeadsetShim->deviceProvider = this;
 		shims.insert(genericHeadsetShim);
 		pDriver = new ShimTrackedDeviceDriver(genericHeadsetShim, pDriver);
+		
+		#ifdef VENDOR_GALAXYXR
+		if(driverConfig.galaxyXr.nativeIdentity){
+			GalaxyXRHmdShim* galaxyXrHmdShim = new GalaxyXRHmdShim();
+			galaxyXrHmdShim->deviceProvider = this;
+			shims.insert(galaxyXrHmdShim);
+			pDriver = new ShimTrackedDeviceDriver(galaxyXrHmdShim, pDriver);
+		}
+		#endif
 	}
+	#ifdef VENDOR_GALAXYXR
+	if(eDeviceClass == vr::TrackedDeviceClass_Controller && driverConfig.galaxyXr.nativeIdentity){
+		// vrlink's Galaxy XR controllers; the shim verifies the tracking
+		// system at activate and stays inert on anything else
+		std::string serial = pchDeviceSerialNumber ? pchDeviceSerialNumber : "";
+		if(serial.rfind("SamsungVST-Controller", 0) == 0){
+			GalaxyXRControllerShim* controllerShim = new GalaxyXRControllerShim(serial);
+			shims.insert(controllerShim);
+			pDriver = new ShimTrackedDeviceDriver(controllerShim, pDriver);
+		}
+	}
+	#endif
 	// you can change eDeviceClass to change what an existing device shows up as
 	
 	// if false is returned the device will not be added

@@ -1,0 +1,5 @@
+newmtl galaxy_xr_controller_left
+Ka 1 1 1
+Kd 1 1 1
+Ks 0 0 0
+map_Kd galaxy_xr_controller_left.png

@@ -254,6 +254,24 @@ struct StreamFrameDimmingConfig{
 	double brightenSeconds = 1.0;
 };
 
+// Galaxy XR native-identity options (acted on only in the GalaxyXRNative
+// vendor build; the fields always exist so config parsing is uniform)
+struct GalaxyXrConfig{
+	// rewrite the streamed HMD's visible model/manufacturer to Samsung
+	// Galaxy XR, set device icons, and replace the controllers' dangling
+	// render model references with converted Galaxy XR controller models.
+	// backup/restore semantics; does not touch tracking-system, serial,
+	// controller type, or input profile. requires a SteamVR restart.
+	bool nativeIdentity = false;
+	// live render-model tuning: when non-empty, the controller shim points
+	// RenderModelName at {driver}/rendermodels/<variant>_left|_right instead
+	// of the default galaxy_xr_controller_*. changing this value in
+	// settings.json swaps the model live (SteamVR reloads on name change).
+	// used by tools/convert_rendermodels.py --live; cleared when the tuned
+	// transform is baked into the shipped assets.
+	std::string renderModelVariant = "";
+};
+
 struct StreamFrameConfig{
 	// process direct mode layer textures before the streaming driver consumes them
 	bool enable = false;
@@ -1346,6 +1364,7 @@ public:
 	// headsets whose driver composites frames itself, where the compositor
 	// shader replacement only runs while the dashboard is open.
 	StreamFrameConfig streamFrame = {};
+	GalaxyXrConfig galaxyXr = {};
 	
 	// streamed controller pose adjustments
 	ControllersConfig controllers = {};

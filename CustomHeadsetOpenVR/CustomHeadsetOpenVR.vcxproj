@@ -35,6 +35,7 @@
     <ClInclude Include="src\Driver\Hooking\Hooking.h" />
     <ClInclude Include="src\Driver\Hooking\InterfaceHookInjector.h" />
     <ClInclude Include="src\Headsets\MeganeX8K.h" />
+    <ClInclude Include="src\Headsets\GalaxyXR.h" />
     <ClInclude Include="src\HiddenArea\HiddenArea.h" />
   </ItemGroup>
   <ItemGroup>
@@ -75,6 +76,7 @@
     <ClCompile Include="src\Headsets\FakeHeadset.cpp" />
     <ClCompile Include="src\Headsets\MeganeX8K.cpp" />
     <ClCompile Include="src\Headsets\GenericHeadset.cpp" />
+    <ClCompile Include="src\Headsets\GalaxyXR.cpp" />
     <ClCompile Include="src\Helpers\DisplayHelper.cpp" />
     <ClCompile Include="src\Helpers\EyeTrackingOutput.cpp" />
     <ClCompile Include="src\Helpers\PimaxEyeTrackingBridge.cpp" />

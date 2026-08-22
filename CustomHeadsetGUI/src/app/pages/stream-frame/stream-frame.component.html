@@ -3,6 +3,21 @@
     <div class="note">Processing applied to the streamed frames of a direct mode headset (Steam Link / vrlink, e.g. Galaxy XR) right before the driver encodes them. Unlike the custom shader these settings apply at all times, not only while the dashboard is open. Changes apply live within about a second.</div>
 </div>
 
+@if(vendor){
+<div class="field">
+    <div class="title">
+        <span i18n>Galaxy XR Native Identity</span>
+        <app-field-tip info="Shows the streamed headset as Samsung Galaxy XR in SteamVR with matching icons, and gives the controllers their real render models instead of generic ones. Purely cosmetic: does not change tracking, eye tracking, bindings, or controller type. Requires a SteamVR restart." />
+    </div>
+    <div class="control">
+        <mat-slide-toggle [(ngModel)]="galaxyXr.nativeIdentity" (ngModelChange)="save()"></mat-slide-toggle>
+    </div>
+</div>
+<div class="field">
+    <div class="note" i18n>Native identity changes take effect after restarting SteamVR.</div>
+</div>
+}
+
 <div class="field">
     <div class="title">
         <span>Enable Stream Frame Processing</span>

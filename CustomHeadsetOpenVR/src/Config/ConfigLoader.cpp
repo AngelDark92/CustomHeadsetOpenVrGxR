@@ -375,6 +375,15 @@ void ConfigLoader::ParseConfig(){
 				if(customShaderData["colorMultiplier"]["b"].is_number()){ colorMultiplier.b = customShaderData["colorMultiplier"]["b"].get<double>(); }
 			}
 		}
+		if(data["galaxyXr"].is_object()){
+			json galaxyXrData = data["galaxyXr"];
+			if(galaxyXrData["nativeIdentity"].is_boolean()){
+				newConfig.galaxyXr.nativeIdentity = galaxyXrData["nativeIdentity"].get<bool>();
+			}
+			if(galaxyXrData["renderModelVariant"].is_string()){
+				newConfig.galaxyXr.renderModelVariant = galaxyXrData["renderModelVariant"].get<std::string>();
+			}
+		}
 		if(data["streamFrame"].is_object()){
 			json streamFrameData = data["streamFrame"];
 			if(streamFrameData["enable"].is_boolean()){

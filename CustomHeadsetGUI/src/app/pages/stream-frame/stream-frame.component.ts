@@ -9,7 +9,8 @@ import { MatIconModule } from '@angular/material/icon';
 import { MatInputModule } from '@angular/material/input';
 import { DriverSettingService } from '../../services/driver-setting.service';
 import { DriverInfoService } from '../../services/driver-info.service';
-import { Settings, StreamFrameConfig, ControllersConfig } from '../../services/JsonFileDefines';
+import { Settings, StreamFrameConfig, ControllersConfig, GalaxyXrConfig } from '../../services/JsonFileDefines';
+import { vendor } from '../../../environment';
 import { FieldTipComponent } from '../../utilities/field-tip/field-tip.component';
 import { ResetButtonComponent } from '../../utilities/reset-button/reset-button.component';
 import { StreamFrameCurveComponent } from '../../utilities/stream-frame-curve/stream-frame-curve.component';
@@ -322,6 +323,18 @@ export class StreamFrameComponent {
     this.tuneBandLast = last;
     this.settings.distortion.tune.bands = bands;
     this.save();
+  }
+
+  // Galaxy XR native identity (vendor builds only; page hides it otherwise)
+  vendor = vendor;
+  get galaxyXr(): GalaxyXrConfig {
+    if (this.rootSetting) {
+      if (!this.rootSetting.galaxyXr) {
+        this.rootSetting.galaxyXr = { nativeIdentity: false };
+      }
+      return this.rootSetting.galaxyXr;
+    }
+    return { nativeIdentity: false };
   }
 
   save() {

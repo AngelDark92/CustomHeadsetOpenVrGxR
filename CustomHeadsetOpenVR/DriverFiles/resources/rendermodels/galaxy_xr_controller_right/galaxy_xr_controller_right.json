@@ -1,0 +1,48 @@
+{
+ "components": {
+  "body": {
+   "filename": "galaxy_xr_controller_right.obj",
+   "component_local": {
+    "origin": [
+     0,
+     0,
+     0
+    ],
+    "rotate_xyz": [
+     0,
+     0,
+     0
+    ]
+   }
+  },
+  "openxr_grip": {
+   "component_local": {
+    "origin": [
+     0,
+     0,
+     0
+    ],
+    "rotate_xyz": [
+     0,
+     0,
+     0
+    ]
+   }
+  },
+  "openxr_aim": {
+   "component_local": {
+    "origin": [
+     0,
+     0.005,
+     -0.05
+    ],
+    "rotate_xyz": [
+     0,
+     0,
+     0
+    ]
+   }
+  }
+ },
+ "thumbnail": "galaxy_xr_controller_right.png"
+}

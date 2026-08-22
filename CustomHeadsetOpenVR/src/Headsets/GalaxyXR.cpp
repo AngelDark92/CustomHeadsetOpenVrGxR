@@ -1,0 +1,175 @@
+#include "GalaxyXR.h"
+#include "../Config/ConfigLoader.h"
+#include <filesystem>
+
+// helper: set a string property only when it differs, returns true if written
+static bool SetStringIfDifferent(vr::PropertyContainerHandle_t container, vr::ETrackedDeviceProperty prop, const std::string &value){
+	std::string current = vr::VRProperties()->GetStringProperty(container, prop);
+	if(current == value){
+		return false;
+	}
+	vr::VRProperties()->SetStringProperty(container, prop, value.c_str());
+	return true;
+}
+
+// prefix is one of headset_galaxy_xr_status / left_galaxy_xr_status /
+// right_galaxy_xr_status (icon set by Vilkka, see icons/galaxy_xr/CREDITS.txt)
+static void SetDeviceIcons(vr::PropertyContainerHandle_t container, const std::string &prefix){
+	std::string base = "{" + driverConfigLoader.info.driverName + "}/icons/galaxy_xr/" + prefix;
+	SetStringIfDifferent(container, vr::Prop_NamedIconPathDeviceOff_String,            base + "_off.png");
+	SetStringIfDifferent(container, vr::Prop_NamedIconPathDeviceSearching_String,      base + "_searching.gif");
+	SetStringIfDifferent(container, vr::Prop_NamedIconPathDeviceSearchingAlert_String, base + "_searching_alert.gif");
+	SetStringIfDifferent(container, vr::Prop_NamedIconPathDeviceReady_String,          base + "_ready.png");
+	SetStringIfDifferent(container, vr::Prop_NamedIconPathDeviceReadyAlert_String,     base + "_ready_alert.png");
+	SetStringIfDifferent(container, vr::Prop_NamedIconPathDeviceNotReady_String,       base + "_error.png");
+	SetStringIfDifferent(container, vr::Prop_NamedIconPathDeviceStandby_String,        base + "_standby.png");
+	SetStringIfDifferent(container, vr::Prop_NamedIconPathDeviceStandbyAlert_String,   base + "_standby_alert.png");
+	SetStringIfDifferent(container, vr::Prop_NamedIconPathDeviceAlertLow_String,       base + "_ready_low.png");
+}
+
+// ---------------- HMD ----------------
+
+void GalaxyXRHmdShim::PosTrackedDeviceActivate(uint32_t &unObjectId, vr::EVRInitError &returnValue){
+	if(returnValue != vr::VRInitError_None){
+		return;
+	}
+	container = vr::VRProperties()->TrackedDeviceToPropertyContainer(unObjectId);
+
+	// only act on the vrlink-streamed Galaxy XR. on the wire the HMD's
+	// tracking system is "oculus" (vrlink's Quest Pro profile asserts it;
+	// SamsungVST only survives on the controllers), so gate on the serial
+	// with the tracking system as a fallback
+	std::string serial = vr::VRProperties()->GetStringProperty(container, vr::Prop_SerialNumber_String);
+	std::string trackingSystem = vr::VRProperties()->GetStringProperty(container, vr::Prop_TrackingSystemName_String);
+	if(serial.find("GALAXYXR") == std::string::npos && trackingSystem != "SamsungVST"){
+		DriverLog("GalaxyXRHmdShim: serial \"%s\" / tracking system \"%s\" is not a Galaxy XR - staying inert",
+			serial.c_str(), trackingSystem.c_str());
+		shimActive = false;
+		return;
+	}
+
+	origModelNumber = vr::VRProperties()->GetStringProperty(container, vr::Prop_ModelNumber_String);
+	origManufacturer = vr::VRProperties()->GetStringProperty(container, vr::Prop_ManufacturerName_String);
+	haveBackup = true;
+	active = true;
+	DriverLog("GalaxyXRHmdShim: activating identity override (was model=\"%s\" manufacturer=\"%s\")",
+		origModelNumber.c_str(), origManufacturer.c_str());
+	ApplyIdentity();
+}
+
+void GalaxyXRHmdShim::ApplyIdentity(){
+	if(!active){
+		return;
+	}
+	bool wrote = false;
+	wrote |= SetStringIfDifferent(container, vr::Prop_ModelNumber_String, "Galaxy XR");
+	wrote |= SetStringIfDifferent(container, vr::Prop_ManufacturerName_String, "Samsung");
+	SetDeviceIcons(container, "headset_galaxy_xr_status");
+	if(wrote){
+		DriverLog("GalaxyXRHmdShim: identity applied");
+	}
+}
+
+bool GalaxyXRHmdShim::PreTrackedDeviceDeactivate(){
+	if(active && haveBackup){
+		DriverLog("GalaxyXRHmdShim: restoring original identity on deactivate");
+		vr::VRProperties()->SetStringProperty(container, vr::Prop_ModelNumber_String, origModelNumber.c_str());
+		vr::VRProperties()->SetStringProperty(container, vr::Prop_ManufacturerName_String, origManufacturer.c_str());
+	}
+	active = false;
+	return true;
+}
+
+void GalaxyXRHmdShim::HandleEvent(const vr::VREvent_t &event){
+	// vrlink re-asserts properties after activation; reapply when our
+	// container changes. ApplyIdentity only writes on difference, so the
+	// PropertyChanged events caused by our own writes converge immediately.
+	if(active && event.eventType == vr::VREvent_PropertyChanged && event.data.property.container == container){
+		ApplyIdentity();
+	}
+}
+
+// ---------------- Controllers ----------------
+
+GalaxyXRControllerShim::GalaxyXRControllerShim(const std::string &serial) : serial(serial){
+	isLeft = serial.find("Left") != std::string::npos;
+}
+
+void GalaxyXRControllerShim::PosTrackedDeviceActivate(uint32_t &unObjectId, vr::EVRInitError &returnValue){
+	if(returnValue != vr::VRInitError_None){
+		return;
+	}
+	container = vr::VRProperties()->TrackedDeviceToPropertyContainer(unObjectId);
+
+	std::string trackingSystem = vr::VRProperties()->GetStringProperty(container, vr::Prop_TrackingSystemName_String);
+	if(trackingSystem != "SamsungVST"){
+		DriverLog("GalaxyXRControllerShim: %s tracking system is \"%s\", not SamsungVST - staying inert",
+			serial.c_str(), trackingSystem.c_str());
+		shimActive = false;
+		return;
+	}
+
+	origRenderModel = vr::VRProperties()->GetStringProperty(container, vr::Prop_RenderModelName_String);
+	haveBackup = true;
+	active = true;
+	DriverLog("GalaxyXRControllerShim: activating for %s (was rendermodel=\"%s\")", serial.c_str(), origRenderModel.c_str());
+	ApplyIdentity();
+}
+
+std::string GalaxyXRControllerShim::TargetModelName(){
+	// replace the dangling {vrlink}/rendermodels/vst_controller_* reference
+	// (never resolves: vrlink ships no such model) with our converted asset.
+	// a non-empty renderModelVariant redirects to a tuning variant folder;
+	// SteamVR reloads the model whenever the name changes, which is what
+	// makes live alignment iteration possible.
+	std::string base = "galaxy_xr_controller";
+	std::string variant = driverConfig.galaxyXr.renderModelVariant;
+	if(!variant.empty()){
+		// a stale variant key (e.g. a tuning session that ended without
+		// 'done', followed by a rebuild that purged the tune folders) must
+		// not leave the controllers without a model: only honor the variant
+		// when its folder actually exists, otherwise fall back and log
+		std::string variantDir = driverConfigLoader.info.driverResources + "/rendermodels/" + variant + "_" + (isLeft ? "left" : "right");
+		if(std::filesystem::exists(variantDir)){
+			base = variant;
+		}else{
+			DriverLog("GalaxyXRControllerShim: renderModelVariant \"%s\" has no folder at %s - using default model",
+				variant.c_str(), variantDir.c_str());
+		}
+	}
+	return "{" + driverConfigLoader.info.driverName + "}/rendermodels/" + base + "_" + (isLeft ? "left" : "right");
+}
+
+void GalaxyXRControllerShim::ApplyIdentity(){
+	if(!active){
+		return;
+	}
+	std::string model = TargetModelName();
+	bool wrote = SetStringIfDifferent(container, vr::Prop_RenderModelName_String, model);
+	SetDeviceIcons(container, isLeft ? "left_galaxy_xr_status" : "right_galaxy_xr_status");
+	if(wrote){
+		appliedModel = model;
+		DriverLog("GalaxyXRControllerShim: rendermodel %s applied for %s", model.c_str(), serial.c_str());
+	}
+}
+
+void GalaxyXRControllerShim::RunFrame(){
+	// config hot-reload: swap the model live when the variant changes
+	if(active && TargetModelName() != appliedModel){
+		ApplyIdentity();
+	}
+}
+
+bool GalaxyXRControllerShim::PreTrackedDeviceDeactivate(){
+	if(active && haveBackup){
+		vr::VRProperties()->SetStringProperty(container, vr::Prop_RenderModelName_String, origRenderModel.c_str());
+	}
+	active = false;
+	return true;
+}
+
+void GalaxyXRControllerShim::HandleEvent(const vr::VREvent_t &event){
+	if(active && event.eventType == vr::VREvent_PropertyChanged && event.data.property.container == container){
+		ApplyIdentity();
+	}
+}
