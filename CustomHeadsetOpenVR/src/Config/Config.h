@@ -301,6 +301,23 @@ struct GalaxyXrConfig{
 	//           starvation and fall back to high)
 	// effective at the next SteamVR start / headset connect.
 	std::string streamQuality = "default";
+	// uniform scale for the controller render models. the official assets
+	// measure ~124x63mm while the physical controller tapes ~145x70mm, so a
+	// correction around 1.10-1.15 may fit better. applied to the WHOLE model
+	// system, not just meshes: the driver generates a scaled variant folder
+	// (geometry, component origins, motion pivots/centers and translation
+	// vectors; direction vectors and angles untouched) and swaps to it live
+	// via the render-model name-change reload. 1.0 uses the stock assets.
+	double renderModelScale = 1.0;
+	// apply the fixed raw->grip convention shift to the controller poses
+	// (rotate X +22deg, translate +5cm local Z): vrlink's raw pose is
+	// aim-convention while games' default binding paths attach at raw
+	// expecting a Touch/grip-convention frame. the shift is a driver
+	// constant, not a user offset - the GUI pose offsets stay personal
+	// trim on top. the grip-family render model components are rebased by
+	// the inverse so pose-selecting bindings land on the same physical
+	// points as before. escape hatch only; leave on.
+	bool gripConvention = true;
 };
 
 struct StreamFrameConfig{
@@ -1164,9 +1181,27 @@ struct ControllersConfig{
 	// physical controller pairs are mirror images, so the displacement
 	// between the tracked origin and the grip is mirrored too - identical
 	// offsets can only ever fit one hand.
+	#ifdef VENDOR_GALAXYXR
+	// measured asymmetric residual of vrlink's controller pose, validated
+	// against camera passthrough (virtual model overlaid on the physical
+	// controller): 5deg yaw + 0.5cm lateral, mirrored per hand. the large
+	// hand-symmetric piece (22deg pitch, 5cm Z) is the fixed gripConvention
+	// transform; this residual rides the mirror-aware offset layer instead
+	// because a hand-dependent fixed transform would make the grip-component
+	// rebase non-pure-X (unverifiable euler-order assumptions). unlike the
+	// convention piece, the residual cannot double-apply anywhere: the grip
+	// components contain no yaw/lateral terms to duplicate, and the rebase
+	// algebra delivers it exactly once to grip-pose-selecting bindings
+	// (conjugated by the 22deg pitch: the X-translation is exactly
+	// invariant, the yaw axis tilts sub-perceptibly). safe always-on.
+	bool mirrorOffsetsForRightHand = true;
+	double rotationOffsetDeg[3] = {0, 5, 0};
+	double positionOffsetCm[3] = {0.5, 0, 0};
+	#else
 	bool mirrorOffsetsForRightHand = false;
 	double rotationOffsetDeg[3] = {0, 0, 0};
 	double positionOffsetCm[3] = {0, 0, 0};
+	#endif
 	ControllerAlignerConfig aligner = {};
 };
 

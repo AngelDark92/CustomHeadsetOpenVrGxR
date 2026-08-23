@@ -48,6 +48,15 @@
     </div>
 </div>
 <div class="field">
+    <div class="title">
+        <span i18n>Controller Model Size</span>
+        <app-field-tip info="Uniform scale for the controller models. The official assets measure about 124x63mm while the physical controller is about 145x70mm, so values around 1.10-1.17 may match reality better. Scales the whole model system together (geometry, animation pivots, grip/aim anchors), applied live within about a second. 1.0 = stock." />
+    </div>
+    <div class="control">
+        <input type="number" min="0.5" max="2" step="0.01" [(ngModel)]="galaxyXr.renderModelScale" (ngModelChange)="save()" style="width: 90px;" />
+    </div>
+</div>
+<div class="field">
     <div class="note" i18n>Native identity changes take effect after restarting SteamVR.</div>
 </div>
 }
@@ -908,6 +917,15 @@
         <span>X</span><input matInput [(ngModel)]="controllerSettings.positionOffsetCm.x" step="0.5" (ngModelChange)="save()" type="number">
         <span>Y</span><input matInput [(ngModel)]="controllerSettings.positionOffsetCm.y" step="0.5" (ngModelChange)="save()" type="number">
         <span>Z</span><input matInput [(ngModel)]="controllerSettings.positionOffsetCm.z" step="0.5" (ngModelChange)="save()" type="number">
+    </div>
+</div>
+<div class="field">
+    <div class="title">
+        <span i18n>Mirror Offsets For Right Hand</span>
+        <app-field-tip info="Treats the offsets above as describing the LEFT controller and mirrors them for the right hand: position X and rotation Y/Z are negated; pitch (rotation X) and position Y/Z apply identically to both, since controller pairs are physical mirror images. Turn on if a Y or Z rotation helps one hand but hurts the other." />
+    </div>
+    <div class="control">
+        <mat-slide-toggle [(ngModel)]="controllerSettings.mirrorOffsetsForRightHand" (ngModelChange)="save()"></mat-slide-toggle>
     </div>
 </div>
 }

@@ -392,6 +392,12 @@ void ConfigLoader::ParseConfig(){
 			if(galaxyXrData["streamQuality"].is_string()){
 				newConfig.galaxyXr.streamQuality = galaxyXrData["streamQuality"].get<std::string>();
 			}
+			if(galaxyXrData["renderModelScale"].is_number()){
+				newConfig.galaxyXr.renderModelScale = galaxyXrData["renderModelScale"].get<double>();
+			}
+			if(galaxyXrData["gripConvention"].is_boolean()){
+				newConfig.galaxyXr.gripConvention = galaxyXrData["gripConvention"].get<bool>();
+			}
 		}
 		if(data["streamFrame"].is_object()){
 			json streamFrameData = data["streamFrame"];

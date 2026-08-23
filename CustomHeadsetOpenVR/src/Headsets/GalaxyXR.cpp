@@ -1,6 +1,11 @@
 #include "GalaxyXR.h"
 #include "../Config/ConfigLoader.h"
 #include <filesystem>
+#include <fstream>
+#include <functional>
+#include <mutex>
+#include <cmath>
+#include "nlohmann/json.hpp"
 
 // helper: set a string property only when it differs, returns true if written
 static bool SetStringIfDifferent(vr::PropertyContainerHandle_t container, vr::ETrackedDeviceProperty prop, const std::string &value){
@@ -242,6 +247,87 @@ void GalaxyXRControllerShim::PosTrackedDeviceActivate(uint32_t &unObjectId, vr::
 	ApplyIdentity();
 }
 
+// generate a uniformly scaled copy of a render model folder: OBJ vertex
+// positions and the json's length-valued fields (component origins, motion
+// pivot/center, press_translate) are multiplied; direction vectors (axis)
+// and angles (rotate_xyz, value_mapping, joystick ranges) are copied as-is;
+// all other files (mtl, textures) are copied verbatim.
+static bool GenerateScaledRenderModel(const std::string &srcDir, const std::string &dstDir, double scale, const std::string &srcJsonName, const std::string &dstJsonName){
+	namespace fs = std::filesystem;
+	try{
+		if(fs::exists(dstDir)){
+			return true;
+		}
+		std::string tmpDir = dstDir + ".tmp";
+		fs::remove_all(tmpDir);
+		fs::create_directories(tmpDir);
+		for(const auto &entry : fs::directory_iterator(srcDir)){
+			if(!entry.is_regular_file()){ continue; }
+			std::string name = entry.path().filename().string();
+			std::string ext = entry.path().extension().string();
+			if(ext == ".obj"){
+				std::ifstream in(entry.path());
+				std::ofstream out(fs::path(tmpDir) / name);
+				std::string line;
+				while(std::getline(in, line)){
+					double x, y, z;
+					if(line.rfind("v ", 0) == 0 && sscanf(line.c_str(), "v %lf %lf %lf", &x, &y, &z) == 3){
+						char buf[128];
+						snprintf(buf, sizeof(buf), "v %.6f %.6f %.6f", x * scale, y * scale, z * scale);
+						out << buf << "\n";
+					}else{
+						out << line << "\n";
+					}
+				}
+			}else if(name == srcJsonName){
+				std::ifstream in(entry.path());
+				nlohmann::json j = nlohmann::json::parse(in, nullptr, true, true);
+				std::function<void(nlohmann::json&)> walk = [&](nlohmann::json &node){
+					if(node.is_object()){
+						for(auto &item : node.items()){
+							const std::string &key = item.key();
+							nlohmann::json &val = item.value();
+							if(val.is_array() && (key == "origin" || key == "pivot" || key == "center" || key == "press_translate")){
+								for(auto &n : val){
+									if(n.is_number()){ n = n.get<double>() * scale; }
+								}
+							}else{
+								walk(val);
+							}
+						}
+					}else if(node.is_array()){
+						for(auto &child : node){ walk(child); }
+					}
+				};
+				walk(j);
+				std::ofstream out(fs::path(tmpDir) / dstJsonName);
+				out << j.dump(1);
+			}else{
+				fs::copy_file(entry.path(), fs::path(tmpDir) / name);
+			}
+		}
+		fs::rename(tmpDir, dstDir);
+		return true;
+	}catch(const std::exception &e){
+		DriverLog("GalaxyXR: failed to generate scaled render model %s: %s", dstDir.c_str(), e.what());
+		return false;
+	}
+}
+
+// purge scaled variants other than the one currently wanted (~7MB each
+// while the user dials the knob)
+static void PurgeStaleScaledModels(const std::string &rendermodelsDir, const std::string &keepPrefix){
+	namespace fs = std::filesystem;
+	try{
+		for(const auto &entry : fs::directory_iterator(rendermodelsDir)){
+			std::string name = entry.path().filename().string();
+			if(name.rfind("vst_controller_s", 0) == 0 && name.rfind(keepPrefix, 0) != 0){
+				fs::remove_all(entry.path());
+			}
+		}
+	}catch(const std::exception &){}
+}
+
 std::string GalaxyXRControllerShim::TargetModelName(){
 	// replace the dangling {vrlink}/rendermodels/vst_controller_* reference
 	// (never resolves: vrlink ships no such model) with our converted asset.
@@ -250,15 +336,6 @@ std::string GalaxyXRControllerShim::TargetModelName(){
 	// makes live alignment iteration possible.
 	// official animated Steam Link models (see resources/PERMISSIONS.md)
 	std::string base = "vst_controller";
-	// prefer the animated vst overlay when the build shipped it (see
-	// build.js --vst-models and PERMISSIONS.md; permission is conditional,
-	// so its absence must degrade silently to the MIT models)
-	{
-		std::string vstDir = driverConfigLoader.info.driverResources + "/rendermodels/galaxy_xr_controller_vst_" + (isLeft ? "left" : "right");
-		if(std::filesystem::exists(vstDir)){
-			base = "galaxy_xr_controller_vst";
-		}
-	}
 	std::string variant = driverConfig.galaxyXr.renderModelVariant;
 	if(!variant.empty()){
 		// a stale variant key (e.g. a tuning session that ended without
@@ -271,6 +348,27 @@ std::string GalaxyXRControllerShim::TargetModelName(){
 		}else{
 			DriverLog("GalaxyXRControllerShim: renderModelVariant \"%s\" has no folder at %s - using default model",
 				variant.c_str(), variantDir.c_str());
+		}
+	}
+	// uniform whole-model-system scale: generate (once per value) a variant
+	// with geometry, component origins and motion pivots scaled together,
+	// and swap to it via the name-change reload. tuning variants win.
+	int scalePct = (int)std::lround(driverConfig.galaxyXr.renderModelScale * 100.0);
+	if(variant.empty() && scalePct != 100 && scalePct >= 50 && scalePct <= 200){
+		std::string hand = isLeft ? "left" : "right";
+		std::string scaledBase = "vst_controller_s" + std::to_string(scalePct);
+		std::string rmDir = driverConfigLoader.info.driverResources + "/rendermodels";
+		static std::mutex genMutex;
+		std::lock_guard<std::mutex> lock(genMutex);
+		PurgeStaleScaledModels(rmDir, scaledBase);
+		bool ok = GenerateScaledRenderModel(
+			rmDir + "/vst_controller_" + hand,
+			rmDir + "/" + scaledBase + "_" + hand,
+			driverConfig.galaxyXr.renderModelScale,
+			"vst_controller_" + hand + ".json",
+			scaledBase + "_" + hand + ".json");
+		if(ok){
+			base = scaledBase;
 		}
 	}
 	return "{" + driverConfigLoader.info.driverName + "}/rendermodels/" + base + "_" + (isLeft ? "left" : "right");

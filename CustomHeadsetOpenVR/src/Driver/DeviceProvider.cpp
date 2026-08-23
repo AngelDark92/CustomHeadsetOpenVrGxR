@@ -1001,6 +1001,24 @@ bool CustomHeadsetDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 			pose.result = vr::TrackingResult_Running_OK;
 		}
 	}
+	#ifdef VENDOR_GALAXYXR
+	// fixed raw->grip convention shift for the Galaxy XR controllers (see
+	// GalaxyXrConfig::gripConvention): applied before the user's personal
+	// trim offsets so those keep meaning small corrections. the grip-family
+	// render model components are rebased by the inverse of exactly this
+	// transform - keep the two in sync.
+	if(driverConfig.galaxyXr.gripConvention && openVRID != vr::k_unTrackedDeviceIndex_Hmd
+			&& GetDeviceClass(openVRID) == (int)vr::TrackedDeviceClass_Controller){
+		static const double kGripConventionRotDeg[3] = {22, 0, 0};
+		double fixLocal[3] = {0, 0, 0.05};
+		double fixWorld[3];
+		QuatRotateVector(pose.qRotation, fixLocal, fixWorld);
+		pose.vecPosition[0] += fixWorld[0];
+		pose.vecPosition[1] += fixWorld[1];
+		pose.vecPosition[2] += fixWorld[2];
+		pose.qRotation = QuatMultiply(pose.qRotation, QuatFromEulerDeg(kGripConventionRotDeg));
+	}
+	#endif
 	// controller pose offsets: local frame rotation and translation, applied
 	// before velocity derivation so the ring tracks the adjusted origin.
 	// (a config change mid-session moves the origin once; the teleport guard
