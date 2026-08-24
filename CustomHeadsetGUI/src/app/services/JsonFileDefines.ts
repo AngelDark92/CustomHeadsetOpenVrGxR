@@ -30,6 +30,10 @@ export type GalaxyXrConfig = {
   streamQuality?: string,
   renderModelScale?: number,
   gripConvention?: boolean,
+  skeletonOffsetXCm?: number,
+  skeletonOffsetYCm?: number,
+  skeletonOffsetZCm?: number,
+  skeletonOffsetMirror?: boolean,
 }
 export type ControllersConfig = {
   mirrorOffsetsForRightHand?: boolean,

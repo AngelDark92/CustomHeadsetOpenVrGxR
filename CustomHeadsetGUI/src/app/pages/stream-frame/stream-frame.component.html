@@ -57,6 +57,33 @@
     </div>
 </div>
 <div class="field">
+    <div class="title">
+        <span>Debug: Skeleton Hand Offset X (cm)</span>
+        <app-field-tip info="Moves the skeletal hand relative to its grip anchor without touching the tracked pose, controller model, or the pivot games rotate held items around. Mirrored to the right hand. Applies LIVE - no restart, watch the hand move as you adjust." />
+    </div>
+    <div class="control">
+        <input type="number" min="-10" max="10" step="0.25" [(ngModel)]="galaxyXr.skeletonOffsetXCm" (ngModelChange)="save()" style="width: 90px;" />
+    </div>
+</div>
+<div class="field">
+    <div class="title">
+        <span>Debug: Skeleton Hand Offset Y (cm)</span>
+        <app-field-tip info="Second axis of the live skeletal hand offset. Axes are in the skeleton root frame - identify directions empirically by nudging; changes apply immediately." />
+    </div>
+    <div class="control">
+        <input type="number" min="-10" max="10" step="0.25" [(ngModel)]="galaxyXr.skeletonOffsetYCm" (ngModelChange)="save()" style="width: 90px;" />
+    </div>
+</div>
+<div class="field">
+    <div class="title">
+        <span>Debug: Skeleton Hand Offset Z (cm)</span>
+        <app-field-tip info="Third axis of the live skeletal hand offset. Set skeletonOffsetMirror to false in settings.json if the left hand needs the X direction unmirrored." />
+    </div>
+    <div class="control">
+        <input type="number" min="-10" max="10" step="0.25" [(ngModel)]="galaxyXr.skeletonOffsetZCm" (ngModelChange)="save()" style="width: 90px;" />
+    </div>
+</div>
+<div class="field">
     <div class="note" i18n>Native identity changes take effect after restarting SteamVR.</div>
 </div>
 }

@@ -318,6 +318,16 @@ struct GalaxyXrConfig{
 	// the inverse so pose-selecting bindings land on the same physical
 	// points as before. escape hatch only; leave on.
 	bool gripConvention = true;
+	// skeletal-hand offset (cm), applied in the driver-input tap to the
+	// wrist bone of vrlink's skeleton: moves the skeletal hand relative to
+	// its anchor WITHOUT touching the device pose, render model, or the
+	// grip pivot games rotate around. hot-applied per skeleton update -
+	// tune live from settings.json. x is mirrored for the right hand when
+	// skeletonOffsetMirror is true.
+	double skeletonOffsetXCm = 0.0;
+	double skeletonOffsetYCm = 0.0;
+	double skeletonOffsetZCm = 0.0;
+	bool skeletonOffsetMirror = true;
 };
 
 struct StreamFrameConfig{

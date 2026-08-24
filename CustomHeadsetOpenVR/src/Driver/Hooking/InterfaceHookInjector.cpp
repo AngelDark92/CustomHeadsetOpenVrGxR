@@ -44,6 +44,14 @@ static Hook<vr::EVRInputError(*)(vr::IVRDriverInput *, vr::PropertyContainerHand
 static Hook<vr::EVRInputError(*)(vr::IVRDriverInput *, vr::VRInputComponentHandle_t, const vr::VREyeTrackingData_t *, double)>
 	UpdateEyeTrackingComponentHook004("IVRDriverInput004::UpdateEyeTrackingComponent");
 
+// skeleton tap: intercept vrlink's skeletal input so the wrist bone can be
+// offset in the shim (see CustomHeadsetDeviceProvider::HandleSkeletonUpdate)
+static Hook<vr::EVRInputError(*)(vr::IVRDriverInput *, vr::PropertyContainerHandle_t, const char *, const char *, const char *, vr::EVRSkeletalTrackingLevel, const vr::VRBoneTransform_t *, uint32_t, vr::VRInputComponentHandle_t *)>
+	CreateSkeletonComponentHook004("IVRDriverInput004::CreateSkeletonComponent");
+
+static Hook<vr::EVRInputError(*)(vr::IVRDriverInput *, vr::VRInputComponentHandle_t, vr::EVRSkeletalMotionRange, const vr::VRBoneTransform_t *, uint32_t)>
+	UpdateSkeletonComponentHook004("IVRDriverInput004::UpdateSkeletonComponent");
+
 static void DetourTrackedDevicePoseUpdated005(vr::IVRServerDriverHost *_this, uint32_t unWhichDevice, const vr::DriverPose_t &newPose, uint32_t unPoseStructSize)
 {
 	//TRACE("ServerTrackedDeviceProvider::DetourTrackedDevicePoseUpdated(%d)", unWhichDevice);
@@ -142,6 +150,25 @@ static vr::EVRInputError DetourUpdateEyeTrackingComponent004(vr::IVRDriverInput 
 	return error;
 }
 
+static vr::EVRInputError DetourCreateSkeletonComponent004(vr::IVRDriverInput *_this, vr::PropertyContainerHandle_t ulContainer, const char *pchName, const char *pchSkeletonPath, const char *pchBasePosePath, vr::EVRSkeletalTrackingLevel eSkeletalTrackingLevel, const vr::VRBoneTransform_t *pGripLimitTransforms, uint32_t unGripLimitTransformCount, vr::VRInputComponentHandle_t *pHandle)
+{
+	auto error = CreateSkeletonComponentHook004.originalFunc(_this, ulContainer, pchName, pchSkeletonPath, pchBasePosePath, eSkeletalTrackingLevel, pGripLimitTransforms, unGripLimitTransformCount, pHandle);
+	if(pHandle){
+		Driver->OnSkeletonComponentCreated(ulContainer, pchName, pchSkeletonPath, *pHandle);
+	}
+	return error;
+}
+
+static vr::EVRInputError DetourUpdateSkeletonComponent004(vr::IVRDriverInput *_this, vr::VRInputComponentHandle_t ulComponent, vr::EVRSkeletalMotionRange eMotionRange, const vr::VRBoneTransform_t *pTransforms, uint32_t unTransformCount)
+{
+	vr::VRBoneTransform_t adjusted[64];
+	if(pTransforms && unTransformCount > 1 && unTransformCount <= 64
+			&& Driver->HandleSkeletonUpdate(ulComponent, pTransforms, unTransformCount, adjusted)){
+		return UpdateSkeletonComponentHook004.originalFunc(_this, ulComponent, eMotionRange, adjusted, unTransformCount);
+	}
+	return UpdateSkeletonComponentHook004.originalFunc(_this, ulComponent, eMotionRange, pTransforms, unTransformCount);
+}
+
 static void *DetourGetGenericInterface(vr::IVRDriverContext *_this, const char *pchInterfaceVersion, vr::EVRInitError *peError)
 {
 	Driver->driverContexts.insert(_this);  // Store the driver context for later use
@@ -199,6 +226,16 @@ static void *DetourGetGenericInterface(vr::IVRDriverContext *_this, const char *
 		{
 			UpdateScalarComponentHook004.CreateHookInObjectVTable(originalInterface, 3, &DetourUpdateScalarComponent004);
 			IHook::Register(&UpdateScalarComponentHook004);
+		}
+		if (!IHook::Exists(CreateSkeletonComponentHook004.name))
+		{
+			CreateSkeletonComponentHook004.CreateHookInObjectVTable(originalInterface, 5, &DetourCreateSkeletonComponent004);
+			IHook::Register(&CreateSkeletonComponentHook004);
+		}
+		if (!IHook::Exists(UpdateSkeletonComponentHook004.name))
+		{
+			UpdateSkeletonComponentHook004.CreateHookInObjectVTable(originalInterface, 6, &DetourUpdateSkeletonComponent004);
+			IHook::Register(&UpdateSkeletonComponentHook004);
 		}
 		if (!IHook::Exists(CreatePoseComponentHook004.name))
 		{

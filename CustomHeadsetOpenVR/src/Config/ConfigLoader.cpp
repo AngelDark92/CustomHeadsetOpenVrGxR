@@ -398,6 +398,18 @@ void ConfigLoader::ParseConfig(){
 			if(galaxyXrData["gripConvention"].is_boolean()){
 				newConfig.galaxyXr.gripConvention = galaxyXrData["gripConvention"].get<bool>();
 			}
+			if(galaxyXrData["skeletonOffsetXCm"].is_number()){
+				newConfig.galaxyXr.skeletonOffsetXCm = galaxyXrData["skeletonOffsetXCm"].get<double>();
+			}
+			if(galaxyXrData["skeletonOffsetYCm"].is_number()){
+				newConfig.galaxyXr.skeletonOffsetYCm = galaxyXrData["skeletonOffsetYCm"].get<double>();
+			}
+			if(galaxyXrData["skeletonOffsetZCm"].is_number()){
+				newConfig.galaxyXr.skeletonOffsetZCm = galaxyXrData["skeletonOffsetZCm"].get<double>();
+			}
+			if(galaxyXrData["skeletonOffsetMirror"].is_boolean()){
+				newConfig.galaxyXr.skeletonOffsetMirror = galaxyXrData["skeletonOffsetMirror"].get<bool>();
+			}
 		}
 		if(data["streamFrame"].is_object()){
 			json streamFrameData = data["streamFrame"];

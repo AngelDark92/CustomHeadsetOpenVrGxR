@@ -355,6 +355,15 @@ export class StreamFrameComponent {
       if (this.rootSetting.galaxyXr.renderModelScale === undefined) {
         this.rootSetting.galaxyXr.renderModelScale = 1.0;
       }
+      if (this.rootSetting.galaxyXr.skeletonOffsetXCm === undefined) {
+        this.rootSetting.galaxyXr.skeletonOffsetXCm = 0.0;
+      }
+      if (this.rootSetting.galaxyXr.skeletonOffsetYCm === undefined) {
+        this.rootSetting.galaxyXr.skeletonOffsetYCm = 0.0;
+      }
+      if (this.rootSetting.galaxyXr.skeletonOffsetZCm === undefined) {
+        this.rootSetting.galaxyXr.skeletonOffsetZCm = 0.0;
+      }
       return this.rootSetting.galaxyXr;
     }
     return { nativeIdentity: false };

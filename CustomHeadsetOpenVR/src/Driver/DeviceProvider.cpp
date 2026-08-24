@@ -857,6 +857,52 @@ void CustomHeadsetDeviceProvider::OnPoseComponentCreated(vr::PropertyContainerHa
 	poseComponents[handle] = info;
 }
 
+// skeleton tap: track vrlink's skeletal components and offset the wrist
+// bone (bone 1, root-relative) by the configured amount. this shifts the
+// whole skeletal hand relative to its anchor while the device pose, render
+// model, components and the grip pivot all stay put - the one degree of
+// freedom nothing else reaches. hot: values read per update.
+static std::mutex skeletonTapMutex;
+static std::map<vr::VRInputComponentHandle_t, int> skeletonTapHands;
+
+void CustomHeadsetDeviceProvider::OnSkeletonComponentCreated(vr::PropertyContainerHandle_t container, const char *name, const char *skeletonPath, vr::VRInputComponentHandle_t handle){
+	std::string path = skeletonPath ? skeletonPath : "";
+	int hand = path.find("right") != std::string::npos ? 1 : 0;
+	{
+		std::lock_guard<std::mutex> lock(skeletonTapMutex);
+		skeletonTapHands[handle] = hand;
+	}
+	DriverLog("SkeletonTap: component %s (%s) hand=%s handle=%llu", name ? name : "?", path.c_str(), hand ? "right" : "left", (unsigned long long)handle);
+}
+
+bool CustomHeadsetDeviceProvider::HandleSkeletonUpdate(vr::VRInputComponentHandle_t handle, const vr::VRBoneTransform_t *bones, uint32_t count, vr::VRBoneTransform_t *outBones){
+	double x = driverConfig.galaxyXr.skeletonOffsetXCm * 0.01;
+	double y = driverConfig.galaxyXr.skeletonOffsetYCm * 0.01;
+	double z = driverConfig.galaxyXr.skeletonOffsetZCm * 0.01;
+	if(x == 0.0 && y == 0.0 && z == 0.0){
+		return false;
+	}
+	int hand;
+	{
+		std::lock_guard<std::mutex> lock(skeletonTapMutex);
+		auto it = skeletonTapHands.find(handle);
+		if(it == skeletonTapHands.end()){
+			return false;
+		}
+		hand = it->second;
+	}
+	if(hand == 1 && driverConfig.galaxyXr.skeletonOffsetMirror){
+		x = -x;
+	}
+	for(uint32_t i = 0; i < count; i++){
+		outBones[i] = bones[i];
+	}
+	outBones[1].position.v[0] += (float)x;
+	outBones[1].position.v[1] += (float)y;
+	outBones[1].position.v[2] += (float)z;
+	return true;
+}
+
 void CustomHeadsetDeviceProvider::OnPoseComponentUpdated(vr::VRInputComponentHandle_t handle, const vr::HmdMatrix34_t* offset, double timeOffset){
 	double now = std::chrono::duration_cast<std::chrono::microseconds>(
 		std::chrono::steady_clock::now().time_since_epoch()).count() / 1000000.0;
