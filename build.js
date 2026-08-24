@@ -4,7 +4,7 @@ let child_process = require("child_process")
 
 // Vendor-aware build script, adapted from CustomHeadsetOpenVR.
 // Builds the driver (MSBuild) and the GUI (npm) and stages a release folder.
-//   node build.js --vendor galaxyxr   -> CustomHeadsetOpenVR with Galaxy features
+//   node build.js --vendor galaxyxr   -> resource-only Galaxy XR package + GUI
 //   node build.js                     -> vendor-neutral CustomHeadsetOpenVR
 
 // Argument parsing
@@ -47,13 +47,9 @@ if (vendor == "neutral") {
 	vendor = ""
 }
 
-// Galaxy XR has one canonical pipeline. Delegate before legacy staging or
-// cleanup creates misleading empty release folders.
+// Galaxy XR has one resource-only pipeline. driver_vrlink remains the active
+// HMD/controller owner; this build validates and bundles only its resources.
 if (vendor === "galaxyxr") {
-	if (!buildDriver) {
-		console.error("--no-driver is not supported for Galaxy XR because the GUI bundle must snapshot freshly validated driver resources")
-		process.exit(1)
-	}
 	let script = path.join(__dirname, "tools", "Build-GalaxyXR.ps1")
 	let psArgs = ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script]
 	if (!buildGui) psArgs.push("-SkipGui")

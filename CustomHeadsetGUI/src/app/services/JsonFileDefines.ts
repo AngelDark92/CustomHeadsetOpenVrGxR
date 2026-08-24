@@ -37,14 +37,6 @@ export type GalaxyXrConfig = {
   skeletonOffsetYCm?: number,
   skeletonOffsetZCm?: number,
   skeletonOffsetMirror?: boolean,
-  telemetry?: {
-    enable?: boolean,
-    requirePairing?: boolean,
-    pairingTokenHex?: string,
-    allowedClients?: Array<{ versionCode: number, apkSha256: string, bridgeSha256: string }>,
-  },
-  eye?: { source?: string },
-  face?: { enableLosslessOutput?: boolean },
 }
 export type ControllersConfig = {
   mirrorOffsetsForRightHand?: boolean,

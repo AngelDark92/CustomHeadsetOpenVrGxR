@@ -1,8 +1,16 @@
+@if(sds.galaxyXrIntegration){
+<div class="field">
+    <div class="section-title">
+        Galaxy XR SteamVR Resources
+    </div>
+</div>
+}@else{
 <div class="field">
     <div class="section-title">
         Custom Headset Driver
     </div>
 </div>
+}
 <div class="field">
     <div class="title" i18n>App Version</div>
     <div class="control">
@@ -59,8 +67,8 @@
     <div class="section-title" i18n>Galaxy XR Setup</div>
 </div>
 <div class="field">
-    <div class="title" i18n>Driver packages</div>
-    <div class="control">{{sds.galaxyXrSetupReadiness().packages ? 'Installed' : 'Install required'}}</div>
+    <div class="title" i18n>SteamVR resource driver</div>
+    <div class="control">{{sds.driverInstalled() ? 'Installed' : 'Install required'}}</div>
 </div>
 @if(sds.driverRepairReason(); as reason){
 <div class="field">
@@ -69,50 +77,18 @@
 </div>
 }
 <div class="field">
-    <div class="title" i18n>Signed APK enrollment</div>
-    <div class="control">{{sds.galaxyXrSetupReadiness().apkEnrolled ? 'Configured' : 'Enrollment required'}}</div>
-</div>
-<div class="field">
-    <div class="title" i18n>Eye tracking path</div>
-    <div class="control">{{sds.galaxyXrSetupReadiness().eye ? 'Android XR configured' : 'Not configured'}}</div>
-</div>
-<div class="field">
-    <div class="title" i18n>Face tracking path</div>
-    <div class="control">{{sds.galaxyXrSetupReadiness().face ? 'GXRP configured' : 'Not configured'}}</div>
-</div>
-<div class="field">
-    <div class="section-title" i18n>Galaxy XR Live Status</div>
-</div>
-<div class="field">
-    <div class="title" i18n>Driver heartbeat</div>
+    <div class="title" i18n>Face and tongue tracking</div>
     <div class="control">
-        @if(!sds.galaxyXrRuntimeStatus().available){ <span i18n>SteamVR has not reported yet</span> }
-        @else if(sds.galaxyXrRuntimeStatus().stale){ <span i18n>Stale - restart SteamVR</span> }
-        @else { <span>{{sds.galaxyXrRuntimeStatus().stage}} / {{sds.galaxyXrRuntimeStatus().state}}</span> }
+        <span i18n>Install VRCFaceTracking and the matching Galaxy XR LinkFT module. In Steam Link, enable OSC, Share eye data, and Share face data; set OSC output port to 9015.</span>
+        <a (click)="openExternal($event, 'https://github.com/compdoge/LinkFT')" href="https://github.com/compdoge/LinkFT" style="margin-left: 16px;">
+            <span i18n>LinkFT instructions</span>
+        </a>
     </div>
 </div>
 <div class="field">
-    <div class="title" i18n>Authenticated APK session</div>
-    <div class="control">{{sds.galaxyXrRuntimeStatus().session}}</div>
+    <div class="title" i18n>Connection setup</div>
+    <div class="control" i18n>No desktop IP, pairing token, APK hash, or telemetry enrollment is required.</div>
 </div>
-<div class="field">
-    <div class="title" i18n>Headset binding</div>
-    <div class="control">{{sds.galaxyXrRuntimeStatus().hmd}}</div>
-</div>
-<div class="field">
-    <div class="title" i18n>Eye tracking runtime</div>
-    <div class="control">{{sds.galaxyXrRuntimeStatus().eye}}</div>
-</div>
-<div class="field">
-    <div class="title" i18n>Face tracking runtime</div>
-    <div class="control">{{sds.galaxyXrRuntimeStatus().face}}</div>
-</div>
-@if(sds.galaxyXrRuntimeStatus().lastError){
-<div class="field">
-    <div class="title" i18n>Runtime reason</div>
-    <div class="control">{{sds.galaxyXrRuntimeStatus().lastError}}</div>
-</div>
-}
 }
 <div class="field">
     <div class="title">
@@ -125,6 +101,7 @@
         </button>
     </div>
 </div>
+@if(!sds.galaxyXrIntegration){
 <div class="field">
     <div class="title" i18n>Last Run Driver Version</div>
     <div class="control">
@@ -148,6 +125,7 @@
         }
     </div>
 </div>
+}
 <div class="field">
     
     <div class="title">

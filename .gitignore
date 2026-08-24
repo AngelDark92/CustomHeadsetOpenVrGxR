@@ -8,20 +8,11 @@ build
 HidModifierPrivate.cpp
 .tmp/
 .tools/
-VRCFT/**/bin/
-VRCFT/**/obj/
 Release/
 CustomHeadsetGUI/src/environment-gen.ts
 
 tools
 !tools/
 tools/*
-!tools/Acquire-VRCFT-5.2.3-SDK.ps1
-!tools/GalaxyXRFaceOscAdapter.cpp
-!tools/GalaxyXROscCodec.cpp
-!tools/GalaxyXROscCodec.h
-!tools/New-GalaxyXRAdmissionReport.ps1
 !tools/Build-GalaxyXR.ps1
 !tools/Test-GalaxyXRResources.ps1
-!tools/Set-GalaxyXRNativeTelemetryHost.ps1
-!tools/Test-GalaxyXRAdmissionReport.ps1

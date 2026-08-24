@@ -254,9 +254,8 @@ struct StreamFrameDimmingConfig{
 	double brightenSeconds = 1.0;
 };
 
-// Galaxy XR native-identity options. These fields are part of the canonical
-// galaxyXR section through GalaxyXRConfig below. The standalone type remains
-// only so older runtime call sites can be mirrored during their migration.
+// Galaxy XR native-identity and controller options. Both the legacy galaxyXr
+// and canonical galaxyXR config sections are read into this retained type.
 struct GalaxyXrConfig{
 	// rewrite the streamed HMD's visible model/manufacturer to Samsung
 	// Galaxy XR, set device icons, and replace the controllers' dangling
@@ -1292,97 +1291,6 @@ public:
 		GalaxyXR = 5,
 	};
 
-	class GalaxyXRConfig : public GalaxyXrConfig{
-	public:
-		class TelemetryConfig{
-		public:
-			struct AllowedClient{
-				int versionCode = 0;
-				std::string apkSha256;
-				std::string bridgeSha256;
-			};
-			bool enable = true;
-			std::string listenAddress = "127.0.0.1";
-			int controlPort = 29981;
-			int trackingPort = 29982;
-			bool requirePairing = true;
-			std::string pairingTokenHex = "";
-			std::string pairingTokenFile = "GalaxyXR/pairing.key";
-			std::vector<AllowedClient> allowedClients;
-			// Legacy single-record keys remain readable for settings migration.
-			int supportedClientVersionCode = 0;
-			std::string supportedApkSha256 = "";
-			std::string supportedBridgeSha256 = "";
-		};
-
-		class EyeConfig{
-		public:
-			// off | synthetic | vrlink_compat | android_xr
-			std::string source = "off";
-			std::string syntheticPattern = "off";
-			double fallbackDistanceMeters = 2.0;
-			int staleAfterMs = 100;
-		};
-
-		class FaceConfig{
-		public:
-			bool enableLosslessOutput = true;
-			bool enableValveFb2Compatibility = true;
-			bool enableOscAdapter = false;
-		};
-
-		class DisplayConfig{
-		public:
-			// passthrough | negotiated
-			std::string geometryMode = "negotiated";
-			int fallbackWidth = 3552;
-			int fallbackHeight = 3840;
-			// auto | force | off
-			std::string overlayMode = "auto";
-		};
-
-		class TimingConfig{
-		public:
-			// passthrough | static | telemetry
-			std::string mode = "static";
-			double staticPhotonLatencyMs = 78.0;
-			double maximumSlewMs = 1.0;
-		};
-
-		class PredictionConfig{
-		public:
-			// off | static_display_only | fixed_pose | adaptive_pose
-			std::string mode = "off";
-			bool clientPoseAlreadyPredicted = true;
-			bool suppressVelocityWhenHostPredicted = true;
-			double fixedPoseMs = 0.0;
-			double maximumHmdMs = 50.0;
-			double maximumControllerMs = 30.0;
-		};
-
-		class DiagnosticsConfig{
-		public:
-			double logRateHz = 2.0;
-		};
-
-		bool enable = false;
-		std::string identityMode = "negotiated";
-		bool forceEnable = false;
-		bool overridePublicIdentity = true;
-		std::string vrlinkCompatibilityMode = "off";
-		bool enableVRLinkCompatibility = false;
-		std::string serialMatch = "VRLINKHMDGALAXYXR";
-		std::string remoteTimingMode = "static";
-		double staticPhotonLatencySeconds = 0.078;
-		TelemetryConfig telemetry = {};
-		EyeConfig eye = {};
-		FaceConfig face = {};
-		DisplayConfig display = {};
-		TimingConfig timing = {};
-		PredictionConfig prediction = {};
-		DiagnosticsConfig diagnostics = {};
-	};
-	GalaxyXRConfig galaxyXR = {};
 	
 	class BaseHeadsetConfig{
 	public:

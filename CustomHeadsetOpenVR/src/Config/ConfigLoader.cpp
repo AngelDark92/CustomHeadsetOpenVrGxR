@@ -260,7 +260,7 @@ void ConfigLoader::ParseConfig(){
 		// Legacy lowercase settings are fallback migration input. Parse them
 		// first so any fields in the canonical galaxyXR section win below.
 		if(data["galaxyXr"].is_object()){
-			parseGalaxyXRNativeConfig(data["galaxyXr"], newConfig.galaxyXR);
+			parseGalaxyXRNativeConfig(data["galaxyXr"], newConfig.galaxyXr);
 			DriverLog("Migrating legacy galaxyXr settings in memory; save them under galaxyXR.");
 		}
 		if(data["meganeX8K"].is_object()){
@@ -272,88 +272,7 @@ void ConfigLoader::ParseConfig(){
 			parseBaseHeadsetConfig(headsetData, newConfig.dreamAir);
 		}
 		if(data["galaxyXR"].is_object()){
-			json galaxyXRData = data["galaxyXR"];
-			auto& galaxyXR = newConfig.galaxyXR;
-			parseGalaxyXRNativeConfig(galaxyXRData, galaxyXR);
-			if(galaxyXRData["enable"].is_boolean()){ galaxyXR.enable = galaxyXRData["enable"].get<bool>(); }
-			if(galaxyXRData["forceEnable"].is_boolean()){ galaxyXR.forceEnable = galaxyXRData["forceEnable"].get<bool>(); }
-			if(galaxyXRData["overridePublicIdentity"].is_boolean()){ galaxyXR.overridePublicIdentity = galaxyXRData["overridePublicIdentity"].get<bool>(); }
-			if(galaxyXRData["identityMode"].is_string()){ galaxyXR.identityMode = galaxyXRData["identityMode"].get<std::string>(); }
-			if(galaxyXRData["enableVRLinkCompatibility"].is_boolean()){ galaxyXR.enableVRLinkCompatibility = galaxyXRData["enableVRLinkCompatibility"].get<bool>(); }
-			if(galaxyXRData["vrlinkCompatibilityMode"].is_string()){
-				galaxyXR.vrlinkCompatibilityMode = galaxyXRData["vrlinkCompatibilityMode"].get<std::string>();
-			}else if(galaxyXR.enableVRLinkCompatibility){
-				galaxyXR.vrlinkCompatibilityMode = "vrlink_compat";
-			}
-			if(galaxyXRData["serialMatch"].is_string()){ galaxyXR.serialMatch = galaxyXRData["serialMatch"].get<std::string>(); }
-			if(galaxyXRData["remoteTimingMode"].is_string()){ galaxyXR.remoteTimingMode = galaxyXRData["remoteTimingMode"].get<std::string>(); }
-			if(galaxyXRData["staticPhotonLatencySeconds"].is_number()){ galaxyXR.staticPhotonLatencySeconds = galaxyXRData["staticPhotonLatencySeconds"].get<double>(); }
-
-			if(json& telemetry = galaxyXRData["telemetry"]; telemetry.is_object()){
-				if(telemetry["enable"].is_boolean()){ galaxyXR.telemetry.enable = telemetry["enable"].get<bool>(); }
-				if(telemetry["listenAddress"].is_string()){ galaxyXR.telemetry.listenAddress = telemetry["listenAddress"].get<std::string>(); }
-				if(telemetry["controlPort"].is_number_integer()){ galaxyXR.telemetry.controlPort = telemetry["controlPort"].get<int>(); }
-				if(telemetry["trackingPort"].is_number_integer()){ galaxyXR.telemetry.trackingPort = telemetry["trackingPort"].get<int>(); }
-				if(telemetry["requirePairing"].is_boolean()){ galaxyXR.telemetry.requirePairing = telemetry["requirePairing"].get<bool>(); }
-				if(telemetry["pairingTokenHex"].is_string()){ galaxyXR.telemetry.pairingTokenHex = telemetry["pairingTokenHex"].get<std::string>(); }
-				if(telemetry["pairingTokenFile"].is_string()){ galaxyXR.telemetry.pairingTokenFile = telemetry["pairingTokenFile"].get<std::string>(); }
-				if(telemetry["supportedClientVersionCode"].is_number_integer()){ galaxyXR.telemetry.supportedClientVersionCode = telemetry["supportedClientVersionCode"].get<int>(); }
-				if(telemetry["supportedApkSha256"].is_string()){ galaxyXR.telemetry.supportedApkSha256 = telemetry["supportedApkSha256"].get<std::string>(); }
-				if(telemetry["supportedBridgeSha256"].is_string()){ galaxyXR.telemetry.supportedBridgeSha256 = telemetry["supportedBridgeSha256"].get<std::string>(); }
-				if(telemetry["allowedClients"].is_array()){
-					for(const auto& entry : telemetry["allowedClients"]){
-						if(!entry.is_object() || !entry["versionCode"].is_number_integer() ||
-							!entry["apkSha256"].is_string() || !entry["bridgeSha256"].is_string()){
-							continue;
-						}
-						Config::GalaxyXRConfig::TelemetryConfig::AllowedClient client;
-						client.versionCode = entry["versionCode"].get<int>();
-						client.apkSha256 = entry["apkSha256"].get<std::string>();
-						client.bridgeSha256 = entry["bridgeSha256"].get<std::string>();
-						galaxyXR.telemetry.allowedClients.push_back(std::move(client));
-					}
-				}
-				if(galaxyXR.telemetry.allowedClients.empty() &&
-					galaxyXR.telemetry.supportedClientVersionCode > 0){
-					galaxyXR.telemetry.allowedClients.push_back({
-						galaxyXR.telemetry.supportedClientVersionCode,
-						galaxyXR.telemetry.supportedApkSha256,
-						galaxyXR.telemetry.supportedBridgeSha256});
-				}
-			}
-			if(json& eye = galaxyXRData["eye"]; eye.is_object()){
-				if(eye["source"].is_string()){ galaxyXR.eye.source = eye["source"].get<std::string>(); }
-				if(eye["syntheticPattern"].is_string()){ galaxyXR.eye.syntheticPattern = eye["syntheticPattern"].get<std::string>(); }
-				if(eye["fallbackDistanceMeters"].is_number()){ galaxyXR.eye.fallbackDistanceMeters = eye["fallbackDistanceMeters"].get<double>(); }
-				if(eye["staleAfterMs"].is_number_integer()){ galaxyXR.eye.staleAfterMs = eye["staleAfterMs"].get<int>(); }
-			}
-			if(json& face = galaxyXRData["face"]; face.is_object()){
-				if(face["enableLosslessOutput"].is_boolean()){ galaxyXR.face.enableLosslessOutput = face["enableLosslessOutput"].get<bool>(); }
-				if(face["enableValveFb2Compatibility"].is_boolean()){ galaxyXR.face.enableValveFb2Compatibility = face["enableValveFb2Compatibility"].get<bool>(); }
-				if(face["enableOscAdapter"].is_boolean()){ galaxyXR.face.enableOscAdapter = face["enableOscAdapter"].get<bool>(); }
-			}
-			if(json& display = galaxyXRData["display"]; display.is_object()){
-				if(display["geometryMode"].is_string()){ galaxyXR.display.geometryMode = display["geometryMode"].get<std::string>(); }
-				if(display["fallbackWidth"].is_number_integer()){ galaxyXR.display.fallbackWidth = display["fallbackWidth"].get<int>(); }
-				if(display["fallbackHeight"].is_number_integer()){ galaxyXR.display.fallbackHeight = display["fallbackHeight"].get<int>(); }
-				if(display["overlayMode"].is_string()){ galaxyXR.display.overlayMode = display["overlayMode"].get<std::string>(); }
-			}
-			if(json& timing = galaxyXRData["timing"]; timing.is_object()){
-				if(timing["mode"].is_string()){ galaxyXR.timing.mode = timing["mode"].get<std::string>(); }
-				if(timing["staticPhotonLatencyMs"].is_number()){ galaxyXR.timing.staticPhotonLatencyMs = timing["staticPhotonLatencyMs"].get<double>(); }
-				if(timing["maximumSlewMs"].is_number()){ galaxyXR.timing.maximumSlewMs = timing["maximumSlewMs"].get<double>(); }
-			}
-			if(json& prediction = galaxyXRData["prediction"]; prediction.is_object()){
-				if(prediction["mode"].is_string()){ galaxyXR.prediction.mode = prediction["mode"].get<std::string>(); }
-				if(prediction["clientPoseAlreadyPredicted"].is_boolean()){ galaxyXR.prediction.clientPoseAlreadyPredicted = prediction["clientPoseAlreadyPredicted"].get<bool>(); }
-				if(prediction["suppressVelocityWhenHostPredicted"].is_boolean()){ galaxyXR.prediction.suppressVelocityWhenHostPredicted = prediction["suppressVelocityWhenHostPredicted"].get<bool>(); }
-				if(prediction["fixedPoseMs"].is_number()){ galaxyXR.prediction.fixedPoseMs = prediction["fixedPoseMs"].get<double>(); }
-				if(prediction["maximumHmdMs"].is_number()){ galaxyXR.prediction.maximumHmdMs = prediction["maximumHmdMs"].get<double>(); }
-				if(prediction["maximumControllerMs"].is_number()){ galaxyXR.prediction.maximumControllerMs = prediction["maximumControllerMs"].get<double>(); }
-			}
-			if(json& diagnostics = galaxyXRData["diagnostics"]; diagnostics.is_object()){
-				if(diagnostics["logRateHz"].is_number()){ galaxyXR.diagnostics.logRateHz = diagnostics["logRateHz"].get<double>(); }
-			}
+			parseGalaxyXRNativeConfig(data["galaxyXR"], newConfig.galaxyXr);
 		}
 		if(data["generalHeadset"].is_object()){
 			json generalHeadsetData = data["generalHeadset"];
@@ -480,7 +399,6 @@ void ConfigLoader::ParseConfig(){
 		}
 		// Keep old C++ call sites synchronized with the canonical object until
 		// they can be migrated without changing this config-only patch.
-		newConfig.galaxyXr = static_cast<const GalaxyXrConfig&>(newConfig.galaxyXR);
 		if(data["streamFrame"].is_object()){
 			json streamFrameData = data["streamFrame"];
 			if(streamFrameData["enable"].is_boolean()){

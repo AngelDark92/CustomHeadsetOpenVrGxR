@@ -9,6 +9,9 @@ switch(environment.vendor){
 		customHeadsetDriverName = "GalaxyXRNative"
 		break
 }
+if(environment.vendorUi === "galaxyxr"){
+	customHeadsetDriverName = "galaxyxrresources"
+}
 
 // when true copy the driver into the SteamVR folder, when false register it in place
-export let driverCopyInstallationMethod = !environment.vendor
+export let driverCopyInstallationMethod = !environment.vendor && environment.vendorUi !== "galaxyxr"

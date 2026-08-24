@@ -32,9 +32,7 @@
     "active": true,
     "targets": "all",
     "resources": {
-      "../../output/CustomHeadsetOpenVR": "CustomHeadsetOpenVR",
-      "../../output/galaxyxrresources": "galaxyxrresources",
-      "../../output/VRCFT/GalaxyXR.VRCFaceTracking.dll": "VRCFT/GalaxyXR.VRCFaceTracking.dll"
+      "../../output/galaxyxrresources": "galaxyxrresources"
     },
     "icon": [
       "icons/32x32.png",

@@ -6,18 +6,12 @@ the runtime data flow and has a "where to make a change" table.
 ## Non-negotiable boundaries
 
 - Work only inside this repository unless the user explicitly expands scope.
-- `driver_vrlink` remains the real wireless HMD/controller owner. This driver
-  observes and wraps its devices; it must not register duplicate Galaxy XR
-  devices or replace VRLink transport/compositor ownership.
-- Galaxy XR activation is fail closed. Do not relax the authenticated GXRP
-  session, exact APK/bridge hashes, pairing key, capability revision, Samsung
-  model, serial match, or verified VRLink-hook gates.
-- Native eye data belongs on the activated HMD property container at
-  `/eyetracking`. Publish invalid immediately on stale/disconnect; never invent
-  center gaze.
-- Face data is the complete Android XR 68-float frame in
-  `Local\CustomHeadsetOpenVR.GalaxyXR.Face.v1`. Preserve the seqlock layout and
-  all five tongue channels. VRCFT mapping belongs in `VRCFT/`, not the driver.
+- `driver_vrlink` remains the real wireless HMD/controller owner. Galaxy XR uses
+  only the `galaxyxrresources` resource package and must not register a duplicate
+  active HMD/controller driver.
+- Face and tongue data use Steam Link's OSC sharing plus the matching external
+  LinkFT VRCFaceTracking module. Do not reintroduce GXRP, embedded PC addresses,
+  pairing tokens, APK hash enrollment, or a bundled VRCFT module.
 - Generic active-driver fallbacks use `{CustomHeadsetOpenVR}` paths. Galaxy XR
   identity, icons, profiles, and normal render models use the resource-only
   `{galaxyxrresources}` package. Do not write resources into `driver_vrlink`.
@@ -30,10 +24,7 @@ the runtime data flow and has a "where to make a change" table.
 ## Required checks for Galaxy XR changes
 
 1. Validate every modified JSON resource.
-2. Build the driver Release x64 and Win32 with `DeployToSteamVR=false`.
-3. Build and run `GalaxyXRTests` x64 and Win32.
-4. Build `VRCFT/GalaxyXR.VRCFaceTracking` when its code or shared-memory schema
+2. Run `tools/Build-GalaxyXR.ps1 -SkipGui` to validate and stage the resource package.
+3. Run `cargo check` and the Angular production build when installer/UI code
    changes.
-5. Run `cargo check` and the Angular production build when installer/UI code
-   changes.
-6. State clearly whether a real SteamVR + Steam Link + headset session was run.
+4. State clearly whether a real SteamVR + Steam Link + headset session was run.

@@ -36,21 +36,6 @@
     <ClInclude Include="src\Driver\Hooking\InterfaceHookInjector.h" />
     <ClInclude Include="src\Headsets\MeganeX8K.h" />
     <ClInclude Include="src\Headsets\GalaxyXR.h" />
-    <ClInclude Include="src\Headsets\GalaxyXRVRLinkCompatibility.h" />
-    <ClInclude Include="src\GalaxyXR\GalaxyXRClockSync.h" />
-    <ClInclude Include="src\GalaxyXR\GalaxyXRDeviceRegistry.h" />
-    <ClInclude Include="src\GalaxyXR\GalaxyXRDiagnostics.h" />
-    <ClInclude Include="src\GalaxyXR\GalaxyXRDisplay.h" />
-    <ClInclude Include="src\GalaxyXR\GalaxyXREyePublisher.h" />
-    <ClInclude Include="src\GalaxyXR\GalaxyXRFaceOutput.h" />
-    <ClInclude Include="src\GalaxyXR\GalaxyXRIdentityState.h" />
-    <ClInclude Include="src\GalaxyXR\GalaxyXRPoseTiming.h" />
-    <ClInclude Include="src\GalaxyXR\GalaxyXRProfile.h" />
-    <ClInclude Include="src\GalaxyXR\GalaxyXRProtocol.h" />
-    <ClInclude Include="src\GalaxyXR\GalaxyXRStatus.h" />
-    <ClInclude Include="src\GalaxyXR\GalaxyXRSystem.h" />
-    <ClInclude Include="src\GalaxyXR\GalaxyXRTransport.h" />
-    <ClInclude Include="src\GalaxyXR\GalaxyXRTypes.h" />
     <ClInclude Include="src\HiddenArea\HiddenArea.h" />
   </ItemGroup>
   <ItemGroup>
@@ -91,19 +76,6 @@
     <ClCompile Include="src\Headsets\FakeHeadset.cpp" />
     <ClCompile Include="src\Headsets\MeganeX8K.cpp" />
     <ClCompile Include="src\Headsets\GalaxyXR.cpp" />
-    <ClCompile Include="src\Headsets\GalaxyXRVRLinkCompatibility.cpp" />
-    <ClCompile Include="src\GalaxyXR\GalaxyXRClockSync.cpp" />
-    <ClCompile Include="src\GalaxyXR\GalaxyXRDeviceRegistry.cpp" />
-    <ClCompile Include="src\GalaxyXR\GalaxyXRDiagnostics.cpp" />
-    <ClCompile Include="src\GalaxyXR\GalaxyXRDisplay.cpp" />
-    <ClCompile Include="src\GalaxyXR\GalaxyXREyePublisher.cpp" />
-    <ClCompile Include="src\GalaxyXR\GalaxyXRFaceOutput.cpp" />
-    <ClCompile Include="src\GalaxyXR\GalaxyXRPoseTiming.cpp" />
-    <ClCompile Include="src\GalaxyXR\GalaxyXRProfile.cpp" />
-    <ClCompile Include="src\GalaxyXR\GalaxyXRProtocol.cpp" />
-    <ClCompile Include="src\GalaxyXR\GalaxyXRStatus.cpp" />
-    <ClCompile Include="src\GalaxyXR\GalaxyXRSystem.cpp" />
-    <ClCompile Include="src\GalaxyXR\GalaxyXRTransport.cpp" />
     <ClCompile Include="src\Headsets\GenericHeadset.cpp" />
     <ClCompile Include="src\Helpers\DisplayHelper.cpp" />
     <ClCompile Include="src\Helpers\EyeTrackingOutput.cpp" />

@@ -20,58 +20,23 @@ export async function launch_process(path: string, args: string[]): Promise<bool
 export interface DriverInstallReceipt {
     schemaVersion: number;
     packages: Array<{ name: string; path: string; sha256: string; fileCount: number }>;
-    vrcftModuleInstalled: boolean;
-    vrcftModulePath?: string;
-    vrcftModuleSha256?: string;
-}
-
-export interface GalaxyXrApkPreview {
-    apkPath: string;
-    fileName: string;
-    packageName: string;
-    versionCode: number;
-    host: string;
-    controlPort: number;
-    trackingPort: number;
-    apkSha256: string;
-    bridgeSha256: string;
-    pairingTokenFingerprint: string;
-    signaturePresent: boolean;
-}
-
-export async function inspect_galaxyxr_apk(apkPath: string): Promise<GalaxyXrApkPreview> {
-    return await invoke('inspect_galaxyxr_apk', { apkPath }) as GalaxyXrApkPreview;
-}
-
-export async function enroll_galaxyxr_apk(
-    apkPath: string,
-    expectedSha256: string,
-    settingsPath: string,
-    expectedSettingsContents?: string,
-): Promise<GalaxyXrApkPreview> {
-    return await invoke('enroll_galaxyxr_apk', { apkPath, expectedSha256, settingsPath, expectedSettingsContents }) as GalaxyXrApkPreview;
 }
 
 export async function install_driver_transactional(
-    sourceDir: string,
     resourceSourceDir: string,
     steamvrDir: string,
-    vrcftModulePath?: string,
 ): Promise<DriverInstallReceipt> {
     return await invoke('install_driver_transactional', {
-        sourceDir,
         resourceSourceDir,
         steamvrDir,
-        vrcftModulePath: vrcftModulePath ?? null,
     }) as DriverInstallReceipt;
 }
 
 export async function preflight_driver_install(
-    sourceDir: string,
     resourceSourceDir: string,
     steamvrDir: string,
 ): Promise<void> {
-    await invoke('preflight_driver_install', { sourceDir, resourceSourceDir, steamvrDir });
+    await invoke('preflight_driver_install', { resourceSourceDir, steamvrDir });
 }
 
 export async function uninstall_driver_transactional(steamvrDir: string): Promise<boolean> {

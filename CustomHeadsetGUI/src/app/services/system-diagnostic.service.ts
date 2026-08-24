@@ -4,7 +4,7 @@ import { appLocalDataDir, basename, join, resourceDir } from '@tauri-apps/api/pa
 import { DriverSettingService } from './driver-setting.service';
 import { DriverInfoService } from './driver-info.service';
 import { debounceTime, Subject } from 'rxjs';
-import { DriverCleanupPreview, DriverCleanupReport, enroll_galaxyxr_apk, execute_driver_cleanup, get_executable_path, inspect_galaxyxr_apk, install_driver_transactional, preflight_driver_install, preview_driver_cleanup, restart_vrcompositor, uninstall_driver_transactional, verify_driver_install, write_json_file_transactional, run_process_sync } from '../tauri_wrapper';
+import { DriverCleanupPreview, DriverCleanupReport, execute_driver_cleanup, get_executable_path, install_driver_transactional, preflight_driver_install, preview_driver_cleanup, restart_vrcompositor, uninstall_driver_transactional, verify_driver_install, write_json_file_transactional, run_process_sync } from '../tauri_wrapper';
 import { customHeadsetDriverName, driverCopyInstallationMethod, vendor, vendorUi } from '../../environment';
 import { open } from '@tauri-apps/plugin-dialog';
 import { DialogService } from './dialog.service';
@@ -12,25 +12,6 @@ import { PullingService } from './PullingService';
 import { cleanJsonComments } from '../helpers';
 import { launch_process } from '../tauri_wrapper';
 import { openUrl } from '@tauri-apps/plugin-opener';
-import { PathsService } from './paths.service';
-
-export interface GalaxyXrRuntimeStatus {
-  available: boolean;
-  stale: boolean;
-  stage: string;
-  state: string;
-  lastError: string;
-  transport: string;
-  session: string;
-  capabilities: string;
-  hmd: string;
-  eye: string;
-  face: string;
-}
-
-function isNonzeroSha256(value: unknown): boolean {
-  return typeof value === 'string' && /^[0-9a-f]{64}$/i.test(value) && !/^0{64}$/.test(value);
-}
 
 @Injectable({providedIn: "root", })
 export class SystemDiagnosticService implements OnDestroy {
@@ -45,40 +26,10 @@ export class SystemDiagnosticService implements OnDestroy {
   private _driverRepairReason = signal<string | undefined>(undefined);
   public readonly driverRepairReason = this._driverRepairReason.asReadonly();
   public readonly settingFileInited = computed(() => this.dss.values() && this.dis.values());
-  public readonly systemReady = computed(() => this.steamVRinstalled() && this.driverInstalled() && this.settingFileInited())
+  public readonly systemReady = computed(() => this.steamVRinstalled() && this.driverInstalled() && (this.galaxyXrIntegration || this.settingFileInited()))
   public readonly galaxyXrIntegration = vendorUi === 'galaxyxr';
-  public readonly galaxyXrSetupReadiness = computed(() => {
-    const config = this.dss.values()?.galaxyXR;
-    const telemetry = config?.telemetry;
-    const eye = config?.eye;
-    const face = config?.face;
-    const enrolledClient = Array.isArray(telemetry?.allowedClients) && telemetry.allowedClients.some(client =>
-      (client?.versionCode === 5002318 || client?.versionCode === 5002322) &&
-      isNonzeroSha256(client?.apkSha256) && isNonzeroSha256(client?.bridgeSha256)
-    );
-    return {
-      packages: !!this.driverInstalled(),
-      apkEnrolled: !!config?.enable && !!telemetry?.enable && telemetry?.requirePairing === true &&
-        isNonzeroSha256(telemetry?.pairingTokenHex) && enrolledClient,
-      eye: eye?.source === 'android_xr',
-      face: face?.enableLosslessOutput === true,
-    };
-  });
-  private _galaxyXrRuntimeStatus = signal<GalaxyXrRuntimeStatus>({
-    available: false,
-    stale: true,
-    stage: 'driver',
-    state: 'not_running',
-    lastError: '',
-    transport: 'unknown',
-    session: 'unknown',
-    capabilities: 'unknown',
-    hmd: 'unknown',
-    eye: 'unknown',
-    face: 'unknown',
-  });
-  public readonly galaxyXrRuntimeStatus = this._galaxyXrRuntimeStatus.asReadonly();
   public readonly driverVersionMismatch = computed(() => {
+    if (this.galaxyXrIntegration) return false;
     const installed = this.driverInstalled();
     const lastRun = this.dis.values()?.driverVersion;
     return !!installed && !!lastRun && installed !== lastRun;
@@ -92,16 +43,10 @@ export class SystemDiagnosticService implements OnDestroy {
   }
   public readonly pullingSteamVRinstall = new PullingService(() => this.checkSteamVrInstalled(), 'pullingSteamVRinstallk');
   public readonly PullingDriverinstall = new PullingService(() => this.checkDriverInstalled(), 'PullingDriverinstall');
-  public readonly pullingGalaxyXrStatus = new PullingService(
-    () => this.refreshGalaxyXrRuntimeStatus(),
-    'pullingGalaxyXrStatus',
-    1000,
-  );
   constructor(
     public dss: DriverSettingService,
     public dis: DriverInfoService,
     private dialog: DialogService,
-    private paths: PathsService,
   ) {
     let readySetup = false
     effect(() => {
@@ -116,59 +61,7 @@ export class SystemDiagnosticService implements OnDestroy {
       await dss.initTask;
       await dis.initTask;
       await this.checkDriverInstalled()
-      if (this.galaxyXrIntegration) {
-        await this.refreshGalaxyXrRuntimeStatus();
-        await this.pullingGalaxyXrStatus.start();
-      }
     })();
-  }
-  private safeStatusValue(value: unknown, fallback: string): string {
-    return typeof value === 'string' && value.length <= 96 ? value : fallback;
-  }
-  public async refreshGalaxyXrRuntimeStatus(): Promise<GalaxyXrRuntimeStatus> {
-    let result: GalaxyXrRuntimeStatus = {
-      available: false,
-      stale: true,
-      stage: 'driver',
-      state: 'not_running',
-      lastError: '',
-      transport: 'unknown',
-      session: 'unknown',
-      capabilities: 'unknown',
-      hmd: 'unknown',
-      eye: 'unknown',
-      face: 'unknown',
-    };
-    try {
-      if (!await exists(this.paths.galaxyXrStatusPath)) {
-        this._galaxyXrRuntimeStatus.set(result);
-        return result;
-      }
-      const parsed = JSON.parse(await readTextFile(this.paths.galaxyXrStatusPath));
-      const updated = Number(parsed?.updated_unix_ms);
-      const staleAfter = Number(parsed?.stale_after_ms);
-      const transition = parsed?.transition ?? {};
-      const state = parsed?.state ?? {};
-      const stale = !Number.isFinite(updated) || !Number.isFinite(staleAfter) ||
-        staleAfter < 0 || Date.now() < updated || Date.now() - updated > staleAfter;
-      result = {
-        available: true,
-        stale,
-        stage: this.safeStatusValue(transition.stage, 'unknown'),
-        state: stale ? 'stale' : this.safeStatusValue(transition.state, 'unknown'),
-        lastError: this.safeStatusValue(transition.last_error, ''),
-        transport: this.safeStatusValue(state.transport, 'unknown'),
-        session: this.safeStatusValue(state.session, 'unknown'),
-        capabilities: this.safeStatusValue(state.capabilities, 'unknown'),
-        hmd: this.safeStatusValue(state.hmd, 'unknown'),
-        eye: this.safeStatusValue(state.eye, 'unknown'),
-        face: this.safeStatusValue(state.face, 'unknown'),
-      };
-    } catch (error) {
-      console.warn('Galaxy XR runtime status read failed:', error);
-    }
-    this._galaxyXrRuntimeStatus.set(result);
-    return result;
   }
   async watchSteamVRSettings(){
     const subject = new Subject<void>();
@@ -192,7 +85,6 @@ export class SystemDiagnosticService implements OnDestroy {
     
   }
   ngOnDestroy(): void {
-    this.pullingGalaxyXrStatus.stop();
     for (const cfn of this.cleanUp) {
       cfn()
     }
@@ -369,64 +261,6 @@ export class SystemDiagnosticService implements OnDestroy {
   }
   private installing = false
   private driverMutationInProgress = false
-  private async selectGalaxyXrApk(executablePath: string, bundledResources: string): Promise<{
-    path: string;
-    preview: Awaited<ReturnType<typeof inspect_galaxyxr_apk>>;
-  } | undefined> {
-    const validCandidates: Array<{ path: string; preview: Awaited<ReturnType<typeof inspect_galaxyxr_apk>> }> = [];
-    const roots = [bundledResources, executablePath, await join(executablePath, '..'), await join(executablePath, '../..')];
-    const seen = new Set<string>();
-    for (const root of roots) {
-      try {
-        for (const entry of await readDir(root)) {
-          if (!entry.isFile || !entry.name.toLowerCase().endsWith('.apk')) continue;
-          const path = await join(root, entry.name);
-          if (seen.has(path)) continue;
-          seen.add(path);
-          try {
-            validCandidates.push({ path, preview: await inspect_galaxyxr_apk(path) });
-          } catch (error) {
-            console.warn(`Ignoring non-enrollable APK ${path}:`, error);
-          }
-        }
-      } catch {
-        // An optional discovery root may not exist in every bundle layout.
-      }
-    }
-    let selectedPath: string | undefined;
-    let preview: Awaited<ReturnType<typeof inspect_galaxyxr_apk>> | undefined;
-    if (validCandidates.length === 1) {
-      selectedPath = validCandidates[0].path;
-      preview = validCandidates[0].preview;
-    } else {
-      const picked = await open({
-        directory: false,
-        multiple: false,
-        filters: [{ name: 'Galaxy XR Steam Link APK', extensions: ['apk'] }],
-      });
-      if (typeof picked !== 'string') return undefined;
-      selectedPath = picked;
-      try {
-        preview = await inspect_galaxyxr_apk(selectedPath);
-      } catch (error) {
-        await this.dialog.message($localize`APK not valid`, `${error}`);
-        return undefined;
-      }
-    }
-    const accepted = await this.dialog.confirm(
-      $localize`Enroll Galaxy XR APK`,
-      $localize`Use this exact signed APK for eye and face tracking?` +
-        `\n${preview.fileName}` +
-        `\nVersion: ${preview.versionCode}` +
-        `\nPC: ${preview.host}:${preview.controlPort}/${preview.trackingPort}` +
-        `\nAPK SHA-256: ${preview.apkSha256}` +
-        `\nPairing fingerprint: ${preview.pairingTokenFingerprint}`,
-      $localize`Enroll`,
-      'primary',
-    );
-    if (!accepted) return undefined;
-    return { path: selectedPath, preview };
-  }
   async installDriver() {
     if (this.installing || this.driverMutationInProgress) return false;
     const steamVrPath = this.steamVRinstalled();
@@ -488,114 +322,42 @@ export class SystemDiagnosticService implements OnDestroy {
         }
       } else {
         const bundledResources = await resourceDir();
-        const driverCandidates = [
-          {
-            active: await join(bundledResources, 'CustomHeadsetOpenVR'),
-            companion: await join(bundledResources, 'galaxyxrresources'),
-          },
-          {
-            active: await join(executablePath, '../CustomHeadsetOpenVR'),
-            companion: await join(executablePath, '../galaxyxrresources'),
-          },
-          {
-            active: await join(executablePath, '../../CustomHeadsetOpenVR'),
-            companion: await join(executablePath, '../../galaxyxrresources'),
-          },
+        const candidates = [
+          await join(bundledResources, 'galaxyxrresources'),
+          await join(executablePath, '../galaxyxrresources'),
+          await join(executablePath, '../../galaxyxrresources'),
         ];
-        let driverDir: string | undefined;
         let resourceDriverDir: string | undefined;
-        for (const candidate of driverCandidates) {
-          if (await exists(await join(candidate.active, 'driver.vrdrivermanifest')) &&
-              await exists(await join(candidate.companion, 'driver.vrdrivermanifest'))) {
-            driverDir = candidate.active;
-            resourceDriverDir = candidate.companion;
+        for (const candidate of candidates) {
+          if (await exists(await join(candidate, 'driver.vrdrivermanifest'))) {
+            resourceDriverDir = candidate;
             break;
           }
         }
-        if (!driverDir || !resourceDriverDir) {
-          if (await this.dialog.confirm($localize`Driver folder not found`, $localize`The complete driver package is not in the default location. Unpack the entire zip and retry, or manually locate the new CustomHeadsetOpenVR folder to be installed.`, $localize`Locate`, 'primary')) {
-            const path = await open({ directory: true, multiple: false })
-            if (path) {
-              driverDir = path;
-              resourceDriverDir = await join(path, '..', 'galaxyxrresources');
-            } else {
-              return false;
-            }
-          } else {
-            return false;
-          }
+        if (!resourceDriverDir) {
+          const locate = await this.dialog.confirm(
+            $localize`Galaxy XR resource driver not found`,
+            $localize`Unpack the complete release and retry, or locate the galaxyxrresources folder.`,
+            $localize`Locate`,
+            'primary',
+          );
+          if (!locate) return false;
+          const selected = await open({ directory: true, multiple: false });
+          if (typeof selected !== 'string') return false;
+          resourceDriverDir = selected;
         }
-        if (!await exists(await join(driverDir, 'driver.vrdrivermanifest')) ||
-            !await exists(await join(resourceDriverDir, 'driver.vrdrivermanifest'))) {
-          await this.dialog.message($localize`Driver files not valid`, $localize`The CustomHeadsetOpenVR and galaxyxrresources folders must both contain a driver.vrdrivermanifest file.`)
+        if (!await exists(await join(resourceDriverDir, 'driver.vrdrivermanifest'))) {
+          await this.dialog.message(
+            $localize`Driver files not valid`,
+            $localize`The galaxyxrresources folder must contain driver.vrdrivermanifest.`,
+          );
           return false;
         }
-        const moduleName = 'GalaxyXR.VRCFaceTracking.dll';
-        const moduleCandidates = [
-          await join(bundledResources, 'VRCFT', moduleName),
-          await join(driverDir, '..', 'VRCFT', moduleName),
-          await join(executablePath, '../VRCFT', moduleName),
-          await join(executablePath, '../../VRCFT', moduleName),
-        ];
-        let vrcftModulePath: string | undefined;
-        for (const candidate of moduleCandidates) {
-          if (await exists(candidate)) {
-            vrcftModulePath = candidate;
-            break;
-          }
-        }
         try {
-          await preflight_driver_install(driverDir, resourceDriverDir, steamVrPath);
+          await preflight_driver_install(resourceDriverDir, steamVrPath);
+          await install_driver_transactional(resourceDriverDir, steamVrPath);
         } catch (error) {
-          await this.dialog.message($localize`Install preflight failed`, `${error}`);
-          return false;
-        }
-        try {
-          let receipt: Awaited<ReturnType<typeof install_driver_transactional>> | undefined;
-          if (vendorUi === 'galaxyxr') {
-            // Selection and confirmation can wait on the user, so complete
-            // them before reserving the settings writer.
-            const selectedApk = await this.selectGalaxyXrApk(executablePath, bundledResources);
-            if (!selectedApk) return false;
-            receipt = await this.dss.runExclusiveFileMutation(async () => {
-              const existed = await exists(this.dss.filePath);
-              const backup = existed ? await readTextFile(this.dss.filePath) : undefined;
-              await enroll_galaxyxr_apk(
-                selectedApk.path,
-                selectedApk.preview.apkSha256,
-                this.dss.filePath,
-                backup,
-              );
-              const enrolledContents = await readTextFile(this.dss.filePath);
-              try {
-                return await install_driver_transactional(driverDir, resourceDriverDir, steamVrPath, vrcftModulePath);
-              } catch (installError) {
-                // Compare-and-swap rollback: never overwrite edits made by an
-                // external process after enrollment began.
-                const currentContents = await readTextFile(this.dss.filePath);
-                if (currentContents !== enrolledContents) {
-                  throw new Error(`${installError}\nGalaxy XR settings changed during installation; those edits were preserved and automatic settings rollback was skipped.`);
-                }
-                if (existed) {
-                  await write_json_file_transactional(this.dss.filePath, backup!);
-                } else {
-                  await remove(this.dss.filePath);
-                }
-                throw installError;
-              }
-            }, ['galaxyXR', 'galaxyXr']);
-            if (!receipt) return false;
-          } else {
-            receipt = await install_driver_transactional(driverDir, resourceDriverDir, steamVrPath, vrcftModulePath);
-          }
-          if (!receipt.vrcftModuleInstalled) {
-            await this.dialog.message(
-              $localize`Driver installed with a warning`,
-              $localize`Eye tracking is configured. Face data will still be published by the driver, but the optional VRCFaceTracking module was not installed because VRCFaceTracking or its CustomLibs folder was not found.`,
-            );
-          }
-        } catch (e) {
-          await this.dialog.message($localize`Install Failed, Make sure SteamVR is closed`, `${e}`)
+          await this.dialog.message($localize`Install failed; make sure SteamVR is closed`, `${error}`);
           return false;
         }
       }
@@ -620,10 +382,14 @@ export class SystemDiagnosticService implements OnDestroy {
                   settings[field]['enable'] = false;
                 }
               }
-              const active = this.getDriverFieldName('CustomHeadsetOpenVR');
-              settings[active] ??= {};
-              settings[active]['enable'] = true;
-              delete settings[active]['blocked_by_safe_mode'];
+              const resource = this.getDriverFieldName('galaxyxrresources');
+              settings[resource] ??= {};
+              settings[resource]['enable'] = true;
+              delete settings[resource]['blocked_by_safe_mode'];
+              const obsoleteActive = this.getDriverFieldName('CustomHeadsetOpenVR');
+              if (settings[obsoleteActive]) {
+                settings[obsoleteActive]['enable'] = false;
+              }
               return true;
             });
           }

@@ -30,10 +30,3 @@ tauri-plugin-shell = "2"
 tauri-plugin-opener = "2"
 sysinfo = "0.35.1"
 sha2 = "0.10"
-apksig = { version = "0.4.0", default-features = false, features = ["serde", "hash", "signing"] }
-zip = { version = "2.2", default-features = false, features = ["deflate"] }
-x509-parser = "0.18.1"
-
-[dev-dependencies]
-rand = "0.8"
-rsa = "0.9"

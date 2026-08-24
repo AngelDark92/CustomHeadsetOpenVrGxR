@@ -32,10 +32,6 @@ export class PathsService {
   public get diagnosticPath(): string {
     return this._diagnosticPath;
   }
-  private _galaxyXrStatusPath!: string;
-  public get galaxyXrStatusPath(): string {
-    return this._galaxyXrStatusPath;
-  }
   async ensureAllDirCreated() {
     this._appDataDirPath = await this.getDriverAppDirPath();
     this._distortionDirPath = await this.getDriverAppDirPath('Distortion');
@@ -43,7 +39,6 @@ export class PathsService {
     this._guiSettingPath = await this.getDriverAppDirPath('gui-settings.json');
     this._settingPath = await this.getDriverAppDirPath('settings.json');
     this._diagnosticPath = await this.getDriverAppDirPath('diagnostic.json');
-    this._galaxyXrStatusPath = await this.getDriverAppDirPath('galaxyxr-status.json');
     if (!await exists(this.appDataDirPath)) {
       await mkdir(this.appDataDirPath, { recursive: true });
     }
