@@ -13,3 +13,7 @@ VRCFT/**/obj/
 Release/
 
 tools
+!tools/
+tools/*
+!tools/Set-GalaxyXRNativeTelemetryHost.ps1
+!tools/Test-GalaxyXRAdmissionReport.ps1

@@ -29,18 +29,37 @@ OpenXR network protocol.
 Native Steam Link 5002318/5002322 need the optional `Galaxy XR native telemetry`
 APK patch. It installs only `libgxr_xr_bridge.so` and its implicit API-layer
 manifest, preserving Valve's native controller/hand configuration. The patch
-requires the PC LAN IPv4, ports, and a private 64-hex pairing token. After the
-final APK is signed, create the non-secret host admission record with:
+requires the PC LAN IPv4 and a private 64-hex pairing token. Its control and
+tracking ports are fixed to the host defaults, 29981 and 29982, so there is no
+port setup. After the final APK is signed, enroll it and configure the host in
+one step from this directory:
 
 ```powershell
-.\tools\New-GalaxyXRAdmissionReport.ps1 -VersionCode 5002322 `
-  -ApkPath C:\path\SteamLink-GalaxyXR.apk `
-  -BridgeLibraryPath C:\path\libgxr_xr_bridge.so
+.\tools\Set-GalaxyXRNativeTelemetryHost.ps1 `
+  -ApkPath C:\path\SteamLink-GalaxyXR.apk
 ```
 
-Copy the generated `allowedClient` object into
-`galaxyXR.telemetry.allowedClients`. The report deliberately contains no
-pairing token.
+The setup reads the version, PC address, pairing token, and fixed ports from
+the final APK with Android `apkanalyzer`. It hashes the final APK and the exact
+embedded `libgxr_xr_bridge.so`, then transactionally updates
+`%APPDATA%\GalaxyXR\CustomHeadset\settings.json`. Other settings and admissions
+for other Steam Link builds are preserved. A non-secret admission report is
+also written beside the APK; it deliberately contains no pairing token.
+
+If `apkanalyzer` or Java is unavailable, pass the three non-hash values that
+were selected when patching. Ports still require no input:
+
+```powershell
+.\tools\Set-GalaxyXRNativeTelemetryHost.ps1 `
+  -ApkPath C:\path\SteamLink-GalaxyXR.apk `
+  -VersionCode 5002322 `
+  -ListenAddress 192.168.1.27 `
+  -PairingTokenHex YOUR_64_HEX_PAIRING_TOKEN
+```
+
+Run this command again whenever the APK is rebuilt or re-signed, because either
+operation changes its exact admission hash. SteamVR deployment and restart are
+separate, explicitly authorized operations; this setup tool performs neither.
 
 The available precompiled bridge reads the pairing token from application
 manifest metadata. The patched APK is therefore a private, single-user
