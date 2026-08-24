@@ -47,6 +47,28 @@ if (vendor == "neutral") {
 	vendor = ""
 }
 
+// Galaxy XR has one canonical pipeline. Delegate before legacy staging or
+// cleanup creates misleading empty release folders.
+if (vendor === "galaxyxr") {
+	if (!buildDriver) {
+		console.error("--no-driver is not supported for Galaxy XR because the GUI bundle must snapshot freshly validated driver resources")
+		process.exit(1)
+	}
+	let script = path.join(__dirname, "tools", "Build-GalaxyXR.ps1")
+	let psArgs = ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script]
+	if (!buildGui) psArgs.push("-SkipGui")
+	let result = child_process.spawnSync("powershell.exe", psArgs, {
+		cwd: __dirname,
+		stdio: "inherit",
+		windowsHide: true,
+	})
+	if (result.error) {
+		console.error(result.error.message)
+		process.exit(1)
+	}
+	process.exit(result.status ?? 1)
+}
+
 // Extract version from Config.cpp
 let configCppPath = path.join(__dirname, "CustomHeadsetOpenVR", "src", "Config", "Config.cpp")
 let configCppData = fs.readFileSync(configCppPath, "utf8")
@@ -293,7 +315,14 @@ function buildGuiTask() {
 		console.log("=== Building GUI ===")
 
 		let guiDir = path.join(__dirname, "CustomHeadsetGUI")
-		let env = { ...process.env, VENDOR: vendor }
+		// Galaxy XR keeps the active package name CustomHeadsetOpenVR. VENDOR_UI
+		// selects its isolated config/profile without switching to a nonexistent
+		// GalaxyXRNative package.
+		let env = {
+			...process.env,
+			VENDOR: vendor === "galaxyxr" ? "" : vendor,
+			VENDOR_UI: vendor === "galaxyxr" ? "galaxyxr" : "",
+		}
 
 		let stdout = []
 		let stderr = []
@@ -369,13 +398,11 @@ function cleanStagingDir(dir) {
 	}
 }
 
-// Run both builds in parallel
+// Build packages before Tauri snapshots them into the GUI bundle.
 async function main() {
 	try {
-		await Promise.all([
-			buildDriverTask(),
-			buildGuiTask(),
-		])
+		await buildDriverTask()
+		await buildGuiTask()
 
 		// Clean staging directory of build artifacts
 		console.log("")

@@ -254,8 +254,9 @@ struct StreamFrameDimmingConfig{
 	double brightenSeconds = 1.0;
 };
 
-// Galaxy XR native-identity options (acted on only in the GalaxyXRNative
-// vendor build; the fields always exist so config parsing is uniform)
+// Galaxy XR native-identity options. These fields are part of the canonical
+// galaxyXR section through GalaxyXRConfig below. The standalone type remains
+// only so older runtime call sites can be mirrored during their migration.
 struct GalaxyXrConfig{
 	// rewrite the streamed HMD's visible model/manufacturer to Samsung
 	// Galaxy XR, set device icons, and replace the controllers' dangling
@@ -1291,7 +1292,7 @@ public:
 		GalaxyXR = 5,
 	};
 
-	class GalaxyXRConfig{
+	class GalaxyXRConfig : public GalaxyXrConfig{
 	public:
 		class TelemetryConfig{
 		public:
@@ -1539,6 +1540,10 @@ public:
 	// headsets whose driver composites frames itself, where the compositor
 	// shader replacement only runs while the dashboard is open.
 	StreamFrameConfig streamFrame = {};
+	// Deprecated runtime mirror for call sites that still read
+	// driverConfig.galaxyXr. ConfigLoader always derives it from the canonical
+	// galaxyXR object; the lowercase JSON section is read only as migration
+	// input and never takes precedence over galaxyXR.
 	GalaxyXrConfig galaxyXr = {};
 	
 	// streamed controller pose adjustments

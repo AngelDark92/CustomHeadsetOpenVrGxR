@@ -1,4 +1,5 @@
 mod driver_installer;
+mod galaxyxr_apk;
 mod i18n;
 mod js_api;
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -29,12 +30,15 @@ pub fn run() {
             js_api::restart_vrcompositor,
             js_api::kill_process,
             js_api::launch_process,
+            driver_installer::preflight_driver_install,
             driver_installer::install_driver_transactional,
             driver_installer::uninstall_driver_transactional,
             driver_installer::verify_driver_install,
             driver_installer::write_json_file_transactional,
             driver_installer::preview_driver_cleanup,
             driver_installer::execute_driver_cleanup,
+            galaxyxr_apk::inspect_galaxyxr_apk,
+            galaxyxr_apk::enroll_galaxyxr_apk,
             js_api::run_process_sync,
         ])
         .run(tauri::generate_context!())

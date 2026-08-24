@@ -17,6 +17,8 @@ export type Settings = {
   generalHeadset: GeneralHeadsetConfig,
   customShader: CustomShaderConfig,
   streamFrame?: StreamFrameConfig,
+  galaxyXR?: GalaxyXrConfig,
+  /** Read-only migration input. New writes use galaxyXR. */
   galaxyXr?: GalaxyXrConfig,
   controllers?: ControllersConfig,
   forceTracking: boolean,
@@ -24,6 +26,7 @@ export type Settings = {
   watchDistortionProfiles: boolean,
 }
 export type GalaxyXrConfig = {
+  enable?: boolean,
   nativeIdentity: boolean,
   nativeInputProfile?: boolean,
   nativeResolution?: boolean,
@@ -34,6 +37,14 @@ export type GalaxyXrConfig = {
   skeletonOffsetYCm?: number,
   skeletonOffsetZCm?: number,
   skeletonOffsetMirror?: boolean,
+  telemetry?: {
+    enable?: boolean,
+    requirePairing?: boolean,
+    pairingTokenHex?: string,
+    allowedClients?: Array<{ versionCode: number, apkSha256: string, bridgeSha256: string }>,
+  },
+  eye?: { source?: string },
+  face?: { enableLosslessOutput?: boolean },
 }
 export type ControllersConfig = {
   mirrorOffsetsForRightHand?: boolean,

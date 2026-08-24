@@ -343,28 +343,29 @@ export class StreamFrameComponent {
   vendor = vendor;
   get galaxyXr(): GalaxyXrConfig {
     if (this.rootSetting) {
-      if (!this.rootSetting.galaxyXr) {
-        this.rootSetting.galaxyXr = { nativeIdentity: false, nativeInputProfile: false, nativeResolution: true, streamQuality: 'default', renderModelScale: 1.0 };
+      if (!this.rootSetting.galaxyXR) {
+        this.rootSetting.galaxyXR = this.rootSetting.galaxyXr ?? { nativeIdentity: false, nativeInputProfile: false, nativeResolution: true, streamQuality: 'default', renderModelScale: 1.0 };
+        delete this.rootSetting.galaxyXr;
       }
-      if (this.rootSetting.galaxyXr.nativeResolution === undefined) {
-        this.rootSetting.galaxyXr.nativeResolution = true;
+      if (this.rootSetting.galaxyXR.nativeResolution === undefined) {
+        this.rootSetting.galaxyXR.nativeResolution = true;
       }
-      if (this.rootSetting.galaxyXr.streamQuality === undefined) {
-        this.rootSetting.galaxyXr.streamQuality = 'default';
+      if (this.rootSetting.galaxyXR.streamQuality === undefined) {
+        this.rootSetting.galaxyXR.streamQuality = 'default';
       }
-      if (this.rootSetting.galaxyXr.renderModelScale === undefined) {
-        this.rootSetting.galaxyXr.renderModelScale = 1.0;
+      if (this.rootSetting.galaxyXR.renderModelScale === undefined) {
+        this.rootSetting.galaxyXR.renderModelScale = 1.0;
       }
-      if (this.rootSetting.galaxyXr.skeletonOffsetXCm === undefined) {
-        this.rootSetting.galaxyXr.skeletonOffsetXCm = 0.0;
+      if (this.rootSetting.galaxyXR.skeletonOffsetXCm === undefined) {
+        this.rootSetting.galaxyXR.skeletonOffsetXCm = 0.0;
       }
-      if (this.rootSetting.galaxyXr.skeletonOffsetYCm === undefined) {
-        this.rootSetting.galaxyXr.skeletonOffsetYCm = 0.0;
+      if (this.rootSetting.galaxyXR.skeletonOffsetYCm === undefined) {
+        this.rootSetting.galaxyXR.skeletonOffsetYCm = 0.0;
       }
-      if (this.rootSetting.galaxyXr.skeletonOffsetZCm === undefined) {
-        this.rootSetting.galaxyXr.skeletonOffsetZCm = 0.0;
+      if (this.rootSetting.galaxyXR.skeletonOffsetZCm === undefined) {
+        this.rootSetting.galaxyXR.skeletonOffsetZCm = 0.0;
       }
-      return this.rootSetting.galaxyXr;
+      return this.rootSetting.galaxyXR;
     }
     return { nativeIdentity: false };
   }

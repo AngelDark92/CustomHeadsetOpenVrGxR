@@ -25,7 +25,7 @@ and all runtime admission gates pass.
 | `CustomHeadsetOpenVR/src/Headsets/GalaxyXR.*` | Galaxy HMD shim: activation, identity, display forwarding/override. |
 | `CustomHeadsetOpenVR/src/Headsets/GalaxyXRVRLinkCompatibility.*` | Exact-build, x64-only VRLink compatibility verifier/hook. |
 | `CustomHeadsetOpenVR/src/GalaxyXR/` | GXRP protocol, transport, admission profile, clock, display, pose, eye, face, diagnostics. |
-| `CustomHeadsetOpenVR/DriverFiles/` | Active DLL package; contains no Galaxy product defaults. |
+| `CustomHeadsetOpenVR/DriverFiles/` | Active DLL package; contains runtime shaders and controller-model source copies used for writable scale/tuning variants, but no Galaxy identity/input/icon defaults. |
 | `GalaxyXRResources/DriverFiles/` | Tracked source for the resource-only Valve external-vendor package: Galaxy product settings, inputs, icons, and models. |
 | `VRCFT/GalaxyXR.VRCFaceTracking/` | VRCFaceTracking v5 consumer and Android XR-to-Unified Expressions mapping. |
 | `ThirdParty/VRCFaceTracking/5.2.3.0/` | Pinned SDK/Core assemblies, license, and provenance. |
@@ -57,9 +57,9 @@ and product defaults relative to `{galaxyxrresources}`:
 - `resources/icons/galaxyxr/` contains prebuilt HMD/controller status icons.
 
 The checked-in prebuilt status icons under
-`CustomHeadsetOpenVR/DriverFiles/resources/icons/galaxyxr/` are authoritative.
-The normal MSBuild pre-build step stages those resources into the output
-package; the build does not synthesize or recolor icon files.
+`GalaxyXRResources/DriverFiles/resources/icons/galaxyxr/` are authoritative.
+The normal build stages that resource-only source tree unchanged; it does not
+synthesize or recolor icon files.
 
 ## Runtime flow
 
@@ -101,7 +101,7 @@ requires:
 Configuration additionally requires a 32-byte pairing key, at least one
 `allowedClients` record containing an exact version code plus nonzero APK and
 bridge SHA-256 digests, and a hash of the loaded host DLL. Legacy single-record
-settings migrate in memory. Secrets are read from `%APPDATA%/CustomHeadset/GalaxyXR` by
+settings migrate in memory. Secrets are read from `%APPDATA%/GalaxyXR/CustomHeadset` by
 default and must never be logged or committed.
 
 ## Headset identity, display, and pose
@@ -163,7 +163,9 @@ optional project diagnostic and is not a VRCFT-native protocol.
 
 The schema lives in `src/Config/Config.h`; JSON parsing lives in
 `src/Config/ConfigLoader.cpp`. User settings are read from
-`%APPDATA%/CustomHeadset/settings.json`. The `galaxyXR` section groups:
+`%APPDATA%/GalaxyXR/CustomHeadset/settings.json` in the Galaxy XR build. The
+`galaxyXR` section is canonical; legacy `galaxyXr` native fields are accepted
+only as lower-precedence migration input. It groups:
 
 - top level: enable, negotiated identity, serial match, public identity, and
   VRLink compatibility mode;
@@ -189,7 +191,10 @@ resources, rejects links, hashes the full source tree, copies it into a
 same-volume staging directory, re-hashes it, renames the previous installation
 to a backup, activates the stage, validates again, and rolls back on activation
 failure. SteamVR driver enablement is changed only after installation succeeds.
-The commit writes `%APPDATA%/CustomHeadset/install-state.json` with the exact
+Before APK enrollment changes settings, a read-only backend preflight validates
+SteamVR is stopped, both source graphs, `vrpathreg`, ownership, and registration
+conflicts. Enrollment is restored if the later package transaction fails.
+The commit writes an app-owned, Galaxy-profile install receipt with the exact
 package tree identities and any owned VRCFT module hash. Readiness and later
 replacement re-hash both installed trees against this receipt. The active DLL
 package stays non-resource-only; the companion stays binary-free and resource-only.
@@ -207,6 +212,12 @@ The GUI transaction does not prove SteamVR recognized the device. Installation,
 SteamVR restart, APK/ADB work, and a real headset session are separate live
 operations and need separate logs.
 
+The driver writes a one-second, redacted runtime heartbeat to
+`%APPDATA%/GalaxyXR/CustomHeadset/galaxyxr-status.json`. The GUI treats its
+package/admission checks as setup only; live readiness comes from this heartbeat
+and becomes stale after five seconds. It includes state/counters only, never a
+pairing key or eye/face sample arrays.
+
 ## Where to make a change
 
 | Goal | Primary file(s) | Also update/verify |
@@ -221,7 +232,7 @@ operations and need separate logs.
 | Change native eye output | `GalaxyXREyePublisher.*` | Android gaze convention tests and stale-invalid test. |
 | Change face shared memory | `GalaxyXRFaceOutput.*` | C# reader, VRCFT module, layout/one-hot/stale tests. |
 | Change Android-to-VRCFT mapping | `VRCFT/.../AndroidXrUnifiedMapper.cs` | Khronos enum order and 68 one-hot/tongue tests. |
-| Change HMD/controller artwork | `CustomHeadsetOpenVR/DriverFiles/resources/icons/galaxyxr/` | `driver.vrresources`; replace the prebuilt assets and inspect every state. |
+| Change HMD/controller artwork | `GalaxyXRResources/DriverFiles/resources/icons/galaxyxr/` | `driver.vrresources`; replace the prebuilt assets and inspect every state. |
 | Change controller inputs | `GalaxyXRResources/DriverFiles/resources/input/` | render-model paths, bindings, SteamVR input test. |
 | Change headset/controller model | `GalaxyXRResources/.../rendermodels/` | profile JSON and SteamVR render-model inspection. |
 | Change install behavior | `src-tauri/src/driver_installer.rs` | Angular wrapper/service, rollback tests, cargo/Angular builds. |
@@ -245,7 +256,7 @@ as `output/galaxyxrresources`, builds/tests both native architectures,
 builds the VRCFT module, stages that module under `output/VRCFT`, and runs
 `npm run build` in `CustomHeadsetGUI` (Tauri release exe) unless `-SkipGui` is
 specified. Status icons are taken directly from the prebuilt assets in
-`CustomHeadsetOpenVR/DriverFiles/resources/icons/`.
+`GalaxyXRResources/DriverFiles/resources/icons/`.
 
 ```powershell
 git submodule update --init --recursive

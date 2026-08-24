@@ -11,8 +11,11 @@ if (-not $DriverFiles) {
 }
 $driverRoot = (Resolve-Path -LiteralPath $DriverFiles).Path
 $resources = Join-Path $driverRoot 'resources'
-$jsonFiles = Get-ChildItem -LiteralPath $resources -Recurse -File |
-    Where-Object { $_.Extension -in @('.json', '.vrsettings') }
+$jsonFiles = @(
+    Get-Item -LiteralPath (Join-Path $driverRoot 'driver.vrdrivermanifest')
+    Get-ChildItem -LiteralPath $resources -Recurse -File |
+        Where-Object { $_.Extension -in @('.json', '.vrsettings', '.vrresources') }
+)
 
 foreach ($file in $jsonFiles) {
     $raw = Get-Content -LiteralPath $file.FullName -Raw
@@ -33,8 +36,12 @@ foreach ($file in $jsonFiles) {
     }
 }
 
-foreach ($modelFile in Get-ChildItem -LiteralPath (Join-Path $resources 'rendermodels') -Recurse -File |
-    Where-Object { $_.Extension -in @('.obj', '.mtl') }) {
+$renderModels = Join-Path $resources 'rendermodels'
+$modelFiles = if (Test-Path -LiteralPath $renderModels -PathType Container) {
+    @(Get-ChildItem -LiteralPath $renderModels -Recurse -File |
+        Where-Object { $_.Extension -in @('.obj', '.mtl') })
+} else { @() }
+foreach ($modelFile in $modelFiles) {
     foreach ($line in Get-Content -LiteralPath $modelFile.FullName) {
         if ($line -match '^\s*(?:mtllib|map_Kd|map_Ks)\s+(.+?)\s*$') {
             $target = Join-Path $modelFile.DirectoryName $Matches[1]
@@ -47,20 +54,27 @@ foreach ($modelFile in Get-ChildItem -LiteralPath (Join-Path $resources 'renderm
 
 $required = @(
     'driver.vrdrivermanifest',
-    'resources\driver.vrresources',
-    'resources\input\galaxy_xr_hmd_profile.json',
-    'resources\input\galaxy_xr_controller_profile.json',
-    'resources\input\vrcompositor_bindings_galaxy_xr_controller.json',
-    'resources\icons\galaxyxr\headset_galaxy_xr_status_ready.png',
-    'resources\rendermodels\vst_controller_left\vst_controller_left.obj',
-    'resources\rendermodels\vst_controller_right\vst_controller_right.obj'
+    'resources\driver.vrresources'
 )
 if ($ResourceOnly) {
     $required += @(
         'resources\settings\default.vrsettings',
+        'resources\input\galaxy_xr_hmd_profile.json',
+        'resources\input\galaxy_xr_controller_profile.json',
+        'resources\input\vrcompositor_bindings_galaxy_xr_controller.json',
+        'resources\icons\galaxyxr\headset_galaxy_xr_status_ready.png',
         'resources\rendermodels\galaxy_xr_hmd\galaxy_xr_hmd.obj',
         'resources\rendermodels\galaxy_xr_hmd\galaxy_xr_hmd.mtl',
-        'resources\rendermodels\galaxy_xr_hmd\galaxy_xr_hmd.png'
+        'resources\rendermodels\galaxy_xr_hmd\galaxy_xr_hmd.png',
+        'resources\rendermodels\vst_controller_left\vst_controller_left.obj',
+        'resources\rendermodels\vst_controller_right\vst_controller_right.obj'
+    )
+} else {
+    $required += @(
+        'resources\shaders\d3d11\vrlink_layer_ps.hlsl',
+        'resources\shaders\d3d11\vrlink_fxaa_ps.hlsl',
+        'resources\rendermodels\vst_controller_left\vst_controller_left.obj',
+        'resources\rendermodels\vst_controller_right\vst_controller_right.obj'
     )
 }
 foreach ($relative in $required) {
@@ -105,4 +119,4 @@ if ($ResourceOnly) {
     throw 'CustomHeadsetOpenVR must remain the active non-resource-only DLL driver.'
 }
 
-Write-Host "Galaxy XR resource graph valid: $($jsonFiles.Count) JSON files parsed."
+Write-Host "Galaxy XR resource graph valid: $($jsonFiles.Count) JSON package files parsed."

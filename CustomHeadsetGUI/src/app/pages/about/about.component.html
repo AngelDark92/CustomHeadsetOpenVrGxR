@@ -54,6 +54,66 @@
         }
     </div>
 </div>
+@if(sds.galaxyXrIntegration){
+<div class="field">
+    <div class="section-title" i18n>Galaxy XR Setup</div>
+</div>
+<div class="field">
+    <div class="title" i18n>Driver packages</div>
+    <div class="control">{{sds.galaxyXrSetupReadiness().packages ? 'Installed' : 'Install required'}}</div>
+</div>
+@if(sds.driverRepairReason(); as reason){
+<div class="field">
+    <div class="title" i18n>Repair details</div>
+    <div class="control warn-color">{{reason}}</div>
+</div>
+}
+<div class="field">
+    <div class="title" i18n>Signed APK enrollment</div>
+    <div class="control">{{sds.galaxyXrSetupReadiness().apkEnrolled ? 'Configured' : 'Enrollment required'}}</div>
+</div>
+<div class="field">
+    <div class="title" i18n>Eye tracking path</div>
+    <div class="control">{{sds.galaxyXrSetupReadiness().eye ? 'Android XR configured' : 'Not configured'}}</div>
+</div>
+<div class="field">
+    <div class="title" i18n>Face tracking path</div>
+    <div class="control">{{sds.galaxyXrSetupReadiness().face ? 'GXRP configured' : 'Not configured'}}</div>
+</div>
+<div class="field">
+    <div class="section-title" i18n>Galaxy XR Live Status</div>
+</div>
+<div class="field">
+    <div class="title" i18n>Driver heartbeat</div>
+    <div class="control">
+        @if(!sds.galaxyXrRuntimeStatus().available){ <span i18n>SteamVR has not reported yet</span> }
+        @else if(sds.galaxyXrRuntimeStatus().stale){ <span i18n>Stale - restart SteamVR</span> }
+        @else { <span>{{sds.galaxyXrRuntimeStatus().stage}} / {{sds.galaxyXrRuntimeStatus().state}}</span> }
+    </div>
+</div>
+<div class="field">
+    <div class="title" i18n>Authenticated APK session</div>
+    <div class="control">{{sds.galaxyXrRuntimeStatus().session}}</div>
+</div>
+<div class="field">
+    <div class="title" i18n>Headset binding</div>
+    <div class="control">{{sds.galaxyXrRuntimeStatus().hmd}}</div>
+</div>
+<div class="field">
+    <div class="title" i18n>Eye tracking runtime</div>
+    <div class="control">{{sds.galaxyXrRuntimeStatus().eye}}</div>
+</div>
+<div class="field">
+    <div class="title" i18n>Face tracking runtime</div>
+    <div class="control">{{sds.galaxyXrRuntimeStatus().face}}</div>
+</div>
+@if(sds.galaxyXrRuntimeStatus().lastError){
+<div class="field">
+    <div class="title" i18n>Runtime reason</div>
+    <div class="control">{{sds.galaxyXrRuntimeStatus().lastError}}</div>
+</div>
+}
+}
 <div class="field">
     <div class="title">
         <span i18n>Existing Driver Cleanup</span>

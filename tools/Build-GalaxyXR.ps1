@@ -8,13 +8,36 @@ param(
 $ErrorActionPreference = 'Stop'
 $repo = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $solutionDirArgument = "/p:SolutionDir=$repo\"
-$msbuild = 'C:\Program Files\Microsoft Visual Studio\18\Community\MSBuild\Current\Bin\MSBuild.exe'
-if (-not (Test-Path -LiteralPath $msbuild -PathType Leaf)) {
-    throw "MSBuild not found at $msbuild. Run from a Visual Studio developer shell or update the script path."
+function Resolve-MSBuild {
+    $fromPath = Get-Command msbuild.exe -ErrorAction SilentlyContinue
+    if ($fromPath) { return $fromPath.Source }
+    $programFilesX86 = [Environment]::GetFolderPath('ProgramFilesX86')
+    $vswhere = Join-Path $programFilesX86 'Microsoft Visual Studio\Installer\vswhere.exe'
+    if (-not (Test-Path -LiteralPath $vswhere -PathType Leaf)) {
+        throw 'MSBuild was not found on PATH and vswhere.exe is unavailable. Install Visual Studio with Desktop development with C++.'
+    }
+    $installation = (& $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath | Select-Object -First 1)
+    if (-not $installation) { throw 'No Visual Studio installation with the C++ x86/x64 toolset was found.' }
+    $candidate = Join-Path $installation 'MSBuild\Current\Bin\MSBuild.exe'
+    if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) { throw "MSBuild not found below $installation" }
+    return $candidate
 }
 
+$msbuild = Resolve-MSBuild
+
 $resourceSource = Join-Path $repo 'GalaxyXRResources\DriverFiles'
+$activeOutput = Join-Path $repo 'output\CustomHeadsetOpenVR'
 $resourceOutput = Join-Path $repo 'output\galaxyxrresources'
+$outputRoot = [IO.Path]::GetFullPath((Join-Path $repo 'output')) + [IO.Path]::DirectorySeparatorChar
+foreach ($generatedPackage in @($activeOutput, $resourceOutput)) {
+    $resolvedPackage = [IO.Path]::GetFullPath($generatedPackage)
+    if (-not $resolvedPackage.StartsWith($outputRoot, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Refusing to replace generated package outside $outputRoot"
+    }
+    if (Test-Path -LiteralPath $resolvedPackage) {
+        Remove-Item -LiteralPath $resolvedPackage -Recurse -Force
+    }
+}
 & (Join-Path $PSScriptRoot 'Test-GalaxyXRResources.ps1')
 & (Join-Path $PSScriptRoot 'Test-GalaxyXRResources.ps1') `
     -DriverFiles $resourceSource -ExpectedDriverName 'galaxyxrresources' -ResourceOnly
@@ -28,9 +51,8 @@ foreach ($targetPlatform in $Platform) {
 }
 
 $resolvedOutput = [IO.Path]::GetFullPath($resourceOutput)
-$expectedOutputRoot = [IO.Path]::GetFullPath((Join-Path $repo 'output')) + [IO.Path]::DirectorySeparatorChar
-if (-not $resolvedOutput.StartsWith($expectedOutputRoot, [StringComparison]::OrdinalIgnoreCase)) {
-    throw "Refusing to replace companion output outside $expectedOutputRoot"
+if (-not $resolvedOutput.StartsWith($outputRoot, [StringComparison]::OrdinalIgnoreCase)) {
+    throw "Refusing to replace companion output outside $outputRoot"
 }
 if (Test-Path -LiteralPath $resolvedOutput) {
     Remove-Item -LiteralPath $resolvedOutput -Recurse -Force
@@ -50,10 +72,20 @@ Copy-Item -LiteralPath $module -Destination $releaseModule -Force
 
 if (-not $SkipGui) {
     Push-Location (Join-Path $repo 'CustomHeadsetGUI')
+    $oldVendor = $env:VENDOR
+    $oldVendorUi = $env:VENDOR_UI
     try {
+        # Keep the active package name vendor-neutral while selecting the
+        # Galaxy XR UI/config profile that matches the native driver build.
+        $env:VENDOR = ''
+        $env:VENDOR_UI = 'galaxyxr'
         npm run build
         if ($LASTEXITCODE -ne 0) { throw 'CustomHeadsetGUI tauri build failed.' }
-    } finally { Pop-Location }
+    } finally {
+        $env:VENDOR = $oldVendor
+        $env:VENDOR_UI = $oldVendorUi
+        Pop-Location
+    }
 }
 
 Write-Host 'Galaxy XR static build and test pipeline passed. Nothing was deployed to SteamVR.'

@@ -15,6 +15,18 @@ before modifying or deploying it.
 2. Extract the whole folder within the zip to a place you want it.
 3. Run `custom-headset-gui.exe` in `CustomHeadsetGUI` to finish the installation and configure settings.
 ![Installation Tutorial](Docs/Media/CustomHeadsetInstall.webp)
+
+### Galaxy XR
+
+1. Install the final private Galaxy XR APK on the headset.
+2. Extract the complete Windows release and close SteamVR.
+3. Run `CustomHeadsetGUI\custom-headset-gui.exe`, open About, and choose Install.
+
+The GUI validates and enrolls the APK, preflights the installation, and registers
+both required SteamVR driver packages. Start SteamVR only after installation
+finishes, then use Galaxy XR Live Status in About to confirm the active session.
+Do not use the single-folder manual installation below for Galaxy XR.
+
 <details>
 <summary>Manual Driver Installation</summary>
 You do not need to do this if you installed the driver with the GUI.

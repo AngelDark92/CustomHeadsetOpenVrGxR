@@ -1,5 +1,4 @@
-import { copyFile, create, exists, remove, rename, writeTextFile } from "@tauri-apps/plugin-fs";
-import { Subject, throttleTime } from "rxjs";
+import { copyFile, create, exists, readTextFile, remove, rename, writeTextFile } from "@tauri-apps/plugin-fs";
 import { join } from '@tauri-apps/api/path';
 
 export async function delay(ms: number = 1) {
@@ -11,6 +10,11 @@ export async function delay(ms: number = 1) {
 export type DebouncedFileWriter = {
   save: (content: string) => void;
   isSavingFile: () => boolean;
+  runExclusive: <T>(
+    operation: () => Promise<T>,
+    rebaseBufferedContent: (baseline: string, current: string, buffered: string) => string,
+    afterWrite: () => Promise<void>,
+  ) => Promise<T>;
 };
 export function cleanJsonComments(jsonString: string) {
   return jsonString.replace(/\\"|"(?:\\"|[^"])*"|(\/\/.*|\/\*[\s\S]*?\*\/)/g, (m, g) => g ? "" : m)
@@ -180,17 +184,22 @@ export const deepMerge = <TX extends IObject, TY extends IObject, TR = TX & TY>(
   return result as TR;
 };
 export function debouncedFileWriter(path: string | Promise<string>, tempFileDir: string | Promise<string>, directWrite?: (() => boolean)): DebouncedFileWriter {
-  const saveSbj = new Subject<string>();
-  let savingFile = false
-  saveSbj.pipe(throttleTime(50, undefined, { trailing: true })).subscribe(async (content) => {
-    await navigator.locks.request(`saving file_${await path}`, async () => {
-      savingFile = true;
-      try {
+  let pendingContent: string | undefined;
+  let saveTimer: ReturnType<typeof setTimeout> | undefined;
+  let savingFile = false;
+  let mutationActive = false;
+  let bufferedContentDuringMutation: string | undefined;
+  let writeChain = Promise.resolve();
+  const lockName = async () => `saving file_${await path}`;
+  const writeContentUnlocked = async (content: string) => {
+    savingFile = true;
+    try {
         if (directWrite?.()) {
           try {
             await writeTextFile(await path, content);
           } catch (er) {
             console.error('write file error', await path)
+            throw er;
           }
         } else {
           const tempPath = await join(await tempFileDir, `${self.crypto.randomUUID()}`);
@@ -199,20 +208,106 @@ export function debouncedFileWriter(path: string | Promise<string>, tempFileDir:
             await copyFile(tempPath, await path);
           } catch (er) {
             console.error('copy file error', tempPath, 'to', await path)
+            throw er;
           } finally {
             await remove(tempPath);
           }
         }
-      } finally {
-        savingFile = false;
-      }
-    })
-  });
+    } finally {
+      savingFile = false;
+    }
+  };
+  const writeContent = async (content: string) => {
+    await navigator.locks.request(await lockName(), async () => {
+      await writeContentUnlocked(content);
+    });
+  };
+  const enqueue = (content: string) => {
+    writeChain = writeChain.then(() => writeContent(content)).catch(error => {
+      console.error('queued settings write failed', error);
+    });
+    return writeChain;
+  };
+  const flush = async () => {
+    if (saveTimer !== undefined) {
+      clearTimeout(saveTimer);
+      saveTimer = undefined;
+    }
+    while (pendingContent !== undefined) {
+      const content = pendingContent;
+      pendingContent = undefined;
+      await enqueue(content);
+    }
+    await writeChain;
+  };
   return {
     save: (content: string) => {
-      saveSbj.next(content)
+      if (mutationActive) {
+        // Keep the newest full GUI state. The transaction rebases it over the
+        // authoritative file before releasing the writer lock.
+        bufferedContentDuringMutation = content;
+        return;
+      }
+      pendingContent = content;
+      if (saveTimer === undefined) {
+        saveTimer = setTimeout(() => {
+          saveTimer = undefined;
+          const queued = pendingContent;
+          pendingContent = undefined;
+          if (queued !== undefined) void enqueue(queued);
+        }, 50);
+      }
     },
-    isSavingFile: () => savingFile
+    isSavingFile: () => savingFile || pendingContent !== undefined || mutationActive,
+    runExclusive: async <T>(
+      operation: () => Promise<T>,
+      rebaseBufferedContent: (baseline: string, current: string, buffered: string) => string,
+      afterWrite: () => Promise<void>,
+    ): Promise<T> => {
+      if (mutationActive) {
+        throw new Error('A settings transaction is already active');
+      }
+      mutationActive = true;
+      bufferedContentDuringMutation = undefined;
+      try {
+        await flush();
+        return await navigator.locks.request(await lockName(), async () => {
+          const baseline = await exists(await path) ? await readTextFile(await path) : '{}';
+          let result: T | undefined;
+          let operationError: unknown;
+          try {
+            result = await operation();
+          } catch (error) {
+            operationError = error;
+          }
+          try {
+            while (true) {
+              if (bufferedContentDuringMutation !== undefined) {
+                const buffered = bufferedContentDuringMutation;
+                bufferedContentDuringMutation = undefined;
+                const current = await readTextFile(await path);
+                const rebased = rebaseBufferedContent(baseline, current, buffered);
+                await writeContentUnlocked(rebased);
+                continue;
+              }
+              await afterWrite();
+              // A save can arrive while the reload awaits filesystem I/O.
+              // Drain it and reload again before releasing the lock.
+              if (bufferedContentDuringMutation === undefined) break;
+            }
+          } catch (writeError) {
+            if (operationError !== undefined) {
+              throw new Error(`${operationError}\nBuffered settings update also failed: ${writeError}`);
+            }
+            throw writeError;
+          }
+          if (operationError !== undefined) throw operationError;
+          return result!;
+        });
+      } finally {
+        mutationActive = false;
+      }
+    },
   }
 }
 export function isNewVersion(current: string, latest: string): boolean {

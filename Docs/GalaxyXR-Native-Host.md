@@ -31,35 +31,42 @@ APK patch. It installs only `libgxr_xr_bridge.so` and its implicit API-layer
 manifest, preserving Valve's native controller/hand configuration. The patch
 requires the PC LAN IPv4 and a private 64-hex pairing token. Its control and
 tracking ports are fixed to the host defaults, 29981 and 29982, so there is no
-port setup. After the final APK is signed, enroll it and configure the host in
-one step from this directory:
+port setup. After installing the final private APK on the headset, open the
+Galaxy XR GUI and select **Install**. The GUI finds a single valid sibling APK
+automatically, or asks for the exact APK when there are zero or multiple
+candidates. It decodes Android binary XML itself, verifies the Steam Link
+package/version, fixed ports, Android-namespaced Galaxy telemetry metadata,
+v2/v3 signer signature, signed APK content digest, X.509 signer/public-key
+match, and embedded bridge. Each inspection uses one private snapshot, and the
+file is inspected again at enrollment, so signature/hash/metadata cannot come
+from different versions of a changing pathname. The GUI then runs a read-only
+SteamVR/package ownership preflight, enrolls the eye and face paths, and installs
+both packages transactionally. A failed install restores the prior settings.
+No ADB, Android SDK, Java, manual hash, token, port entry, or fallback setup
+script is required. The old manual admission scripts were removed so there is
+one supported enrollment path. SteamVR deployment and restart remain separate,
+explicitly authorized operations; opening the GUI does neither automatically.
 
-```powershell
-.\tools\Set-GalaxyXRNativeTelemetryHost.ps1 `
-  -ApkPath C:\path\SteamLink-GalaxyXR.apk
-```
+## Valve package metadata boundary
 
-The setup reads the version, PC address, pairing token, and fixed ports from
-the final APK with Android `apkanalyzer`. It hashes the final APK and the exact
-embedded `libgxr_xr_bridge.so`, then transactionally updates
-`%APPDATA%\GalaxyXR\CustomHeadset\settings.json`. Other settings and admissions
-for other Steam Link builds are preserved. A non-secret admission report is
-also written beside the APK; it deliberately contains no pairing token.
+Valve's external-vendor integration does not define manifest keys for eye
+tracking, face tracking, or VRLink. `driver.vrdrivermanifest` therefore contains
+only valid package metadata. Galaxy product matching, input profiles, icons, and
+models live in the binary-free `galaxyxrresources` package. Valve's documented
+eye support flags live in that package's `default.vrsettings`; live gaze still
+travels through the active driver's `/eyetracking` component. Face samples use
+the authenticated GXRP/shared-memory path, with the VRCFaceTracking module as an
+optional consumer. `driver_vrlink` remains the wireless HMD/controller owner.
 
-If `apkanalyzer` or Java is unavailable, pass the three non-hash values that
-were selected when patching. Ports still require no input:
+## GUI readiness
 
-```powershell
-.\tools\Set-GalaxyXRNativeTelemetryHost.ps1 `
-  -ApkPath C:\path\SteamLink-GalaxyXR.apk `
-  -VersionCode 5002322 `
-  -ListenAddress 192.168.1.27 `
-  -PairingTokenHex YOUR_64_HEX_PAIRING_TOKEN
-```
-
-Run this command again whenever the APK is rebuilt or re-signed, because either
-operation changes its exact admission hash. SteamVR deployment and restart are
-separate, explicitly authorized operations; this setup tool performs neither.
+The GUI keeps setup state separate from runtime proof. **Galaxy XR Setup**
+checks the two receipt-owned packages and a structurally valid exact APK
+admission. **Galaxy XR Live Status** reads the driver's redacted heartbeat at
+`%APPDATA%\GalaxyXR\CustomHeadset\galaxyxr-status.json`; it reports transport,
+authenticated session, capabilities, HMD binding, and actual eye/face output.
+A missing or older-than-five-seconds heartbeat is shown as not running/stale.
+The snapshot contains no pairing material or biometric arrays.
 
 The available precompiled bridge reads the pairing token from application
 manifest metadata. The patched APK is therefore a private, single-user

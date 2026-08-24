@@ -5,21 +5,22 @@ use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 use sysinfo::{ProcessesToUpdate, System};
 
 const ACTIVE_DRIVER_NAME: &str = "CustomHeadsetOpenVR";
 const RESOURCE_DRIVER_NAME: &str = "galaxyxrresources";
+static JSON_WRITE_LOCK: Mutex<()> = Mutex::new(());
 const ACTIVE_REQUIRED_FILES: &[&str] = &[
     "driver.vrdrivermanifest",
     "bin/win64/driver_CustomHeadsetOpenVR.dll",
     "resources/driver.vrresources",
     "resources/settings/default.vrsettings",
-    "resources/input/galaxy_xr_hmd_profile.json",
-    "resources/input/galaxy_xr_controller_profile.json",
+    "resources/shaders/d3d11/vrlink_layer_ps.hlsl",
+    "resources/shaders/d3d11/vrlink_fxaa_ps.hlsl",
     "resources/rendermodels/vst_controller_left/vst_controller_left.obj",
     "resources/rendermodels/vst_controller_right/vst_controller_right.obj",
-    "resources/icons/galaxyxr/headset_galaxy_xr_status_ready.png",
 ];
 const RESOURCE_REQUIRED_FILES: &[&str] = &[
     "driver.vrdrivermanifest",
@@ -65,7 +66,7 @@ pub struct PackageReceipt {
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InstallReceipt {
-    #[serde(default = "receipt_schema_version")]
+    #[serde(default = "legacy_receipt_schema_version")]
     schema_version: u32,
     #[serde(default)]
     packages: Vec<PackageReceipt>,
@@ -76,9 +77,18 @@ pub struct InstallReceipt {
     package_sha256: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     file_count: Option<usize>,
+    #[serde(default)]
     vrcft_module_installed: bool,
     vrcft_module_path: Option<String>,
     vrcft_module_sha256: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InstallPreflight {
+    packages: Vec<PackageReceipt>,
+    managed_root: String,
+    receipt_migration: Option<String>,
 }
 
 #[derive(Clone, Serialize)]
@@ -109,6 +119,16 @@ struct CleanupPlan {
 
 fn receipt_schema_version() -> u32 {
     2
+}
+
+fn legacy_receipt_schema_version() -> u32 {
+    1
+}
+
+struct LoadedReceipt {
+    receipt: InstallReceipt,
+    source_path: PathBuf,
+    legacy: bool,
 }
 
 impl InstallReceipt {
@@ -218,21 +238,212 @@ fn tree_identity(tree: &BTreeMap<String, String>) -> String {
     format!("{:x}", hasher.finalize())
 }
 
-fn receipt_path() -> Result<PathBuf, String> {
-    let appdata = std::env::var_os("APPDATA").ok_or("APPDATA is unavailable")?;
-    Ok(PathBuf::from(appdata)
+fn receipt_path_from(appdata: &Path) -> PathBuf {
+    appdata
+        .join("GalaxyXR")
         .join("CustomHeadset")
-        .join("install-state.json"))
+        .join("install-state.json")
 }
 
-fn load_receipt() -> Result<Option<InstallReceipt>, String> {
-    let path = receipt_path()?;
-    if !path.exists() {
-        return Ok(None);
+fn legacy_receipt_path_from(appdata: &Path) -> PathBuf {
+    appdata.join("CustomHeadset").join("install-state.json")
+}
+
+fn receipt_path() -> Result<PathBuf, String> {
+    let appdata = std::env::var_os("APPDATA").ok_or("APPDATA is unavailable")?;
+    Ok(receipt_path_from(&PathBuf::from(appdata)))
+}
+
+fn legacy_receipt_path() -> Result<PathBuf, String> {
+    let appdata = std::env::var_os("APPDATA").ok_or("APPDATA is unavailable")?;
+    Ok(legacy_receipt_path_from(&PathBuf::from(appdata)))
+}
+
+fn expected_vrcft_module_path_from(appdata: &Path) -> PathBuf {
+    appdata
+        .join("VRCFaceTracking")
+        .join("CustomLibs")
+        .join("GalaxyXR.VRCFaceTracking.dll")
+}
+
+fn expected_vrcft_module_path() -> Result<PathBuf, String> {
+    let appdata = std::env::var_os("APPDATA").ok_or("APPDATA is unavailable")?;
+    Ok(expected_vrcft_module_path_from(&PathBuf::from(appdata)))
+}
+
+fn managed_drivers_root() -> Result<PathBuf, String> {
+    let local_appdata = std::env::var_os("LOCALAPPDATA").ok_or("LOCALAPPDATA is unavailable")?;
+    Ok(PathBuf::from(local_appdata)
+        .join("GalaxyXR")
+        .join("CustomHeadset")
+        .join("DriverPackages"))
+}
+
+fn vrpathreg_path(steamvr_dir: &str) -> Result<PathBuf, String> {
+    let path = Path::new(steamvr_dir)
+        .join("bin")
+        .join("win64")
+        .join("vrpathreg.exe");
+    if !path.is_file() {
+        return Err(format!("vrpathreg is missing: {}", path.display()));
     }
-    serde_json::from_slice(&fs::read(&path).map_err(|e| format!("read install receipt: {e}"))?)
-        .map(Some)
-        .map_err(|e| format!("parse install receipt: {e}"))
+    Ok(path)
+}
+
+fn openvrpaths_path() -> Result<PathBuf, String> {
+    let local_appdata = std::env::var_os("LOCALAPPDATA").ok_or("LOCALAPPDATA is unavailable")?;
+    Ok(PathBuf::from(local_appdata)
+        .join("openvr")
+        .join("openvrpaths.vrpath"))
+}
+
+fn registered_external_drivers_from(openvrpaths: &Path) -> Result<Vec<PathBuf>, String> {
+    if !openvrpaths.is_file() {
+        return Ok(Vec::new());
+    }
+    let value: serde_json::Value = serde_json::from_slice(
+        &fs::read(&openvrpaths).map_err(|e| format!("read {}: {e}", openvrpaths.display()))?,
+    )
+    .map_err(|e| format!("parse {}: {e}", openvrpaths.display()))?;
+    let Some(external_drivers) = value.get("external_drivers") else {
+        return Ok(Vec::new());
+    };
+    let external_drivers = external_drivers.as_array().ok_or_else(|| {
+        format!(
+            "{} has a non-array external_drivers value",
+            openvrpaths.display()
+        )
+    })?;
+    external_drivers
+        .iter()
+        .map(|value| {
+            value.as_str().map(PathBuf::from).ok_or_else(|| {
+                format!(
+                    "{} contains a non-string driver path",
+                    openvrpaths.display()
+                )
+            })
+        })
+        .collect()
+}
+
+fn registered_external_drivers() -> Result<Vec<PathBuf>, String> {
+    registered_external_drivers_from(&openvrpaths_path()?)
+}
+
+fn is_exact_driver_registered(target: &Path) -> Result<bool, String> {
+    Ok(registered_external_drivers()?
+        .iter()
+        .any(|registered| same_canonical_path(registered, target)))
+}
+
+fn run_vrpathreg(vrpathreg: &Path, action: &str, target: &Path) -> Result<(), String> {
+    let output = Command::new(vrpathreg)
+        .arg(action)
+        .arg(target)
+        .output()
+        .map_err(|e| format!("run vrpathreg {action} {}: {e}", target.display()))?;
+    if !output.status.success() {
+        return Err(format!(
+            "vrpathreg {action} failed for {} ({}): {}{}",
+            target.display(),
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    Ok(())
+}
+
+fn set_exact_driver_registration(
+    vrpathreg: &Path,
+    target: &Path,
+    registered: bool,
+) -> Result<bool, String> {
+    let was_registered = is_exact_driver_registered(target)?;
+    if was_registered == registered {
+        return Ok(false);
+    }
+    run_vrpathreg(
+        vrpathreg,
+        if registered {
+            "adddriver"
+        } else {
+            "removedriver"
+        },
+        target,
+    )?;
+    if is_exact_driver_registered(target)? != registered {
+        let rollback = run_vrpathreg(
+            vrpathreg,
+            if was_registered {
+                "adddriver"
+            } else {
+                "removedriver"
+            },
+            target,
+        )
+        .err();
+        return Err(format!(
+            "vrpathreg did not {} exact path {}; immediate rollback={rollback:?}",
+            if registered { "register" } else { "unregister" },
+            target.display()
+        ));
+    }
+    Ok(true)
+}
+
+fn read_receipt(path: &Path) -> Result<InstallReceipt, String> {
+    serde_json::from_slice(&fs::read(path).map_err(|e| format!("read {}: {e}", path.display()))?)
+        .map_err(|e| format!("parse {}: {e}", path.display()))
+}
+
+fn validate_receipt_shape(receipt: &InstallReceipt, legacy_source: bool) -> Result<(), String> {
+    let vrcft_fields_complete = receipt.vrcft_module_path.is_some()
+        && receipt.vrcft_module_sha256.is_some()
+        && receipt.vrcft_module_installed;
+    let vrcft_fields_empty = receipt.vrcft_module_path.is_none()
+        && receipt.vrcft_module_sha256.is_none()
+        && !receipt.vrcft_module_installed;
+    if !vrcft_fields_complete && !vrcft_fields_empty {
+        return Err("install receipt has inconsistent VRCFT ownership fields".into());
+    }
+    if receipt.schema_version == 1 {
+        if !legacy_source
+            || !receipt.packages.is_empty()
+            || receipt.driver_path.is_none()
+            || receipt.package_sha256.is_none()
+            || receipt.file_count.is_none()
+        {
+            return Err(
+                "v1 receipt is accepted only as an explicit generic legacy active-package receipt"
+                    .into(),
+            );
+        }
+        return Ok(());
+    }
+    if receipt.schema_version != receipt_schema_version()
+        || receipt.packages.len() != 2
+        || receipt.driver_path.is_some()
+        || receipt.package_sha256.is_some()
+        || receipt.file_count.is_some()
+    {
+        return Err(
+            "v2 receipt must explicitly own exactly the active and resource packages".into(),
+        );
+    }
+    let mut names: Vec<_> = receipt
+        .packages
+        .iter()
+        .map(|package| package.name.as_str())
+        .collect();
+    names.sort_unstable();
+    let mut expected = vec![ACTIVE_DRIVER_NAME, RESOURCE_DRIVER_NAME];
+    expected.sort_unstable();
+    if names != expected {
+        return Err("v2 receipt package identities are incomplete or duplicated".into());
+    }
+    Ok(())
 }
 
 fn write_receipt(receipt: &InstallReceipt) -> Result<(), String> {
@@ -322,7 +533,7 @@ fn validate_json_tree(root: &Path, driver_name: &str) -> Result<(), String> {
                 pending.push(path);
             } else if matches!(
                 path.extension().and_then(|value| value.to_str()),
-                Some("json" | "vrsettings")
+                Some("json" | "vrsettings" | "vrresources")
             ) {
                 let value: serde_json::Value = serde_json::from_slice(
                     &fs::read(&path).map_err(|e| format!("read {}: {e}", path.display()))?,
@@ -450,8 +661,11 @@ fn stage_vrcft_module(
     if source_bytes.len() < 4096 || source_bytes.get(..2) != Some(b"MZ") {
         return Err("VRCFT module is not a plausible Windows .NET assembly".into());
     }
-    let appdata = std::env::var_os("APPDATA").ok_or("APPDATA is unavailable")?;
-    let vrcft_root = PathBuf::from(appdata).join("VRCFaceTracking");
+    let target = expected_vrcft_module_path()?;
+    let vrcft_root = target
+        .parent()
+        .and_then(Path::parent)
+        .ok_or("managed VRCFT path has no installation root")?;
     if !vrcft_root.is_dir() {
         return Ok(None);
     }
@@ -459,7 +673,6 @@ fn stage_vrcft_module(
     if !target_dir.is_dir() {
         return Ok(None);
     }
-    let target = target_dir.join("GalaxyXR.VRCFaceTracking.dll");
     if target.exists() {
         let owned = previous
             .and_then(|receipt| {
@@ -644,14 +857,322 @@ fn rollback_packages(transactions: &[PackageTransaction]) -> Vec<String> {
         .collect()
 }
 
+fn validate_receipt_vrcft_target_at(
+    receipt: &InstallReceipt,
+    expected_target: &Path,
+) -> Result<Option<PathBuf>, String> {
+    validate_receipt_shape(receipt, receipt.schema_version == 1)?;
+    let Some(path) = receipt.vrcft_module_path.as_deref() else {
+        return Ok(None);
+    };
+    let expected_hash = receipt
+        .vrcft_module_sha256
+        .as_deref()
+        .ok_or("VRCFT receipt hash is missing")?;
+    let target = PathBuf::from(path);
+    if !target.is_file()
+        || !expected_target.is_file()
+        || !same_canonical_path(&target, &expected_target)
+    {
+        return Err(format!(
+            "receipt VRCFT path is not the exact managed module target: {}",
+            target.display()
+        ));
+    }
+    if hash_file(&target)? != expected_hash {
+        return Err("receipt-owned VRCFT module is drifted".into());
+    }
+    Ok(Some(target))
+}
+
+fn validate_receipt_vrcft_target(receipt: &InstallReceipt) -> Result<Option<PathBuf>, String> {
+    validate_receipt_vrcft_target_at(receipt, &expected_vrcft_module_path()?)
+}
+
+fn validate_receipt_package_target(
+    receipt: &InstallReceipt,
+    spec: PackageSpec,
+    steamvr_dir: &str,
+    legacy_source: bool,
+) -> Result<Option<PathBuf>, String> {
+    let (target, expected_hash, expected_count) = if receipt.schema_version == 1 {
+        if spec.name != ACTIVE_DRIVER_NAME {
+            return Ok(None);
+        }
+        (
+            PathBuf::from(
+                receipt
+                    .driver_path
+                    .as_deref()
+                    .ok_or("v1 driverPath is missing")?,
+            ),
+            receipt
+                .package_sha256
+                .as_deref()
+                .ok_or("v1 packageSha256 is missing")?,
+            receipt.file_count.ok_or("v1 fileCount is missing")?,
+        )
+    } else {
+        let package = receipt
+            .package(spec.name)
+            .ok_or_else(|| format!("receipt does not own required package {}", spec.name))?;
+        (
+            PathBuf::from(&package.path),
+            package.sha256.as_str(),
+            package.file_count,
+        )
+    };
+    if !target.is_dir() {
+        return Err(format!(
+            "receipt-owned package is missing for {}: {}",
+            spec.name,
+            target.display()
+        ));
+    }
+    let legacy_target = Path::new(steamvr_dir).join("drivers").join(spec.name);
+    let location_ok = if legacy_source {
+        same_canonical_path(&target, &legacy_target)
+    } else {
+        let managed_target = managed_drivers_root()?.join(spec.name);
+        same_canonical_path(&target, &managed_target)
+    };
+    if !location_ok {
+        return Err(format!(
+            "receipt path is outside the expected {} package location for {}: {}",
+            if legacy_source {
+                "legacy"
+            } else {
+                "Galaxy XR managed"
+            },
+            spec.name,
+            target.display()
+        ));
+    }
+    validate_package(&target, spec)?;
+    let tree = hash_tree(&target)?;
+    if tree_identity(&tree) != expected_hash || tree.len() != expected_count {
+        return Err(format!(
+            "receipt-owned package drifted for {}: {}",
+            spec.name,
+            target.display()
+        ));
+    }
+    Ok(Some(target))
+}
+
+fn receipt_owned_package_targets(
+    receipt: &InstallReceipt,
+    steamvr_dir: &str,
+    legacy_source: bool,
+) -> Result<Vec<(PackageSpec, PathBuf)>, String> {
+    validate_receipt_shape(receipt, legacy_source)?;
+    let mut targets = Vec::new();
+    for spec in [ACTIVE_SPEC, RESOURCE_SPEC] {
+        if let Some(path) =
+            validate_receipt_package_target(receipt, spec, steamvr_dir, legacy_source)?
+        {
+            targets.push((spec, path));
+        }
+    }
+    validate_receipt_vrcft_target(receipt)?;
+    Ok(targets)
+}
+
+fn load_receipt_for_context(steamvr_dir: &str) -> Result<Option<LoadedReceipt>, String> {
+    let current_path = receipt_path()?;
+    if current_path.is_file() {
+        let receipt = read_receipt(&current_path)?;
+        receipt_owned_package_targets(&receipt, steamvr_dir, false)?;
+        return Ok(Some(LoadedReceipt {
+            receipt,
+            source_path: current_path,
+            legacy: false,
+        }));
+    }
+    let legacy_path = legacy_receipt_path()?;
+    if !legacy_path.is_file() {
+        return Ok(None);
+    }
+    let receipt = read_receipt(&legacy_path)?;
+    receipt_owned_package_targets(&receipt, steamvr_dir, true).map_err(|error| {
+        format!(
+            "generic CustomHeadset receipt is not explicit Galaxy XR ownership and will not be migrated: {error}"
+        )
+    })?;
+    Ok(Some(LoadedReceipt {
+        receipt,
+        source_path: legacy_path,
+        legacy: true,
+    }))
+}
+
+fn rollback_registration_changes(
+    vrpathreg: &Path,
+    added: &[PathBuf],
+    removed: &[PathBuf],
+) -> Vec<String> {
+    let mut errors = Vec::new();
+    for target in removed.iter().rev() {
+        if let Err(error) = set_exact_driver_registration(vrpathreg, target, true) {
+            errors.push(error);
+        }
+    }
+    for target in added.iter().rev() {
+        if let Err(error) = set_exact_driver_registration(vrpathreg, target, false) {
+            errors.push(error);
+        }
+    }
+    errors
+}
+
+fn restore_detached_packages(detached: &[(PathBuf, PathBuf)]) -> Vec<String> {
+    detached
+        .iter()
+        .rev()
+        .filter_map(|(target, tombstone)| {
+            fs::rename(tombstone, target)
+                .err()
+                .map(|error| format!("restore {}: {error}", target.display()))
+        })
+        .collect()
+}
+
+fn reject_unowned_package_conflicts_with_state(
+    steamvr_dir: &str,
+    managed_root: &Path,
+    previous_packages: &[(PackageSpec, PathBuf)],
+    registered_drivers: &[PathBuf],
+) -> Result<(), String> {
+    let legacy_root = Path::new(steamvr_dir).join("drivers");
+    for spec in [ACTIVE_SPEC, RESOURCE_SPEC] {
+        let managed_target = managed_root.join(spec.name);
+        if managed_target.exists()
+            && !previous_packages
+                .iter()
+                .any(|(_, owned)| same_canonical_path(owned, &managed_target))
+        {
+            return Err(format!(
+                "unowned managed {} package blocks install; move this folder out of the managed DriverPackages directory, then retry: {}",
+                spec.name,
+                managed_target.display()
+            ));
+        }
+        let legacy_target = legacy_root.join(spec.name);
+        if legacy_target.exists()
+            && !previous_packages
+                .iter()
+                .any(|(_, owned)| same_canonical_path(owned, &legacy_target))
+        {
+            return Err(format!(
+                "unowned legacy {} package blocks managed install; use Clean Existing Driver Installations first: {}",
+                spec.name,
+                legacy_target.display()
+            ));
+        }
+    }
+    for registered in registered_drivers {
+        let Ok(name) = cleanup_manifest_identity(&registered, None) else {
+            continue;
+        };
+        if !matches!(name.as_str(), ACTIVE_DRIVER_NAME | RESOURCE_DRIVER_NAME) {
+            continue;
+        }
+        let expected_managed = managed_root.join(&name);
+        let owned = previous_packages
+            .iter()
+            .any(|(_, path)| same_canonical_path(path, &registered));
+        if !owned && !same_canonical_path(&registered, &expected_managed) {
+            return Err(format!(
+                "unowned external {name} registration blocks managed install; use Clean Existing Driver Installations first: {}",
+                registered.display()
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn reject_unowned_package_conflicts(
+    steamvr_dir: &str,
+    previous_packages: &[(PackageSpec, PathBuf)],
+) -> Result<(), String> {
+    reject_unowned_package_conflicts_with_state(
+        steamvr_dir,
+        &managed_drivers_root()?,
+        previous_packages,
+        &registered_external_drivers()?,
+    )
+}
+
+fn inspect_source_package(source_dir: &str, spec: PackageSpec) -> Result<PackageReceipt, String> {
+    let source = fs::canonicalize(source_dir)
+        .map_err(|e| format!("resolve {} source package: {e}", spec.name))?;
+    validate_package(&source, spec)?;
+    let tree = hash_tree(&source)?;
+    Ok(PackageReceipt {
+        name: spec.name.into(),
+        path: source.to_string_lossy().into_owned(),
+        sha256: tree_identity(&tree),
+        file_count: tree.len(),
+    })
+}
+
+#[tauri::command]
+pub fn preflight_driver_install(
+    source_dir: String,
+    resource_source_dir: String,
+    steamvr_dir: String,
+) -> Result<InstallPreflight, String> {
+    if steamvr_process_running() {
+        return Err("SteamVR is running. Close SteamVR before driver preflight.".into());
+    }
+    vrpathreg_path(&steamvr_dir)?;
+    let openvrpaths = openvrpaths_path()?;
+    if !openvrpaths.is_file() {
+        return Err(format!(
+            "OpenVR path registry is missing; start SteamVR once, close it, and retry: {}",
+            openvrpaths.display()
+        ));
+    }
+    let registered = registered_external_drivers_from(&openvrpaths)?;
+    let loaded = load_receipt_for_context(&steamvr_dir)?;
+    let previous_packages = loaded
+        .as_ref()
+        .map(|loaded| receipt_owned_package_targets(&loaded.receipt, &steamvr_dir, loaded.legacy))
+        .transpose()?
+        .unwrap_or_default();
+    let managed_root = managed_drivers_root()?;
+    reject_unowned_package_conflicts_with_state(
+        &steamvr_dir,
+        &managed_root,
+        &previous_packages,
+        &registered,
+    )?;
+    let packages = vec![
+        inspect_source_package(&source_dir, ACTIVE_SPEC)?,
+        inspect_source_package(&resource_source_dir, RESOURCE_SPEC)?,
+    ];
+    Ok(InstallPreflight {
+        packages,
+        managed_root: managed_root.to_string_lossy().into_owned(),
+        receipt_migration: loaded
+            .filter(|loaded| loaded.legacy)
+            .map(|loaded| loaded.source_path.to_string_lossy().into_owned()),
+    })
+}
+
 #[tauri::command]
 pub fn verify_driver_install(steamvr_dir: String) -> Result<bool, String> {
-    let Some(receipt) = load_receipt()? else {
+    let Some(loaded) = load_receipt_for_context(&steamvr_dir)? else {
         return Ok(false);
     };
-    let drivers_root = Path::new(&steamvr_dir).join("drivers");
+    if loaded.legacy {
+        return Ok(false);
+    }
+    let receipt = loaded.receipt;
+    let managed_root = managed_drivers_root()?;
+    vrpathreg_path(&steamvr_dir)?;
     for spec in [ACTIVE_SPEC, RESOURCE_SPEC] {
-        let target = drivers_root.join(spec.name);
+        let target = managed_root.join(spec.name);
         let Some(package) = receipt.package(spec.name) else {
             return Ok(false);
         };
@@ -659,24 +1180,28 @@ pub fn verify_driver_install(steamvr_dir: String) -> Result<bool, String> {
             || package.path != target.to_string_lossy()
             || validate_package(&target, spec).is_err()
             || tree_identity(&hash_tree(&target)?) != package.sha256
+            || !is_exact_driver_registered(&target)?
         {
             return Ok(false);
         }
     }
-    if let Some(module_path) = receipt.vrcft_module_path.as_deref() {
-        let Some(expected) = receipt.vrcft_module_sha256.as_deref() else {
-            return Ok(false);
-        };
-        let module = Path::new(module_path);
-        if !module.is_file() || hash_file(module)? != expected {
-            return Ok(false);
-        }
-    }
+    validate_receipt_vrcft_target(&receipt)?;
     Ok(true)
 }
 
 #[tauri::command]
 pub fn write_json_file_transactional(path: String, contents: String) -> Result<(), String> {
+    write_json_file_transactional_checked(path, contents, None)
+}
+
+pub(crate) fn write_json_file_transactional_checked(
+    path: String,
+    contents: String,
+    expected: Option<Option<&[u8]>>,
+) -> Result<(), String> {
+    let _guard = JSON_WRITE_LOCK
+        .lock()
+        .map_err(|_| "settings writer lock is poisoned")?;
     let target = PathBuf::from(path);
     let parent = target.parent().ok_or("settings path has no parent")?;
     if !parent.is_dir() {
@@ -689,7 +1214,44 @@ pub fn write_json_file_transactional(path: String, contents: String) -> Result<(
     fs::write(&stage, contents).map_err(|e| format!("stage SteamVR settings: {e}"))?;
     let had_target = target.exists();
     if had_target {
-        fs::rename(&target, &backup).map_err(|e| format!("backup SteamVR settings: {e}"))?;
+        if let Err(error) = fs::rename(&target, &backup) {
+            let _ = fs::remove_file(&stage);
+            return Err(format!("backup SteamVR settings: {error}"));
+        }
+    }
+    if let Some(expected_state) = expected {
+        // Verify the exact directory entry displaced by this transaction,
+        // closing the check/rename race with other processes.
+        let actual = if had_target {
+            match fs::read(&backup) {
+                Ok(bytes) => Some(bytes),
+                Err(error) => {
+                    let restore = fs::rename(&backup, &target).err();
+                    let _ = fs::remove_file(&stage);
+                    return Err(format!(
+                        "verify displaced settings: {error}; restore={restore:?}"
+                    ));
+                }
+            }
+        } else {
+            None
+        };
+        let matches = match (expected_state, actual.as_deref()) {
+            (Some(expected_bytes), Some(actual_bytes)) => expected_bytes == actual_bytes,
+            (None, None) => true,
+            _ => false,
+        };
+        if !matches {
+            let restore = if had_target {
+                fs::rename(&backup, &target).err()
+            } else {
+                None
+            };
+            let _ = fs::remove_file(&stage);
+            return Err(format!(
+                "settings changed before the transactional swap; retry the operation; restore={restore:?}"
+            ));
+        }
     }
     if let Err(error) = fs::rename(&stage, &target) {
         let restore = if had_target {
@@ -714,10 +1276,23 @@ pub fn install_driver_transactional(
     steamvr_dir: String,
     vrcft_module_path: Option<String>,
 ) -> Result<InstallReceipt, String> {
-    let previous_receipt = load_receipt()?;
-    let drivers_root = Path::new(&steamvr_dir).join("drivers");
+    preflight_driver_install(
+        source_dir.clone(),
+        resource_source_dir.clone(),
+        steamvr_dir.clone(),
+    )?;
+    let loaded_receipt = load_receipt_for_context(&steamvr_dir)?;
+    let previous_receipt = loaded_receipt.as_ref().map(|loaded| loaded.receipt.clone());
+    let vrpathreg = vrpathreg_path(&steamvr_dir)?;
+    let drivers_root = managed_drivers_root()?;
     fs::create_dir_all(&drivers_root)
-        .map_err(|e| format!("create SteamVR drivers directory: {e}"))?;
+        .map_err(|e| format!("create managed driver package directory: {e}"))?;
+    let previous_packages = loaded_receipt
+        .as_ref()
+        .map(|loaded| receipt_owned_package_targets(&loaded.receipt, &steamvr_dir, loaded.legacy))
+        .transpose()?
+        .unwrap_or_default();
+    reject_unowned_package_conflicts(&steamvr_dir, &previous_packages)?;
     let mut packages = Vec::new();
     for (source, spec) in [
         (&source_dir, ACTIVE_SPEC),
@@ -742,38 +1317,144 @@ pub fn install_driver_transactional(
             ));
         }
     }
-    let module_transaction =
-        match stage_vrcft_module(vrcft_module_path.as_deref(), previous_receipt.as_ref()) {
-            Ok(transaction) => transaction,
+    let mut registrations_added = Vec::new();
+    for transaction in &packages {
+        match set_exact_driver_registration(&vrpathreg, &transaction.target, true) {
+            Ok(true) => registrations_added.push(transaction.target.clone()),
+            Ok(false) => {}
             Err(error) => {
-                let rollback = rollback_packages(&packages);
+                let registration_rollback =
+                    rollback_registration_changes(&vrpathreg, &registrations_added, &[]);
+                let package_rollback = rollback_packages(&packages);
                 return Err(format!(
-                    "VRCFT module installation failed: {error}; package rollback={rollback:?}"
+                    "register managed packages failed: {error}; registration rollback={registration_rollback:?}; package rollback={package_rollback:?}"
                 ));
             }
-        };
-    let retained_module = if module_transaction.is_none() {
-        previous_receipt.as_ref().and_then(|previous| {
-            previous.vrcft_module_path.as_ref().zip(previous.vrcft_module_sha256.as_ref())
-        }).map(|(path, sha256)| -> Result<(String, String), String> {
-            let module = Path::new(path);
-            if !module.is_file() || hash_file(module)? != *sha256 {
-                return Err("previously managed VRCFT module is missing or drifted; refusing to drop its ownership".into());
+        }
+    }
+    let mut registrations_removed = Vec::new();
+    for (_, previous_target) in &previous_packages {
+        if packages
+            .iter()
+            .any(|transaction| same_canonical_path(&transaction.target, previous_target))
+        {
+            continue;
+        }
+        match set_exact_driver_registration(&vrpathreg, previous_target, false) {
+            Ok(true) => registrations_removed.push(previous_target.clone()),
+            Ok(false) => {}
+            Err(error) => {
+                let registration_rollback = rollback_registration_changes(
+                    &vrpathreg,
+                    &registrations_added,
+                    &registrations_removed,
+                );
+                let package_rollback = rollback_packages(&packages);
+                return Err(format!(
+                    "unregister previous exact package path failed: {error}; registration rollback={registration_rollback:?}; package rollback={package_rollback:?}"
+                ));
             }
-            Ok((path.clone(), sha256.clone()))
-        }).transpose()
+        }
+    }
+    let module_transaction = match stage_vrcft_module(
+        vrcft_module_path.as_deref(),
+        previous_receipt.as_ref(),
+    ) {
+        Ok(transaction) => transaction,
+        Err(error) => {
+            let registration_rollback = rollback_registration_changes(
+                &vrpathreg,
+                &registrations_added,
+                &registrations_removed,
+            );
+            let rollback = rollback_packages(&packages);
+            return Err(format!(
+                    "VRCFT module installation failed: {error}; registration rollback={registration_rollback:?}; package rollback={rollback:?}"
+                ));
+        }
+    };
+    let retained_module = if module_transaction.is_none() {
+        previous_receipt
+            .as_ref()
+            .map(|previous| -> Result<Option<(String, String)>, String> {
+                let Some(module) = validate_receipt_vrcft_target(previous)? else {
+                    return Ok(None);
+                };
+                Ok(Some((
+                    module.to_string_lossy().into_owned(),
+                    previous
+                        .vrcft_module_sha256
+                        .clone()
+                        .ok_or("VRCFT receipt hash is missing")?,
+                )))
+            })
+            .transpose()
+            .map(|value| value.flatten())
     } else {
         Ok(None)
     };
     let retained_module = match retained_module {
         Ok(value) => value,
         Err(error) => {
+            let module_rollback = module_transaction
+                .as_ref()
+                .and_then(|transaction| rollback_module(transaction).err());
+            let registration_rollback = rollback_registration_changes(
+                &vrpathreg,
+                &registrations_added,
+                &registrations_removed,
+            );
             let package_rollback = rollback_packages(&packages);
             return Err(format!(
-                "preserve VRCFT ownership: {error}; package rollback={package_rollback:?}"
+                "preserve VRCFT ownership: {error}; module rollback={module_rollback:?}; registration rollback={registration_rollback:?}; package rollback={package_rollback:?}"
             ));
         }
     };
+    let mut detached_previous = Vec::new();
+    for (_, previous_target) in &previous_packages {
+        if packages
+            .iter()
+            .any(|transaction| same_canonical_path(&transaction.target, previous_target))
+        {
+            continue;
+        }
+        let file_name = previous_target.file_name().ok_or_else(|| {
+            format!(
+                "previous package has no file name: {}",
+                previous_target.display()
+            )
+        })?;
+        let tombstone = previous_target
+            .parent()
+            .ok_or_else(|| {
+                format!(
+                    "previous package has no parent: {}",
+                    previous_target.display()
+                )
+            })?
+            .join(format!(
+                ".{}.{}.migrated",
+                file_name.to_string_lossy(),
+                unique_suffix()
+            ));
+        if let Err(error) = fs::rename(previous_target, &tombstone) {
+            let detach_rollback = restore_detached_packages(&detached_previous);
+            let module_rollback = module_transaction
+                .as_ref()
+                .and_then(|transaction| rollback_module(transaction).err());
+            let registration_rollback = rollback_registration_changes(
+                &vrpathreg,
+                &registrations_added,
+                &registrations_removed,
+            );
+            let package_rollback = rollback_packages(&packages);
+            return Err(format!(
+                "detach previous package {}: {error}; detach rollback={detach_rollback:?}; module rollback={module_rollback:?}; registration rollback={registration_rollback:?}; package rollback={package_rollback:?}",
+                previous_target.display()
+            ));
+        }
+        detached_previous.push((previous_target.clone(), tombstone));
+    }
     let receipt = InstallReceipt {
         schema_version: receipt_schema_version(),
         packages: packages
@@ -798,14 +1479,48 @@ pub fn install_driver_transactional(
             .map(|transaction| transaction.sha256.clone())
             .or_else(|| retained_module.as_ref().map(|(_, hash)| hash.clone())),
     };
+    let legacy_receipt_tombstone = if loaded_receipt.as_ref().is_some_and(|loaded| loaded.legacy) {
+        let source = &loaded_receipt.as_ref().unwrap().source_path;
+        let tombstone = source
+            .parent()
+            .ok_or("legacy receipt has no parent")?
+            .join(format!(".install-state.{}.migrated", unique_suffix()));
+        if let Err(error) = fs::rename(source, &tombstone) {
+            let detach_rollback = restore_detached_packages(&detached_previous);
+            let module_rollback = module_transaction
+                .as_ref()
+                .and_then(|transaction| rollback_module(transaction).err());
+            let registration_rollback = rollback_registration_changes(
+                &vrpathreg,
+                &registrations_added,
+                &registrations_removed,
+            );
+            let package_rollback = rollback_packages(&packages);
+            return Err(format!(
+                "detach validated legacy receipt: {error}; detach rollback={detach_rollback:?}; module rollback={module_rollback:?}; registration rollback={registration_rollback:?}; package rollback={package_rollback:?}"
+            ));
+        }
+        Some((source.clone(), tombstone))
+    } else {
+        None
+    };
     if let Err(error) = write_receipt(&receipt) {
+        let legacy_receipt_restore = legacy_receipt_tombstone
+            .as_ref()
+            .and_then(|(source, tombstone)| fs::rename(tombstone, source).err());
+        let detach_rollback = restore_detached_packages(&detached_previous);
         let module_rollback = module_transaction
             .as_ref()
             .and_then(|transaction| rollback_module(transaction).err());
+        let registration_rollback =
+            rollback_registration_changes(&vrpathreg, &registrations_added, &registrations_removed);
         let package_rollback = rollback_packages(&packages);
         return Err(format!(
-            "commit install receipt: {error}; module rollback={module_rollback:?}; package rollback={package_rollback:?}"
+            "commit install receipt: {error}; legacy receipt restore={legacy_receipt_restore:?}; detach rollback={detach_rollback:?}; module rollback={module_rollback:?}; registration rollback={registration_rollback:?}; package rollback={package_rollback:?}"
         ));
+    }
+    if let Some((_, tombstone)) = legacy_receipt_tombstone {
+        let _ = fs::remove_file(tombstone);
     }
     for transaction in &packages {
         if transaction.had_target {
@@ -817,12 +1532,229 @@ pub fn install_driver_transactional(
             let _ = fs::remove_file(module_backup);
         }
     }
+    for (_, tombstone) in detached_previous {
+        let _ = fs::remove_dir_all(tombstone);
+    }
     Ok(receipt)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_root(label: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("galaxyxr-{label}-{}", unique_suffix()))
+    }
+
+    fn create_test_package(root: &Path, spec: PackageSpec) {
+        fs::create_dir_all(root).unwrap();
+        let manifest = if spec.resource_only {
+            format!(
+                r#"{{"name":"{}","resourceOnly":true,"alwaysActivate":true,"hmd_presence":[]}}"#,
+                spec.name
+            )
+        } else {
+            format!(r#"{{"name":"{}","resourceOnly":false}}"#, spec.name)
+        };
+        fs::write(root.join("driver.vrdrivermanifest"), manifest).unwrap();
+        for relative in spec.required_files {
+            let path = root.join(relative);
+            if path.exists() {
+                continue;
+            }
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            let contents: &[u8] = match path.extension().and_then(|value| value.to_str()) {
+                Some("json" | "vrsettings" | "vrresources") => b"{}",
+                Some("obj" | "mtl" | "hlsl") => b"",
+                _ => b"test",
+            };
+            fs::write(path, contents).unwrap();
+        }
+    }
+
+    fn v2_receipt(active: &Path, resources: &Path) -> InstallReceipt {
+        InstallReceipt {
+            schema_version: 2,
+            packages: vec![
+                PackageReceipt {
+                    name: ACTIVE_DRIVER_NAME.into(),
+                    path: active.to_string_lossy().into_owned(),
+                    sha256: String::new(),
+                    file_count: 0,
+                },
+                PackageReceipt {
+                    name: RESOURCE_DRIVER_NAME.into(),
+                    path: resources.to_string_lossy().into_owned(),
+                    sha256: String::new(),
+                    file_count: 0,
+                },
+            ],
+            driver_path: None,
+            package_sha256: None,
+            file_count: None,
+            vrcft_module_installed: false,
+            vrcft_module_path: None,
+            vrcft_module_sha256: None,
+        }
+    }
+
+    #[test]
+    fn galaxy_receipt_is_isolated_from_generic_custom_headset_state() {
+        let appdata = Path::new(r"C:\Users\Test\AppData\Roaming");
+        assert_eq!(
+            receipt_path_from(appdata),
+            appdata
+                .join("GalaxyXR")
+                .join("CustomHeadset")
+                .join("install-state.json")
+        );
+        assert_ne!(
+            receipt_path_from(appdata),
+            legacy_receipt_path_from(appdata)
+        );
+    }
+
+    #[test]
+    fn validated_v1_receipt_owns_only_the_active_legacy_package() {
+        let root = test_root("v1-receipt");
+        let steamvr = root.join("SteamVR");
+        let active = steamvr.join("drivers").join(ACTIVE_DRIVER_NAME);
+        create_test_package(&active, ACTIVE_SPEC);
+        let tree = hash_tree(&active).unwrap();
+        let receipt = InstallReceipt {
+            schema_version: 1,
+            packages: Vec::new(),
+            driver_path: Some(active.to_string_lossy().into_owned()),
+            package_sha256: Some(tree_identity(&tree)),
+            file_count: Some(tree.len()),
+            vrcft_module_installed: false,
+            vrcft_module_path: None,
+            vrcft_module_sha256: None,
+        };
+        let owned =
+            receipt_owned_package_targets(&receipt, steamvr.to_str().unwrap(), true).unwrap();
+        assert_eq!(owned.len(), 1);
+        assert_eq!(owned[0].0.name, ACTIVE_DRIVER_NAME);
+        assert!(validate_receipt_shape(&receipt, false).is_err());
+
+        fs::remove_file(active.join("resources/shaders/d3d11/vrlink_layer_ps.hlsl")).unwrap();
+        assert!(receipt_owned_package_targets(&receipt, steamvr.to_str().unwrap(), true).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn generic_v2_migration_requires_both_exact_legacy_packages() {
+        let root = test_root("v2-receipt");
+        let steamvr = root.join("SteamVR");
+        let active = steamvr.join("drivers").join(ACTIVE_DRIVER_NAME);
+        let resources = steamvr.join("drivers").join(RESOURCE_DRIVER_NAME);
+        create_test_package(&active, ACTIVE_SPEC);
+        create_test_package(&resources, RESOURCE_SPEC);
+        let active_tree = hash_tree(&active).unwrap();
+        let resource_tree = hash_tree(&resources).unwrap();
+        let mut receipt = v2_receipt(&active, &resources);
+        receipt.packages[0].sha256 = tree_identity(&active_tree);
+        receipt.packages[0].file_count = active_tree.len();
+        receipt.packages[1].sha256 = tree_identity(&resource_tree);
+        receipt.packages[1].file_count = resource_tree.len();
+        assert_eq!(
+            receipt_owned_package_targets(&receipt, steamvr.to_str().unwrap(), true)
+                .unwrap()
+                .len(),
+            2
+        );
+        receipt.packages.pop();
+        assert!(receipt_owned_package_targets(&receipt, steamvr.to_str().unwrap(), true).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn conflict_preflight_rejects_unowned_matching_external_driver() {
+        let root = test_root("conflict");
+        let steamvr = root.join("SteamVR");
+        fs::create_dir_all(steamvr.join("drivers")).unwrap();
+        let managed = root.join("managed");
+        let external = root.join("external").join(ACTIVE_DRIVER_NAME);
+        create_test_package(&external, ACTIVE_SPEC);
+        assert!(reject_unowned_package_conflicts_with_state(
+            steamvr.to_str().unwrap(),
+            &managed,
+            &[],
+            std::slice::from_ref(&external)
+        )
+        .is_err());
+        assert!(reject_unowned_package_conflicts_with_state(
+            steamvr.to_str().unwrap(),
+            &managed,
+            &[(ACTIVE_SPEC, external.clone())],
+            std::slice::from_ref(&external)
+        )
+        .is_ok());
+        let managed_active = managed.join(ACTIVE_DRIVER_NAME);
+        create_test_package(&managed_active, ACTIVE_SPEC);
+        assert!(reject_unowned_package_conflicts_with_state(
+            steamvr.to_str().unwrap(),
+            &managed,
+            &[],
+            &[]
+        )
+        .is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn openvr_registry_rejects_unusable_external_driver_data() {
+        let root = test_root("openvrpaths");
+        fs::create_dir_all(&root).unwrap();
+        let paths = root.join("openvrpaths.vrpath");
+        fs::write(&paths, r#"{"external_drivers":"not-an-array"}"#).unwrap();
+        assert!(registered_external_drivers_from(&paths).is_err());
+        fs::write(&paths, r#"{"external_drivers":[42]}"#).unwrap();
+        assert!(registered_external_drivers_from(&paths).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn vrresources_are_parsed_and_dangling_driver_paths_are_rejected() {
+        let root = test_root("vrresources");
+        let resources = root.join("resources");
+        fs::create_dir_all(&resources).unwrap();
+        let document = resources.join("driver.vrresources");
+        fs::write(&document, b"{").unwrap();
+        assert!(validate_json_tree(&root, "testdriver").is_err());
+        fs::write(
+            &document,
+            r#"{"icons":{"ready":"{testdriver}/icons/missing.png"}}"#,
+        )
+        .unwrap();
+        assert!(validate_json_tree(&root, "testdriver").is_err());
+        fs::create_dir_all(resources.join("icons")).unwrap();
+        fs::write(resources.join("icons/missing.png"), b"png").unwrap();
+        validate_json_tree(&root, "testdriver").unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn vrcft_receipt_cannot_own_same_hash_at_a_different_path() {
+        let root = test_root("vrcft-path");
+        let expected = root.join("VRCFaceTracking/CustomLibs/GalaxyXR.VRCFaceTracking.dll");
+        let wrong = root.join("elsewhere/GalaxyXR.VRCFaceTracking.dll");
+        fs::create_dir_all(expected.parent().unwrap()).unwrap();
+        fs::create_dir_all(wrong.parent().unwrap()).unwrap();
+        fs::write(&expected, b"same module").unwrap();
+        fs::write(&wrong, b"same module").unwrap();
+        let mut receipt = v2_receipt(Path::new("active"), Path::new("resources"));
+        receipt.vrcft_module_installed = true;
+        receipt.vrcft_module_path = Some(wrong.to_string_lossy().into_owned());
+        receipt.vrcft_module_sha256 = Some(hash_file(&wrong).unwrap());
+        assert!(validate_receipt_vrcft_target_at(&receipt, &expected).is_err());
+        receipt.vrcft_module_path = Some(expected.to_string_lossy().into_owned());
+        assert_eq!(
+            validate_receipt_vrcft_target_at(&receipt, &expected).unwrap(),
+            Some(expected.clone())
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn built_release_package_has_a_closed_resource_graph() {
@@ -895,54 +1827,49 @@ mod tests {
 
 #[tauri::command]
 pub fn uninstall_driver_transactional(steamvr_dir: String) -> Result<bool, String> {
-    let receipt =
-        load_receipt()?.ok_or("managed install receipt is missing; refusing uninstall")?;
-    let drivers_root = Path::new(&steamvr_dir).join("drivers");
-    let mut targets = Vec::new();
-    for spec in [ACTIVE_SPEC, RESOURCE_SPEC] {
-        let target = drivers_root.join(spec.name);
-        let Some(package) = receipt.package(spec.name) else {
-            return Err(format!(
-                "receipt does not own required package {}; run repair before uninstall",
-                spec.name
-            ));
-        };
-        if !target.is_dir() || package.path != target.to_string_lossy() {
-            return Err(format!(
-                "managed target missing for {}: {}",
-                spec.name,
-                target.display()
-            ));
-        }
-        validate_package(&target, spec)?;
-        if tree_identity(&hash_tree(&target)?) != package.sha256 {
-            return Err(format!(
-                "installed {} drifted from its receipt; refusing uninstall",
-                spec.name
-            ));
-        }
-        targets.push((spec, target));
+    if steamvr_process_running() {
+        return Err("SteamVR is running. Close SteamVR before uninstalling drivers.".into());
     }
-    let module = receipt.vrcft_module_path.as_ref().map(PathBuf::from);
-    if let Some(module_path) = &module {
-        let expected = receipt
-            .vrcft_module_sha256
-            .as_deref()
-            .ok_or("VRCFT receipt hash is missing")?;
-        if !module_path.is_file() || hash_file(module_path)? != expected {
-            return Err(
-                "installed VRCFT module drifted from its receipt; refusing uninstall".into(),
-            );
+    let loaded = load_receipt_for_context(&steamvr_dir)?
+        .ok_or("managed install receipt is missing; refusing uninstall")?;
+    let LoadedReceipt {
+        receipt,
+        source_path,
+        legacy,
+    } = loaded;
+    let vrpathreg = vrpathreg_path(&steamvr_dir)?;
+    let targets = receipt_owned_package_targets(&receipt, &steamvr_dir, legacy)?;
+    let module = validate_receipt_vrcft_target(&receipt)?;
+    let mut registrations_removed = Vec::new();
+    for (_, target) in &targets {
+        match set_exact_driver_registration(&vrpathreg, target, false) {
+            Ok(true) => registrations_removed.push(target.clone()),
+            Ok(false) => {}
+            Err(error) => {
+                let rollback =
+                    rollback_registration_changes(&vrpathreg, &[], &registrations_removed);
+                return Err(format!(
+                    "unregister exact managed package path failed: {error}; rollback={rollback:?}"
+                ));
+            }
         }
     }
     let mut tombstones = Vec::new();
     for (spec, target) in &targets {
-        let tombstone = drivers_root.join(format!(".{}.{}.remove", spec.name, unique_suffix()));
+        let tombstone = target
+            .parent()
+            .ok_or_else(|| format!("managed target has no parent: {}", target.display()))?
+            .join(format!(".{}.{}.remove", spec.name, unique_suffix()));
         if let Err(error) = fs::rename(target, &tombstone) {
             for (restore_target, detached) in tombstones.iter().rev() {
                 let _ = fs::rename(detached, restore_target);
             }
-            return Err(format!("detach installed {}: {error}", spec.name));
+            let registration_rollback =
+                rollback_registration_changes(&vrpathreg, &[], &registrations_removed);
+            return Err(format!(
+                "detach installed {}: {error}; registration rollback={registration_rollback:?}",
+                spec.name
+            ));
         }
         tombstones.push((target.clone(), tombstone));
     }
@@ -959,12 +1886,14 @@ pub fn uninstall_driver_transactional(steamvr_dir: String) -> Result<bool, Strin
                 .rev()
                 .filter_map(|(target, tombstone)| fs::rename(tombstone, target).err())
                 .collect();
+            let registration_rollback =
+                rollback_registration_changes(&vrpathreg, &[], &registrations_removed);
             return Err(format!(
-                "detach VRCFT module: {error}; package restore={restore:?}"
+                "detach VRCFT module: {error}; package restore={restore:?}; registration rollback={registration_rollback:?}"
             ));
         }
     }
-    if let Err(error) = fs::remove_file(receipt_path()?) {
+    if let Err(error) = fs::remove_file(&source_path) {
         let package_restore: Vec<_> = tombstones
             .iter()
             .rev()
@@ -976,8 +1905,10 @@ pub fn uninstall_driver_transactional(steamvr_dir: String) -> Result<bool, Strin
             } else {
                 None
             };
+        let registration_rollback =
+            rollback_registration_changes(&vrpathreg, &[], &registrations_removed);
         return Err(format!(
-            "remove install receipt: {error}; package restore={package_restore:?}; module restore={module_restore:?}"
+            "remove install receipt: {error}; package restore={package_restore:?}; module restore={module_restore:?}; registration rollback={registration_rollback:?}"
         ));
     }
     // Detachment plus receipt removal is the uninstall commit. Tombstones are
@@ -1120,6 +2051,20 @@ fn push_cleanup_target(
     Ok(())
 }
 
+fn is_proven_legacy_galaxy_package(path: &Path, name: &str) -> bool {
+    match name {
+        ACTIVE_DRIVER_NAME | "GalaxyXRNative" => {
+            path.join("resources/shaders/d3d11/vrlink_layer_ps.hlsl")
+                .is_file()
+                && path
+                    .join("resources/shaders/d3d11/vrlink_fxaa_ps.hlsl")
+                    .is_file()
+        }
+        RESOURCE_DRIVER_NAME => validate_package(path, RESOURCE_SPEC).is_ok(),
+        _ => false,
+    }
+}
+
 fn build_cleanup_plan(steamvr_dir: &str) -> Result<CleanupPlan, String> {
     let steamvr_root =
         fs::canonicalize(steamvr_dir).map_err(|e| format!("resolve SteamVR directory: {e}"))?;
@@ -1141,14 +2086,26 @@ fn build_cleanup_plan(steamvr_dir: &str) -> Result<CleanupPlan, String> {
     let mut targets = Vec::new();
     let mut registrations = Vec::new();
     let mut token_entries = Vec::new();
+    let loaded_receipt = load_receipt_for_context(steamvr_dir)?;
+    let receipt_owned_packages = loaded_receipt
+        .as_ref()
+        .map(|loaded| receipt_owned_package_targets(&loaded.receipt, steamvr_dir, loaded.legacy))
+        .transpose()?
+        .unwrap_or_default();
 
     for name in [ACTIVE_DRIVER_NAME, RESOURCE_DRIVER_NAME, "GalaxyXRNative"] {
         let target = drivers_root.join(name);
         if !target.exists() {
             continue;
         }
+        let receipt_owned = receipt_owned_packages
+            .iter()
+            .any(|(spec, path)| spec.name == name && same_canonical_path(path, &target));
         match cleanup_manifest_identity(&target, Some(name)) {
-            Ok(_) => {
+            Ok(_) if receipt_owned => {
+                // The receipt-owned target is validated and added below.
+            }
+            Ok(_) if is_proven_legacy_galaxy_package(&target, name) => {
                 if let Err(error) = push_cleanup_target(
                     &mut targets,
                     &mut actions,
@@ -1159,6 +2116,10 @@ fn build_cleanup_plan(steamvr_dir: &str) -> Result<CleanupPlan, String> {
                     blockers.push(error);
                 }
             }
+            Ok(_) => preserved.push(format!(
+                "Unowned similarly named SteamVR package preserved: {}",
+                target.display()
+            )),
             Err(error) => blockers.push(error),
         }
     }
@@ -1181,22 +2142,34 @@ fn build_cleanup_plan(steamvr_dir: &str) -> Result<CleanupPlan, String> {
         {
             let path = PathBuf::from(registered);
             match cleanup_manifest_identity(&path, None) {
-                Ok(name) => match fs::canonicalize(&path) {
-                    Ok(canonical) => {
-                        let fingerprint = cleanup_path_fingerprint(&canonical)?;
-                        token_entries
-                            .push(format!("unregister|{}|{fingerprint}", canonical.display()));
-                        actions.push(format!(
-                            "Unregister exact {name} path: {}",
-                            canonical.display()
+                Ok(name) => {
+                    let receipt_owned = receipt_owned_packages.iter().any(|(spec, owned)| {
+                        spec.name == name && same_canonical_path(owned, &path)
+                    });
+                    if !receipt_owned && !is_proven_legacy_galaxy_package(&path, &name) {
+                        preserved.push(format!(
+                            "Unowned similarly named external driver preserved: {}",
+                            path.display()
                         ));
-                        registrations.push(canonical);
+                        continue;
                     }
-                    Err(error) => blockers.push(format!(
-                        "resolve registered cleanup path {}: {error}",
-                        path.display()
-                    )),
-                },
+                    match fs::canonicalize(&path) {
+                        Ok(canonical) => {
+                            let fingerprint = cleanup_path_fingerprint(&canonical)?;
+                            token_entries
+                                .push(format!("unregister|{}|{fingerprint}", canonical.display()));
+                            actions.push(format!(
+                                "Unregister exact {name} path: {}",
+                                canonical.display()
+                            ));
+                            registrations.push(canonical);
+                        }
+                        Err(error) => blockers.push(format!(
+                            "resolve registered cleanup path {}: {error}",
+                            path.display()
+                        )),
+                    }
+                }
                 Err(_) => preserved.push(format!(
                     "Unrelated external driver preserved: {}",
                     path.display()
@@ -1208,71 +2181,44 @@ fn build_cleanup_plan(steamvr_dir: &str) -> Result<CleanupPlan, String> {
         blockers.push(format!("vrpathreg is missing: {}", vrpathreg.display()));
     }
 
-    let appdata = PathBuf::from(std::env::var_os("APPDATA").ok_or("APPDATA is unavailable")?);
-    let expected_vrcft_module = appdata
-        .join("VRCFaceTracking")
-        .join("CustomLibs")
-        .join("GalaxyXR.VRCFaceTracking.dll");
-    let receipt = load_receipt()?;
-    let receipt_file = receipt_path()?;
-    if let Some(receipt) = receipt.as_ref() {
-        for spec in [ACTIVE_SPEC, RESOURCE_SPEC] {
-            let target = drivers_root.join(spec.name);
-            let Some(package) = receipt.package(spec.name) else {
-                blockers.push(format!(
-                    "managed receipt does not own required package {}",
-                    spec.name
-                ));
-                continue;
-            };
-            if !target.is_dir() {
-                blockers.push(format!("managed package is missing: {}", target.display()));
-                continue;
-            }
-            match cleanup_path_fingerprint(&target) {
-                Ok(hash) if package.path == target.to_string_lossy() && package.sha256 == hash => {}
-                Ok(_) => blockers.push(format!(
-                    "managed package drifted; refusing cleanup: {}",
-                    target.display()
-                )),
-                Err(error) => blockers.push(error),
-            }
-        }
-        if let Some(module_path) = receipt.vrcft_module_path.as_deref() {
-            let module = PathBuf::from(module_path);
-            let expected = receipt.vrcft_module_sha256.as_deref();
-            match (
-                module.is_file(),
-                expected,
-                cleanup_path_fingerprint(&module),
-            ) {
-                (true, Some(expected), Ok(actual))
-                    if expected == actual
-                        && same_canonical_path(&module, &expected_vrcft_module) =>
-                {
-                    if let Err(error) = push_cleanup_target(
-                        &mut targets,
-                        &mut actions,
-                        &mut token_entries,
-                        module.clone(),
-                        format!("Remove receipt-owned VRCFT module: {}", module.display()),
-                    ) {
-                        blockers.push(error);
-                    }
-                }
-                _ => blockers.push(format!(
-                    "receipt-owned VRCFT module is missing or drifted: {}",
-                    module.display()
-                )),
-            }
-        }
-        if receipt_file.is_file() {
+    let expected_vrcft_module = expected_vrcft_module_path()?;
+    if let Some(loaded) = loaded_receipt.as_ref() {
+        for (spec, target) in &receipt_owned_packages {
             if let Err(error) = push_cleanup_target(
                 &mut targets,
                 &mut actions,
                 &mut token_entries,
-                receipt_file.clone(),
-                format!("Remove managed install receipt: {}", receipt_file.display()),
+                target.clone(),
+                format!(
+                    "Remove receipt-owned {} package: {}",
+                    spec.name,
+                    target.display()
+                ),
+            ) {
+                blockers.push(error);
+            }
+        }
+        if let Some(module) = validate_receipt_vrcft_target(&loaded.receipt)? {
+            if let Err(error) = push_cleanup_target(
+                &mut targets,
+                &mut actions,
+                &mut token_entries,
+                module.clone(),
+                format!("Remove receipt-owned VRCFT module: {}", module.display()),
+            ) {
+                blockers.push(error);
+            }
+        }
+        if loaded.source_path.is_file() {
+            if let Err(error) = push_cleanup_target(
+                &mut targets,
+                &mut actions,
+                &mut token_entries,
+                loaded.source_path.clone(),
+                format!(
+                    "Remove managed install receipt: {}",
+                    loaded.source_path.display()
+                ),
             ) {
                 blockers.push(error);
             }
@@ -1416,18 +2362,10 @@ fn rollback_cleanup(
         }
     }
     for removed in unregistered.iter().rev() {
-        match Command::new(vrpathreg)
-            .arg("adddriver")
-            .arg(removed)
-            .status()
-        {
-            Ok(status) if status.success() => {}
-            Ok(status) => errors.push(format!(
-                "restore registration {}: vrpathreg exited with {status}",
-                removed.display()
-            )),
+        match set_exact_driver_registration(vrpathreg, removed, true) {
+            Ok(true) | Ok(false) => {}
             Err(error) => errors.push(format!(
-                "restore registration {}: {error}",
+                "restore exact registration {}: {error}",
                 removed.display()
             )),
         }
@@ -1456,30 +2394,25 @@ pub fn execute_driver_cleanup(
 
     let mut unregistered = Vec::new();
     for registration in &plan.registrations {
-        let status = Command::new(&plan.vrpathreg)
-            .arg("removedriver")
-            .arg(registration)
-            .status();
-        let status = match status {
-            Ok(status) => status,
-            Err(error) => {
+        match set_exact_driver_registration(&plan.vrpathreg, registration, false) {
+            Ok(true) => unregistered.push(registration.clone()),
+            Ok(false) => {
                 let rollback_errors = rollback_cleanup(&plan.vrpathreg, &[], &unregistered);
                 return Err(format!(
-                    "run vrpathreg for {}: {error}; rollback errors: {:?}",
+                    "exact registration disappeared after preview: {}; rollback errors: {:?}",
                     registration.display(),
                     rollback_errors
                 ));
             }
-        };
-        if !status.success() {
-            let rollback_errors = rollback_cleanup(&plan.vrpathreg, &[], &unregistered);
-            return Err(format!(
-                "failed to unregister exact driver path: {}; rollback errors: {:?}",
-                registration.display(),
-                rollback_errors
-            ));
+            Err(error) => {
+                let rollback_errors = rollback_cleanup(&plan.vrpathreg, &[], &unregistered);
+                return Err(format!(
+                    "unregister exact driver path {}: {error}; rollback errors: {:?}",
+                    registration.display(),
+                    rollback_errors
+                ));
+            }
         }
-        unregistered.push(registration.clone());
     }
 
     let mut detached: Vec<(PathBuf, PathBuf)> = Vec::new();

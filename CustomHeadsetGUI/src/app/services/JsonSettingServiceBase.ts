@@ -12,6 +12,30 @@ export type FileReadError = {
     reason: FileReadErrorReason,
     message?: string
 }
+
+function applyJsonChanges(baseline: any, current: any, desired: any): any {
+    if (JSON.stringify(baseline) === JSON.stringify(desired)) return current;
+    const baselineObject = baseline !== null && typeof baseline === 'object' && !Array.isArray(baseline);
+    const currentObject = current !== null && typeof current === 'object' && !Array.isArray(current);
+    const desiredObject = desired !== null && typeof desired === 'object' && !Array.isArray(desired);
+    if (!baselineObject || !currentObject || !desiredObject) return desired;
+
+    const result: Record<string, any> = { ...current };
+    const keys = new Set([...Object.keys(baseline), ...Object.keys(desired)]);
+    for (const key of keys) {
+        const baselineHas = Object.prototype.hasOwnProperty.call(baseline, key);
+        const desiredHas = Object.prototype.hasOwnProperty.call(desired, key);
+        if (!desiredHas && baselineHas) {
+            delete result[key];
+        } else if (desiredHas && !baselineHas) {
+            result[key] = desired[key];
+        } else if (desiredHas) {
+            result[key] = applyJsonChanges(baseline[key], current[key], desired[key]);
+        }
+    }
+    return result;
+}
+
 export abstract class JsonSettingServiceBase<T> {
     protected _values = signal<T | undefined>(undefined, {});
     // migration hook: subclasses may strip retired keys from freshly
@@ -99,5 +123,28 @@ export abstract class JsonSettingServiceBase<T> {
         await this._initTask;
         this.debouncedFileWriter.save(JSON.stringify(deepCopy(values, this.defaults ?? {}), undefined, 4));
         this._values.set(Object.assign({}, values))
+    }
+
+    async runExclusiveFileMutation<TResult>(operation: () => Promise<TResult>, protectedTopLevelKeys: string[] = []): Promise<TResult> {
+        await this._initTask;
+        return await this.debouncedFileWriter.runExclusive(
+            operation,
+            (baselineContent, currentContent, bufferedContent) => {
+                const baseline = JSON.parse(cleanJsonComments(baselineContent));
+                const current = JSON.parse(cleanJsonComments(currentContent));
+                const buffered = JSON.parse(cleanJsonComments(bufferedContent));
+                const rebased = applyJsonChanges(baseline, current, buffered);
+                for (const key of protectedTopLevelKeys) {
+                    if (Object.prototype.hasOwnProperty.call(current, key)) rebased[key] = current[key];
+                    else delete rebased[key];
+                }
+                return JSON.stringify(rebased, undefined, 4);
+            },
+            async () => {
+                // Refresh signals before releasing the writer lock so a later
+                // save starts from the authoritative, rebased state.
+                await this.loadSetting();
+            }
+        );
     }
 }

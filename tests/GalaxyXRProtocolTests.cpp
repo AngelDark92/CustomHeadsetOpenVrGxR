@@ -5,6 +5,7 @@
 #include "../CustomHeadsetOpenVR/src/GalaxyXR/GalaxyXRPoseTiming.h"
 #include "../CustomHeadsetOpenVR/src/GalaxyXR/GalaxyXRProfile.h"
 #include "../CustomHeadsetOpenVR/src/GalaxyXR/GalaxyXRProtocol.h"
+#include "../CustomHeadsetOpenVR/src/GalaxyXR/GalaxyXRStatus.h"
 #include "../tools/GalaxyXROscCodec.h"
 
 #include <algorithm>
@@ -599,6 +600,27 @@ void TestOscFaceFrame(){
 	Check(!galaxyxr::osc::EncodeFaceFrame(invalid, packet), "OSC rejects non-finite biometric values");
 }
 
+void TestRedactedRuntimeStatus(){
+	galaxyxr::GalaxyXRStatus status;
+	status.SetState("session", "authenticated");
+	status.SetState("pairing_token", "must-not-serialize");
+	status.SetCounter("tracking_sequence", 42);
+	status.Transition("runtime", "ready");
+	const std::string serialized = status.Serialize();
+	Check(
+		serialized.find("\"session\": \"authenticated\"") != std::string::npos,
+		"runtime status exposes safe readiness state");
+	Check(
+		serialized.find("must-not-serialize") == std::string::npos,
+		"runtime status rejects secret-bearing names");
+	Check(
+		galaxyxr::GalaxyXRStatus::IsSnapshotStale(1000, 7001, 5000),
+		"runtime status detects stale heartbeat");
+	Check(
+		!galaxyxr::GalaxyXRStatus::IsSnapshotStale(1000, 6000, 5000),
+		"runtime status accepts heartbeat at freshness boundary");
+}
+
 } // namespace
 
 int main(){
@@ -614,6 +636,7 @@ int main(){
 	TestAuthenticationAndFuzz();
 	TestClockAndProfile();
 	TestOscFaceFrame();
+	TestRedactedRuntimeStatus();
 	if(failures != 0){
 		std::cerr << failures << " Galaxy XR test(s) failed\n";
 		return 1;

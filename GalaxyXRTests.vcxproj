@@ -14,6 +14,7 @@
     <ClCompile Include="CustomHeadsetOpenVR\src\GalaxyXR\GalaxyXRPoseTiming.cpp" />
     <ClCompile Include="CustomHeadsetOpenVR\src\GalaxyXR\GalaxyXRProfile.cpp" />
     <ClCompile Include="CustomHeadsetOpenVR\src\GalaxyXR\GalaxyXRProtocol.cpp" />
+    <ClCompile Include="CustomHeadsetOpenVR\src\GalaxyXR\GalaxyXRStatus.cpp" />
     <ClCompile Include="tools\GalaxyXROscCodec.cpp" />
   </ItemGroup>
   <PropertyGroup Label="Globals">

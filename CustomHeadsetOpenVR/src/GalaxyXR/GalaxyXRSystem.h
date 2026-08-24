@@ -8,6 +8,7 @@
 #include "GalaxyXRFaceOutput.h"
 #include "GalaxyXRPoseTiming.h"
 #include "GalaxyXRProfile.h"
+#include "GalaxyXRStatus.h"
 #include "GalaxyXRTransport.h"
 
 #include "../Config/Config.h"
@@ -58,6 +59,13 @@ private:
 	GalaxyXRSystem();
 	static std::int64_t NowNs();
 	void StopFeatureState();
+	void ConfigureStatus();
+	void FlushStatus(
+		const char* stage,
+		const char* state,
+		const char* safeError,
+		std::int64_t nowNs,
+		bool force = false);
 	std::string TransportSignature(const Config::GalaxyXRConfig& configuration) const;
 
 	GalaxyXRProfile profile;
@@ -69,6 +77,7 @@ private:
 	GalaxyXRDeviceRegistry registry;
 	GalaxyXRPoseTiming poseTiming;
 	GalaxyXRTransport transport;
+	GalaxyXRStatus status;
 
 	Config::GalaxyXRConfig currentConfiguration;
 	mutable std::mutex stateMutex;
@@ -77,6 +86,8 @@ private:
 	std::string activeTransportSignature;
 	std::string lastTransportAttemptSignature;
 	std::int64_t nextTransportAttemptNs = 0;
+	std::int64_t nextStatusFlushNs = 0;
+	bool statusConfigured = false;
 	std::string activePosePolicySignature;
 	std::uint64_t lastPublishedFaceSequence = 0;
 	bool faceOutputEnabled = false;

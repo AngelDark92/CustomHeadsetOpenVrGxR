@@ -138,6 +138,7 @@ void GalaxyXREyePublisher::Unbind(){
 	component = vr::k_ulInvalidInputComponentHandle;
 	componentCreated = false;
 	invalidPublished = false;
+	outputValid = false;
 }
 
 void GalaxyXREyePublisher::InvalidateSession(){
@@ -146,6 +147,7 @@ void GalaxyXREyePublisher::InvalidateSession(){
 		PublishInvalid(0.0);
 	}
 	invalidPublished = true;
+	outputValid = false;
 }
 
 void GalaxyXREyePublisher::RunFrame(
@@ -194,11 +196,17 @@ void GalaxyXREyePublisher::RunFrame(
 		DriverLog("GXR EyePublish: UpdateEyeTrackingComponent failed with error %d", static_cast<int>(error));
 	}
 	invalidPublished = false;
+	outputValid = error == vr::VRInputError_None;
 }
 
 bool GalaxyXREyePublisher::OwnsPublisher() const{
 	std::lock_guard<std::mutex> lock(mutex);
 	return componentCreated;
+}
+
+bool GalaxyXREyePublisher::IsOutputValid() const{
+	std::lock_guard<std::mutex> lock(mutex);
+	return outputValid;
 }
 
 std::string GalaxyXREyePublisher::Owner() const{
@@ -292,6 +300,7 @@ void GalaxyXREyePublisher::PublishInvalid(double timeOffset){
 			static_cast<int>(error));
 	}
 	invalidPublished = true;
+	outputValid = false;
 }
 
 void GalaxyXREyePublisher::PublishSynthetic(std::int64_t nowHostMonotonicNs){
@@ -318,6 +327,7 @@ void GalaxyXREyePublisher::PublishSynthetic(std::int64_t nowHostMonotonicNs){
 			static_cast<int>(error));
 	}
 	invalidPublished = false;
+	outputValid = error == vr::VRInputError_None;
 }
 
 } // namespace galaxyxr

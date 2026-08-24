@@ -29,6 +29,7 @@ namespace galaxyxr {
 namespace {
 
 constexpr std::int64_t TransportRetryIntervalNs = 5'000'000'000LL;
+constexpr std::int64_t StatusFlushIntervalNs = 1'000'000'000LL;
 
 enum class ListenAddressStatus {
 	Local,
@@ -245,6 +246,16 @@ bool CapabilityReady(
 		HasExtensionToken(capabilities.enabledExtensions, extension);
 }
 
+const char* TransportErrorCode(const std::string& signature){
+	if(signature == "<invalid-client-provenance>"){ return "client_provenance_invalid"; }
+	if(signature == "<invalid-pairing>"){ return "pairing_invalid"; }
+	if(signature == "<invalid-listen-address>"){ return "listen_address_invalid"; }
+	if(signature == "<non-local-listen-address>"){ return "listen_address_not_local"; }
+	if(signature == "<host-hash-unavailable>"){ return "host_hash_unavailable"; }
+	if(signature == "<invalid-transport-config>"){ return "transport_config_invalid"; }
+	return "";
+}
+
 } // namespace
 
 GalaxyXRSystem& GalaxyXRSystem::Instance(){
@@ -255,7 +266,39 @@ GalaxyXRSystem& GalaxyXRSystem::Instance(){
 GalaxyXRSystem::GalaxyXRSystem()
 	: transport(profile, clockSync, diagnostics) {}
 
+void GalaxyXRSystem::ConfigureStatus(){
+	if(statusConfigured){
+		return;
+	}
+	status.ConfigureFile(
+		(std::filesystem::path(driverConfigLoader.GetConfigFolder()) /
+			"galaxyxr-status.json").string());
+	statusConfigured = true;
+}
+
+void GalaxyXRSystem::FlushStatus(
+	const char* stage,
+	const char* state,
+	const char* safeError,
+	std::int64_t nowNs,
+	bool force){
+	status.Transition(stage, state, safeError ? safeError : "");
+	if(force || nowNs >= nextStatusFlushNs){
+		status.Flush();
+		nextStatusFlushNs = nowNs + StatusFlushIntervalNs;
+	}
+}
+
 void GalaxyXRSystem::RunFrame(const Config::GalaxyXRConfig& configuration){
+	ConfigureStatus();
+	const std::int64_t statusNowNs = NowNs();
+	status.SetState("configuration", configuration.enable ? "enabled" : "disabled");
+	status.SetState(
+		"identity",
+		configuration.identityMode == "negotiated" ? "negotiated" : "unsupported");
+	status.SetState(
+		"vrlink_compatibility",
+		configuration.vrlinkCompatibilityMode == "off" ? "off" : "requested");
 	{
 		std::lock_guard<std::mutex> lock(stateMutex);
 		currentConfiguration = configuration;
@@ -268,6 +311,13 @@ void GalaxyXRSystem::RunFrame(const Config::GalaxyXRConfig& configuration){
 			hmdBoundToSession.load(std::memory_order_acquire)){
 			StopFeatureState();
 		}
+		status.SetState("transport", "stopped");
+		status.SetState("session", "inactive");
+		status.SetState("capabilities", "unavailable");
+		status.SetState("hmd", "unbound");
+		status.SetState("eye", "inactive");
+		status.SetState("face", "inactive");
+		FlushStatus("configuration", "disabled", "", statusNowNs);
 		return;
 	}
 	if(configuration.identityMode != "negotiated"){
@@ -278,6 +328,17 @@ void GalaxyXRSystem::RunFrame(const Config::GalaxyXRConfig& configuration){
 				"GXR Session: disabled because identityMode=%s is unsupported; only negotiated is fail-closed",
 				configuration.identityMode.c_str());
 		}
+		status.SetState("transport", "stopped");
+		status.SetState("session", "inactive");
+		status.SetState("capabilities", "unavailable");
+		status.SetState("hmd", "unbound");
+		status.SetState("eye", "inactive");
+		status.SetState("face", "inactive");
+		FlushStatus(
+			"configuration",
+			"blocked",
+			"identity_mode_unsupported",
+			statusNowNs);
 		return;
 	}
 
@@ -357,6 +418,13 @@ void GalaxyXRSystem::RunFrame(const Config::GalaxyXRConfig& configuration){
 		StopFeatureState();
 		activeTransportSignature = "<disabled>";
 		nextTransportAttemptNs = 0;
+		status.SetState("transport", "disabled");
+		status.SetState("session", "inactive");
+		status.SetState("capabilities", "unavailable");
+		status.SetState("hmd", "unbound");
+		status.SetState("eye", "inactive");
+		status.SetState("face", "inactive");
+		FlushStatus("transport", "disabled", "telemetry_disabled", statusNowNs);
 		return;
 	}
 	if(configuration.telemetry.enable &&
@@ -375,6 +443,17 @@ void GalaxyXRSystem::RunFrame(const Config::GalaxyXRConfig& configuration){
 				"GXR Transport: disabled; pairing is mandatory, distinct TCP/UDP ports must be in [1,65535], and staleAfterMs must be in [10,1000]");
 		}
 		nextTransportAttemptNs = transportNowNs + TransportRetryIntervalNs;
+		status.SetState("transport", "blocked");
+		status.SetState("session", "inactive");
+		status.SetState("capabilities", "unavailable");
+		status.SetState("hmd", "unbound");
+		status.SetState("eye", "inactive");
+		status.SetState("face", "inactive");
+		FlushStatus(
+			"transport",
+			"blocked",
+			"transport_config_invalid",
+			statusNowNs);
 		return;
 	}
 	if(configuration.telemetry.enable &&
@@ -465,6 +544,18 @@ void GalaxyXRSystem::RunFrame(const Config::GalaxyXRConfig& configuration){
 		previousAuthenticated = authenticated;
 	}
 	if(!authenticated){
+		status.SetState("transport", transport.IsRunning() ? "listening" : "stopped");
+		status.SetState("session", "waiting");
+		status.SetState("capabilities", "unavailable");
+		status.SetState("hmd", "unbound");
+		status.SetState("eye", "waiting_session");
+		status.SetState("face", "waiting_session");
+		const char* transportError = TransportErrorCode(activeTransportSignature);
+		FlushStatus(
+			"session",
+			transport.IsRunning() ? "waiting" : "blocked",
+			transportError,
+			statusNowNs);
 		return;
 	}
 	if(configuration.face.enableLosslessOutput && !faceOutputEnabled){
@@ -529,7 +620,8 @@ void GalaxyXRSystem::RunFrame(const Config::GalaxyXRConfig& configuration){
 	TrackingSample tracking;
 	const TrackingSample* trackingPointer = nullptr;
 	const std::int64_t nowNs = NowNs();
-	if(profile.GetTracking(tracking)){
+	const bool haveTracking = profile.GetTracking(tracking);
+	if(haveTracking){
 		trackingPointer = eyeCapabilityReady ? &tracking : nullptr;
 		const bool visualFacePermission =
 			(capabilities.permissionFlags & CapabilityPermissionFaceTracking) != 0;
@@ -582,6 +674,40 @@ void GalaxyXRSystem::RunFrame(const Config::GalaxyXRConfig& configuration){
 		}
 	}
 	eyePublisher.RunFrame(trackingPointer, clockSync, nowNs);
+	const bool hmdBound = hmdBoundToSession.load(std::memory_order_acquire);
+	const bool eyeOutputValid = eyePublisher.IsOutputValid();
+	status.SetState("transport", "listening");
+	status.SetState("session", "authenticated");
+	status.SetState("capabilities", haveCapabilities ? "received" : "missing");
+	status.SetState("hmd", hmdBound ? "bound" : "waiting");
+	status.SetState(
+		"eye",
+		eyeOutputValid
+			? "streaming"
+			: (eyeCapabilityReady ? "waiting_sample" : "capability_missing"));
+	status.SetState(
+		"face",
+		faceOutputValid
+			? "streaming"
+			: (!configuration.face.enableLosslessOutput
+				? "disabled"
+				: (faceCapabilityReady ? "waiting_sample" : "capability_missing")));
+	if(haveTracking){
+		status.SetCounter("tracking_sequence", tracking.sampleSequence);
+	}
+	if(lastPublishedFaceSequence > 0){
+		status.SetCounter("face_sequence", lastPublishedFaceSequence);
+	}else{
+		status.RemoveCounter("face_sequence");
+	}
+	const bool runtimeReady =
+		haveCapabilities && hmdBound && eyeOutputValid &&
+		(!configuration.face.enableLosslessOutput || faceOutputValid);
+	FlushStatus(
+		"runtime",
+		runtimeReady ? "ready" : "degraded",
+		runtimeReady ? "" : "runtime_signal_incomplete",
+		nowNs);
 }
 
 void GalaxyXRSystem::Cleanup(){
@@ -609,6 +735,15 @@ void GalaxyXRSystem::Cleanup(){
 	faceOutputEnabled = false;
 	faceOutputValid = false;
 	hmdBoundToSession.store(false, std::memory_order_release);
+	if(statusConfigured){
+		status.SetState("transport", "stopped");
+		status.SetState("session", "inactive");
+		status.SetState("capabilities", "unavailable");
+		status.SetState("hmd", "unbound");
+		status.SetState("eye", "inactive");
+		status.SetState("face", "inactive");
+		FlushStatus("driver", "stopped", "", NowNs(), true);
+	}
 }
 
 void GalaxyXRSystem::ObserveDeviceAdded(

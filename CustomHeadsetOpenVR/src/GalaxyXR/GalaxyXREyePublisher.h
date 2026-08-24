@@ -32,6 +32,7 @@ public:
 		const GalaxyXRClockSync& clock,
 	std::int64_t nowHostMonotonicNs);
 	bool OwnsPublisher() const;
+	bool IsOutputValid() const;
 	std::string Owner() const;
 
 	static bool BuildGaze(
@@ -50,6 +51,7 @@ private:
 	vr::VRInputComponentHandle_t component = vr::k_ulInvalidInputComponentHandle;
 	bool componentCreated = false;
 	bool invalidPublished = false;
+	bool outputValid = false;
 	std::string owner = "off";
 };
 

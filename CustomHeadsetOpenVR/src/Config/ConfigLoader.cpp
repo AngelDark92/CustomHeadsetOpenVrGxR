@@ -244,6 +244,25 @@ void ConfigLoader::ParseConfig(){
 		// parse with support for comments
 		json data = json::parse(configFile, nullptr, true, true);
 		Config newConfig = {};
+		auto parseGalaxyXRNativeConfig = [](const json& nativeData, GalaxyXrConfig& nativeConfig){
+			if(nativeData["nativeIdentity"].is_boolean()){ nativeConfig.nativeIdentity = nativeData["nativeIdentity"].get<bool>(); }
+			if(nativeData["renderModelVariant"].is_string()){ nativeConfig.renderModelVariant = nativeData["renderModelVariant"].get<std::string>(); }
+			if(nativeData["nativeInputProfile"].is_boolean()){ nativeConfig.nativeInputProfile = nativeData["nativeInputProfile"].get<bool>(); }
+			if(nativeData["nativeResolution"].is_boolean()){ nativeConfig.nativeResolution = nativeData["nativeResolution"].get<bool>(); }
+			if(nativeData["streamQuality"].is_string()){ nativeConfig.streamQuality = nativeData["streamQuality"].get<std::string>(); }
+			if(nativeData["renderModelScale"].is_number()){ nativeConfig.renderModelScale = nativeData["renderModelScale"].get<double>(); }
+			if(nativeData["gripConvention"].is_boolean()){ nativeConfig.gripConvention = nativeData["gripConvention"].get<bool>(); }
+			if(nativeData["skeletonOffsetXCm"].is_number()){ nativeConfig.skeletonOffsetXCm = nativeData["skeletonOffsetXCm"].get<double>(); }
+			if(nativeData["skeletonOffsetYCm"].is_number()){ nativeConfig.skeletonOffsetYCm = nativeData["skeletonOffsetYCm"].get<double>(); }
+			if(nativeData["skeletonOffsetZCm"].is_number()){ nativeConfig.skeletonOffsetZCm = nativeData["skeletonOffsetZCm"].get<double>(); }
+			if(nativeData["skeletonOffsetMirror"].is_boolean()){ nativeConfig.skeletonOffsetMirror = nativeData["skeletonOffsetMirror"].get<bool>(); }
+		};
+		// Legacy lowercase settings are fallback migration input. Parse them
+		// first so any fields in the canonical galaxyXR section win below.
+		if(data["galaxyXr"].is_object()){
+			parseGalaxyXRNativeConfig(data["galaxyXr"], newConfig.galaxyXR);
+			DriverLog("Migrating legacy galaxyXr settings in memory; save them under galaxyXR.");
+		}
 		if(data["meganeX8K"].is_object()){
 			json headsetData = data["meganeX8K"];
 			parseBaseHeadsetConfig(headsetData, newConfig.meganeX8K);
@@ -255,6 +274,7 @@ void ConfigLoader::ParseConfig(){
 		if(data["galaxyXR"].is_object()){
 			json galaxyXRData = data["galaxyXR"];
 			auto& galaxyXR = newConfig.galaxyXR;
+			parseGalaxyXRNativeConfig(galaxyXRData, galaxyXR);
 			if(galaxyXRData["enable"].is_boolean()){ galaxyXR.enable = galaxyXRData["enable"].get<bool>(); }
 			if(galaxyXRData["forceEnable"].is_boolean()){ galaxyXR.forceEnable = galaxyXRData["forceEnable"].get<bool>(); }
 			if(galaxyXRData["overridePublicIdentity"].is_boolean()){ galaxyXR.overridePublicIdentity = galaxyXRData["overridePublicIdentity"].get<bool>(); }
@@ -458,42 +478,9 @@ void ConfigLoader::ParseConfig(){
 				if(customShaderData["colorMultiplier"]["b"].is_number()){ colorMultiplier.b = customShaderData["colorMultiplier"]["b"].get<double>(); }
 			}
 		}
-		if(data["galaxyXr"].is_object()){
-			json galaxyXrData = data["galaxyXr"];
-			if(galaxyXrData["nativeIdentity"].is_boolean()){
-				newConfig.galaxyXr.nativeIdentity = galaxyXrData["nativeIdentity"].get<bool>();
-			}
-			if(galaxyXrData["renderModelVariant"].is_string()){
-				newConfig.galaxyXr.renderModelVariant = galaxyXrData["renderModelVariant"].get<std::string>();
-			}
-			if(galaxyXrData["nativeInputProfile"].is_boolean()){
-				newConfig.galaxyXr.nativeInputProfile = galaxyXrData["nativeInputProfile"].get<bool>();
-			}
-			if(galaxyXrData["nativeResolution"].is_boolean()){
-				newConfig.galaxyXr.nativeResolution = galaxyXrData["nativeResolution"].get<bool>();
-			}
-			if(galaxyXrData["streamQuality"].is_string()){
-				newConfig.galaxyXr.streamQuality = galaxyXrData["streamQuality"].get<std::string>();
-			}
-			if(galaxyXrData["renderModelScale"].is_number()){
-				newConfig.galaxyXr.renderModelScale = galaxyXrData["renderModelScale"].get<double>();
-			}
-			if(galaxyXrData["gripConvention"].is_boolean()){
-				newConfig.galaxyXr.gripConvention = galaxyXrData["gripConvention"].get<bool>();
-			}
-			if(galaxyXrData["skeletonOffsetXCm"].is_number()){
-				newConfig.galaxyXr.skeletonOffsetXCm = galaxyXrData["skeletonOffsetXCm"].get<double>();
-			}
-			if(galaxyXrData["skeletonOffsetYCm"].is_number()){
-				newConfig.galaxyXr.skeletonOffsetYCm = galaxyXrData["skeletonOffsetYCm"].get<double>();
-			}
-			if(galaxyXrData["skeletonOffsetZCm"].is_number()){
-				newConfig.galaxyXr.skeletonOffsetZCm = galaxyXrData["skeletonOffsetZCm"].get<double>();
-			}
-			if(galaxyXrData["skeletonOffsetMirror"].is_boolean()){
-				newConfig.galaxyXr.skeletonOffsetMirror = galaxyXrData["skeletonOffsetMirror"].get<bool>();
-			}
-		}
+		// Keep old C++ call sites synchronized with the canonical object until
+		// they can be migrated without changing this config-only patch.
+		newConfig.galaxyXr = static_cast<const GalaxyXrConfig&>(newConfig.galaxyXR);
 		if(data["streamFrame"].is_object()){
 			json streamFrameData = data["streamFrame"];
 			if(streamFrameData["enable"].is_boolean()){
