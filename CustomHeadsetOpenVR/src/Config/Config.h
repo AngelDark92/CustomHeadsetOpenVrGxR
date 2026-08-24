@@ -254,6 +254,82 @@ struct StreamFrameDimmingConfig{
 	double brightenSeconds = 1.0;
 };
 
+// Galaxy XR native-identity options (acted on only in the GalaxyXRNative
+// vendor build; the fields always exist so config parsing is uniform)
+struct GalaxyXrConfig{
+	// rewrite the streamed HMD's visible model/manufacturer to Samsung
+	// Galaxy XR, set device icons, and replace the controllers' dangling
+	// render model references with converted Galaxy XR controller models.
+	// backup/restore semantics; does not touch tracking-system, serial,
+	// controller type, or input profile. requires a SteamVR restart.
+	bool nativeIdentity = false;
+	// live render-model tuning: when non-empty, the controller shim points
+	// RenderModelName at {driver}/rendermodels/<variant>_left|_right instead
+	// of the default galaxy_xr_controller_*. changing this value in
+	// settings.json swaps the model live (SteamVR reloads on name change).
+	// used by tools/convert_rendermodels.py --live; cleared when the tuned
+	// transform is baked into the shipped assets.
+	std::string renderModelVariant = "";
+	// override the controllers' InputProfilePath to the shipped official
+	// samsung_input_profile.json (controller type stays oculus_touch, so
+	// existing Touch bindings keep working; adds official legacy bindings,
+	// per-app bindings and grip/aim/tip pose components). replaces the
+	// dangling {vrlink}/input/samsung_input_profile.json reference that
+	// currently makes SteamVR fall back to generic Touch handling.
+	// requires a SteamVR restart.
+	bool nativeInputProfile = false;
+	// write driver_vrlink.overrideRenderWidth/Height = 3552x3840 (the Galaxy
+	// XR native per-eye panel geometry) into steamvr.vrsettings. the APK's
+	// spoofed identity makes vrlink cap the render target at the spoofed
+	// model's geometry (e.g. 2160x2160); the global override replaces the
+	// capped value after model matching (validated by the community
+	// Apply-Settings tool, exp17 diagnostics). default ON: this is a
+	// correctness fix, not cosmetic. when turned OFF the keys are removed
+	// (only if they hold our value), returning vrlink to its own defaults.
+	// takes effect at SteamVR start.
+	bool nativeResolution = true;
+	// stream quality preset, mirroring the community Apply-Settings tiers.
+	// "default" leaves vrlink's built-in encode/bandwidth defaults (and
+	// removes any tier keys we previously wrote). the other tiers write
+	// encodeWidth / streamFormatWidth(1536, validated foveated transport
+	// maximum) / recommendedBandwidthMbit+targetBandwidth and disable the
+	// automatic width/bandwidth pickers:
+	//   stable  2048/1536/250   quality 2560/1536/300
+	//   high    3072/1536/300   highest 3072/1536/350 (chroma ceiling)
+	//   ultra   4032/1536/350 (above-transport source; needs Wi-Fi 7 6GHz,
+	//           watch driver_vrlink.txt for NVENC Invalid Level / buffer
+	//           starvation and fall back to high)
+	// effective at the next SteamVR start / headset connect.
+	std::string streamQuality = "default";
+	// uniform scale for the controller render models. the official assets
+	// measure ~124x63mm while the physical controller tapes ~145x70mm, so a
+	// correction around 1.10-1.15 may fit better. applied to the WHOLE model
+	// system, not just meshes: the driver generates a scaled variant folder
+	// (geometry, component origins, motion pivots/centers and translation
+	// vectors; direction vectors and angles untouched) and swaps to it live
+	// via the render-model name-change reload. 1.0 uses the stock assets.
+	double renderModelScale = 1.0;
+	// apply the fixed raw->grip convention shift to the controller poses
+	// (rotate X +22deg, translate +5cm local Z): vrlink's raw pose is
+	// aim-convention while games' default binding paths attach at raw
+	// expecting a Touch/grip-convention frame. the shift is a driver
+	// constant, not a user offset - the GUI pose offsets stay personal
+	// trim on top. the grip-family render model components are rebased by
+	// the inverse so pose-selecting bindings land on the same physical
+	// points as before. escape hatch only; leave on.
+	bool gripConvention = true;
+	// skeletal-hand offset (cm), applied in the driver-input tap to the
+	// wrist bone of vrlink's skeleton: moves the skeletal hand relative to
+	// its anchor WITHOUT touching the device pose, render model, or the
+	// grip pivot games rotate around. hot-applied per skeleton update -
+	// tune live from settings.json. x is mirrored for the right hand when
+	// skeletonOffsetMirror is true.
+	double skeletonOffsetXCm = 0.0;
+	double skeletonOffsetYCm = 0.0;
+	double skeletonOffsetZCm = 0.0;
+	bool skeletonOffsetMirror = true;
+};
+
 struct StreamFrameConfig{
 	// process direct mode layer textures before the streaming driver consumes them
 	bool enable = false;
@@ -1110,8 +1186,32 @@ struct ControllersConfig{
 	// identity by more than ~2 degrees, so vanilla devices are untouched.
 	// the field test decides which mode matches vrserver's real convention.
 	int spaceVelocityFixMode = 0;
+	// when true, the pose offsets below describe the LEFT controller and are
+	// mirrored for the right hand (position X negated; rotation Y/Z negated).
+	// physical controller pairs are mirror images, so the displacement
+	// between the tracked origin and the grip is mirrored too - identical
+	// offsets can only ever fit one hand.
+	#ifdef VENDOR_GALAXYXR
+	// measured asymmetric residual of vrlink's controller pose, validated
+	// against camera passthrough (virtual model overlaid on the physical
+	// controller): 5deg yaw + 0.5cm lateral, mirrored per hand. the large
+	// hand-symmetric piece (22deg pitch, 5cm Z) is the fixed gripConvention
+	// transform; this residual rides the mirror-aware offset layer instead
+	// because a hand-dependent fixed transform would make the grip-component
+	// rebase non-pure-X (unverifiable euler-order assumptions). unlike the
+	// convention piece, the residual cannot double-apply anywhere: the grip
+	// components contain no yaw/lateral terms to duplicate, and the rebase
+	// algebra delivers it exactly once to grip-pose-selecting bindings
+	// (conjugated by the 22deg pitch: the X-translation is exactly
+	// invariant, the yaw axis tilts sub-perceptibly). safe always-on.
+	bool mirrorOffsetsForRightHand = true;
+	double rotationOffsetDeg[3] = {0, 5, 0};
+	double positionOffsetCm[3] = {0.5, 0, 0};
+	#else
+	bool mirrorOffsetsForRightHand = false;
 	double rotationOffsetDeg[3] = {0, 0, 0};
 	double positionOffsetCm[3] = {0, 0, 0};
+	#endif
 	ControllerAlignerConfig aligner = {};
 };
 
@@ -1439,6 +1539,7 @@ public:
 	// headsets whose driver composites frames itself, where the compositor
 	// shader replacement only runs while the dashboard is open.
 	StreamFrameConfig streamFrame = {};
+	GalaxyXrConfig galaxyXr = {};
 	
 	// streamed controller pose adjustments
 	ControllersConfig controllers = {};

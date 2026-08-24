@@ -25,11 +25,23 @@ export interface ProfileInfo {
   author?: string;
   creationDate?: number;
   type?: string;
+  displayType?: string;
   distortionPoints?: number;
   hasChromaticAberration?: boolean;
   smoothAmount?: number;
   file?: DistortionProfileFile;
   rawBuiltIn?: BuiltInDistortionProfile;
+}
+
+
+// display names for distortion algorithm types; internal type strings are
+// settings-schema identifiers and must not change
+function displayAlgorithmName(type?: string): string | undefined {
+  switch (type) {
+    case 'streamFrameDistortionProfile': return 'Displacement Lattice';
+    case undefined: return undefined;
+    default: return type;
+  }
 }
 
 @Component({
@@ -77,6 +89,7 @@ export class DistortionProfileComponent {
           author: profile.author,
           creationDate: profile.creationDate,
           type: profile.type,
+          displayType: displayAlgorithmName(profile.type),
           distortionPoints,
           hasChromaticAberration,
           smoothAmount: profile.smoothAmount,
@@ -103,6 +116,7 @@ export class DistortionProfileComponent {
           entry.author = parsed.author;
           entry.creationDate = parsed.creationDate;
           entry.type = parsed.type;
+          entry.displayType = displayAlgorithmName(parsed.type);
           entry.distortionPoints = parsed.distortions ? parsed.distortions.length / 2 : 0;
           entry.hasChromaticAberration = (parsed.distortionsRed?.length ?? 0) > 0 || (parsed.distortionsBlue?.length ?? 0) > 0;
           entry.smoothAmount = parsed.smoothAmount;

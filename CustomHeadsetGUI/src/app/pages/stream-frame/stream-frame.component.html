@@ -3,6 +3,91 @@
     <div class="note">Processing applied to the streamed frames of a direct mode headset (Steam Link / vrlink, e.g. Galaxy XR) right before the driver encodes them. Unlike the custom shader these settings apply at all times, not only while the dashboard is open. Changes apply live within about a second.</div>
 </div>
 
+@if(vendor){
+<div class="field">
+    <div class="title">
+        <span i18n>Galaxy XR Native Identity</span>
+        <app-field-tip info="Uses the official Galaxy XR input profile: native galaxy_xr_controller type with Valve's bindings, remapping and correct grip/aim poses (fixes held-item orientation properly). Note: custom bindings you made for these controllers as Oculus Touch do not carry over automatically; rebind per game if needed. Requires a SteamVR restart." />
+    </div>
+    <div class="control">
+        <mat-slide-toggle [(ngModel)]="galaxyXr.nativeIdentity" (ngModelChange)="save()"></mat-slide-toggle>
+    </div>
+</div>
+<div class="field">
+    <div class="title">
+        <span i18n>Official Controller Input Profile</span>
+        <app-field-tip info="Uses the official Steam Link Galaxy XR input profile (shipped with permission): real button layout in the bindings UI, official legacy bindings and per-app bindings, and correct grip/aim/tip poses for held items. Controller type stays oculus_touch, so existing custom bindings keep working. Requires a SteamVR restart." />
+    </div>
+    <div class="control">
+        <mat-slide-toggle [(ngModel)]="galaxyXr.nativeInputProfile" (ngModelChange)="save()"></mat-slide-toggle>
+    </div>
+</div>
+<div class="field">
+    <div class="title">
+        <span i18n>Native Render Resolution</span>
+        <app-field-tip info="Writes a global vrlink override so SteamVR renders at the Galaxy XR's native per-eye resolution (3552x3840@90) instead of the lower cap picked from the spoofed headset identity. Recommended on. Turning it off removes the override (only if it still holds this driver's value). Takes effect after restarting SteamVR." />
+    </div>
+    <div class="control">
+        <mat-slide-toggle [(ngModel)]="galaxyXr.nativeResolution" (ngModelChange)="save()"></mat-slide-toggle>
+    </div>
+</div>
+<div class="field">
+    <div class="title">
+        <span i18n>Stream Quality Preset</span>
+        <app-field-tip info="Encode width, transport width and bandwidth presets validated by the community settings tool. Default uses vrlink's built-in automatic settings. Ultra uses an above-transport source width: requires Wi-Fi 7 6 GHz, and if driver_vrlink.txt shows NVENC Invalid Level or buffer starvation, fall back to High. Takes effect at the next SteamVR start or headset connect." />
+    </div>
+    <div class="control">
+        <mat-select [(ngModel)]="galaxyXr.streamQuality" (ngModelChange)="save()" style="width: 220px;">
+            <mat-option value="default" i18n>Default (vrlink automatic)</mat-option>
+            <mat-option value="stable">Stable &mdash; 2048 / 250 Mbit/s</mat-option>
+            <mat-option value="quality">Quality &mdash; 2560 / 300 Mbit/s</mat-option>
+            <mat-option value="high">High &mdash; 3072 / 300 Mbit/s</mat-option>
+            <mat-option value="highest">Highest &mdash; 3072 / 350 Mbit/s</mat-option>
+            <mat-option value="ultra">Ultra &mdash; 4032 / 350 Mbit/s (Wi-Fi 7)</mat-option>
+        </mat-select>
+    </div>
+</div>
+<div class="field">
+    <div class="title">
+        <span i18n>Controller Model Size</span>
+        <app-field-tip info="Uniform scale for the controller models. The official assets measure about 124x63mm while the physical controller is about 145x70mm, so values around 1.10-1.17 may match reality better. Scales the whole model system together (geometry, animation pivots, grip/aim anchors), applied live within about a second. 1.0 = stock." />
+    </div>
+    <div class="control">
+        <input type="number" min="0.5" max="2" step="0.01" [(ngModel)]="galaxyXr.renderModelScale" (ngModelChange)="save()" style="width: 90px;" />
+    </div>
+</div>
+<div class="field">
+    <div class="title">
+        <span>Debug: Skeleton Hand Offset X (cm)</span>
+        <app-field-tip info="Moves the skeletal hand relative to its grip anchor without touching the tracked pose, controller model, or the pivot games rotate held items around. Mirrored to the right hand. Applies LIVE - no restart, watch the hand move as you adjust." />
+    </div>
+    <div class="control">
+        <input type="number" min="-10" max="10" step="0.25" [(ngModel)]="galaxyXr.skeletonOffsetXCm" (ngModelChange)="save()" style="width: 90px;" />
+    </div>
+</div>
+<div class="field">
+    <div class="title">
+        <span>Debug: Skeleton Hand Offset Y (cm)</span>
+        <app-field-tip info="Second axis of the live skeletal hand offset. Axes are in the skeleton root frame - identify directions empirically by nudging; changes apply immediately." />
+    </div>
+    <div class="control">
+        <input type="number" min="-10" max="10" step="0.25" [(ngModel)]="galaxyXr.skeletonOffsetYCm" (ngModelChange)="save()" style="width: 90px;" />
+    </div>
+</div>
+<div class="field">
+    <div class="title">
+        <span>Debug: Skeleton Hand Offset Z (cm)</span>
+        <app-field-tip info="Third axis of the live skeletal hand offset. Set skeletonOffsetMirror to false in settings.json if the left hand needs the X direction unmirrored." />
+    </div>
+    <div class="control">
+        <input type="number" min="-10" max="10" step="0.25" [(ngModel)]="galaxyXr.skeletonOffsetZCm" (ngModelChange)="save()" style="width: 90px;" />
+    </div>
+</div>
+<div class="field">
+    <div class="note" i18n>Native identity changes take effect after restarting SteamVR.</div>
+</div>
+}
+
 <div class="field">
     <div class="title">
         <span>Enable Stream Frame Processing</span>
@@ -859,6 +944,15 @@
         <span>X</span><input matInput [(ngModel)]="controllerSettings.positionOffsetCm.x" step="0.5" (ngModelChange)="save()" type="number">
         <span>Y</span><input matInput [(ngModel)]="controllerSettings.positionOffsetCm.y" step="0.5" (ngModelChange)="save()" type="number">
         <span>Z</span><input matInput [(ngModel)]="controllerSettings.positionOffsetCm.z" step="0.5" (ngModelChange)="save()" type="number">
+    </div>
+</div>
+<div class="field">
+    <div class="title">
+        <span i18n>Mirror Offsets For Right Hand</span>
+        <app-field-tip info="Treats the offsets above as describing the LEFT controller and mirrors them for the right hand: position X and rotation Y/Z are negated; pitch (rotation X) and position Y/Z apply identically to both, since controller pairs are physical mirror images. Turn on if a Y or Z rotation helps one hand but hurts the other." />
+    </div>
+    <div class="control">
+        <mat-slide-toggle [(ngModel)]="controllerSettings.mirrorOffsetsForRightHand" (ngModelChange)="save()"></mat-slide-toggle>
     </div>
 </div>
 }

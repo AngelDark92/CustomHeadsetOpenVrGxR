@@ -680,6 +680,8 @@ public:
 	void OnScalarComponentCreated(vr::PropertyContainerHandle_t container, const char* name, vr::VRInputComponentHandle_t handle);
 	void OnScalarComponentUpdated(vr::VRInputComponentHandle_t handle, float value);
 	void OnPoseComponentCreated(vr::PropertyContainerHandle_t container, const char* name, vr::VRInputComponentHandle_t handle);
+	void OnSkeletonComponentCreated(vr::PropertyContainerHandle_t container, const char* name, const char* skeletonPath, vr::VRInputComponentHandle_t handle);
+	bool HandleSkeletonUpdate(vr::VRInputComponentHandle_t handle, const vr::VRBoneTransform_t* bones, uint32_t count, vr::VRBoneTransform_t* outBones);
 	void OnPoseComponentUpdated(vr::VRInputComponentHandle_t handle, const vr::HmdMatrix34_t* offset, double timeOffset);
 private:
 };

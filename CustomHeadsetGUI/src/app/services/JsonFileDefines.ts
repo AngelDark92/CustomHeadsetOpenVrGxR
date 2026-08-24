@@ -17,12 +17,26 @@ export type Settings = {
   generalHeadset: GeneralHeadsetConfig,
   customShader: CustomShaderConfig,
   streamFrame?: StreamFrameConfig,
+  galaxyXr?: GalaxyXrConfig,
   controllers?: ControllersConfig,
   forceTracking: boolean,
   takeCompositorScreenshots: boolean,
   watchDistortionProfiles: boolean,
 }
+export type GalaxyXrConfig = {
+  nativeIdentity: boolean,
+  nativeInputProfile?: boolean,
+  nativeResolution?: boolean,
+  streamQuality?: string,
+  renderModelScale?: number,
+  gripConvention?: boolean,
+  skeletonOffsetXCm?: number,
+  skeletonOffsetYCm?: number,
+  skeletonOffsetZCm?: number,
+  skeletonOffsetMirror?: boolean,
+}
 export type ControllersConfig = {
+  mirrorOffsetsForRightHand?: boolean,
   rotationOffsetDeg: { x: number, y: number, z: number },
   positionOffsetCm: { x: number, y: number, z: number },
   aligner: { enable: boolean },

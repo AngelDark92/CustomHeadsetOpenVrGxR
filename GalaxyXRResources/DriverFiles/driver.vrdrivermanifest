@@ -1,0 +1,8 @@
+{
+  "alwaysActivate": true,
+  "name": "galaxyxrresources",
+  "directory": "",
+  "resourceOnly": true,
+  "hmd_presence": [],
+  "version": "1.7.5"
+}

@@ -26,7 +26,7 @@ and all runtime admission gates pass.
 | `CustomHeadsetOpenVR/src/Headsets/GalaxyXRVRLinkCompatibility.*` | Exact-build, x64-only VRLink compatibility verifier/hook. |
 | `CustomHeadsetOpenVR/src/GalaxyXR/` | GXRP protocol, transport, admission profile, clock, display, pose, eye, face, diagnostics. |
 | `CustomHeadsetOpenVR/DriverFiles/` | Active DLL package; contains no Galaxy product defaults. |
-| `GalaxyXRResources/DriverFiles/` | Resource-only Valve external-vendor package: Galaxy product settings, inputs, icons, and models. |
+| `GalaxyXRResources/DriverFiles/` | Tracked source for the resource-only Valve external-vendor package: Galaxy product settings, inputs, icons, and models. |
 | `VRCFT/GalaxyXR.VRCFaceTracking/` | VRCFaceTracking v5 consumer and Android XR-to-Unified Expressions mapping. |
 | `ThirdParty/VRCFaceTracking/5.2.3.0/` | Pinned SDK/Core assemblies, license, and provenance. |
 | `CustomHeadsetGUI/` | Angular UI plus Tauri/Rust native installer. |
@@ -238,8 +238,10 @@ bridge source changes for runtime, app-private Android Keystore provisioning.
 Use a Developer PowerShell or an explicit MSBuild path. These commands do not
 deploy to SteamVR:
 
-The repeatable entry point is `tools/Build-GalaxyXR.ps1`. It validates the
-committed active resource graph, builds/tests both native architectures,
+The repeatable entry point is `tools/Build-GalaxyXR.ps1`. It compiles the active
+driver with `VENDOR_GALAXYXR`, validates the
+committed active and companion resource graphs, stages `GalaxyXRResources/DriverFiles`
+as `output/galaxyxrresources`, builds/tests both native architectures,
 builds the VRCFT module, stages that module under `output/VRCFT`, and runs
 `npm run build` in `CustomHeadsetGUI` (Tauri release exe) unless `-SkipGui` is
 specified. Status icons are taken directly from the prebuilt assets in
@@ -248,8 +250,8 @@ specified. Status icons are taken directly from the prebuilt assets in
 ```powershell
 git submodule update --init --recursive
 $msbuild = 'C:\Program Files\Microsoft Visual Studio\18\Community\MSBuild\Current\Bin\MSBuild.exe'
-& $msbuild .\CustomHeadsetOpenVR\CustomHeadsetOpenVR.vcxproj /m /p:Configuration=Release /p:Platform=x64 /p:DeployToSteamVR=false
-& $msbuild .\CustomHeadsetOpenVR\CustomHeadsetOpenVR.vcxproj /m /p:Configuration=Release /p:Platform=Win32 /p:DeployToSteamVR=false
+& $msbuild .\CustomHeadsetOpenVR\CustomHeadsetOpenVR.vcxproj /m /p:Configuration=Release /p:Platform=x64 /p:ExternalCompilerOptions=/DVENDOR_GALAXYXR /p:DeployToSteamVR=false
+& $msbuild .\CustomHeadsetOpenVR\CustomHeadsetOpenVR.vcxproj /m /p:Configuration=Release /p:Platform=Win32 /p:ExternalCompilerOptions=/DVENDOR_GALAXYXR /p:DeployToSteamVR=false
 & $msbuild .\GalaxyXRTests.vcxproj /m /p:Configuration=Release /p:Platform=x64
 & .\Release\GalaxyXRTests.exe
 & $msbuild .\GalaxyXRTests.vcxproj /m /p:Configuration=Release /p:Platform=Win32

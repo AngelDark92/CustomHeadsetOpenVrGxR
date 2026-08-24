@@ -16,7 +16,7 @@
     }
   },
   "simulation_settings": {
-    "modelnumber": "Samsung Galaxy XR",
+    "modelnumber": "Galaxy XR",
     "serialnumber": "VRLINKHMDGALAXYXR",
     "rendermodel": "generic_hmd",
     "registered_device_type": "androidxr/VRLINKHMDGALAXYXR",

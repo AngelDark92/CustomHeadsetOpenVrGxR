@@ -174,6 +174,7 @@ void CustomHeadsetDeviceProvider::RunFrame(){
 		galaxyXRVRLinkCompatibility.IsModuleVerified() &&
 		galaxyXRVRLinkCompatibility.IsHookActive());
 	galaxySystem.RunFrame(driverConfig.galaxyXR);
+	RunGalaxyXRVendorSettings();
 		
 	// process events that were submitted for this frame.
 	vr::VREvent_t vrevent{};
@@ -885,6 +886,52 @@ void CustomHeadsetDeviceProvider::OnPoseComponentCreated(vr::PropertyContainerHa
 	poseComponents[handle] = info;
 }
 
+// skeleton tap: track vrlink's skeletal components and offset the wrist
+// bone (bone 1, root-relative) by the configured amount. this shifts the
+// whole skeletal hand relative to its anchor while the device pose, render
+// model, components and the grip pivot all stay put - the one degree of
+// freedom nothing else reaches. hot: values read per update.
+static std::mutex skeletonTapMutex;
+static std::map<vr::VRInputComponentHandle_t, int> skeletonTapHands;
+
+void CustomHeadsetDeviceProvider::OnSkeletonComponentCreated(vr::PropertyContainerHandle_t container, const char *name, const char *skeletonPath, vr::VRInputComponentHandle_t handle){
+	std::string path = skeletonPath ? skeletonPath : "";
+	int hand = path.find("right") != std::string::npos ? 1 : 0;
+	{
+		std::lock_guard<std::mutex> lock(skeletonTapMutex);
+		skeletonTapHands[handle] = hand;
+	}
+	DriverLog("SkeletonTap: component %s (%s) hand=%s handle=%llu", name ? name : "?", path.c_str(), hand ? "right" : "left", (unsigned long long)handle);
+}
+
+bool CustomHeadsetDeviceProvider::HandleSkeletonUpdate(vr::VRInputComponentHandle_t handle, const vr::VRBoneTransform_t *bones, uint32_t count, vr::VRBoneTransform_t *outBones){
+	double x = driverConfig.galaxyXr.skeletonOffsetXCm * 0.01;
+	double y = driverConfig.galaxyXr.skeletonOffsetYCm * 0.01;
+	double z = driverConfig.galaxyXr.skeletonOffsetZCm * 0.01;
+	if(x == 0.0 && y == 0.0 && z == 0.0){
+		return false;
+	}
+	int hand;
+	{
+		std::lock_guard<std::mutex> lock(skeletonTapMutex);
+		auto it = skeletonTapHands.find(handle);
+		if(it == skeletonTapHands.end()){
+			return false;
+		}
+		hand = it->second;
+	}
+	if(hand == 1 && driverConfig.galaxyXr.skeletonOffsetMirror){
+		x = -x;
+	}
+	for(uint32_t i = 0; i < count; i++){
+		outBones[i] = bones[i];
+	}
+	outBones[1].position.v[0] += (float)x;
+	outBones[1].position.v[1] += (float)y;
+	outBones[1].position.v[2] += (float)z;
+	return true;
+}
+
 void CustomHeadsetDeviceProvider::OnPoseComponentUpdated(vr::VRInputComponentHandle_t handle, const vr::HmdMatrix34_t* offset, double timeOffset){
 	double now = std::chrono::duration_cast<std::chrono::microseconds>(
 		std::chrono::steady_clock::now().time_since_epoch()).count() / 1000000.0;
@@ -1030,6 +1077,24 @@ bool CustomHeadsetDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 			pose.result = vr::TrackingResult_Running_OK;
 		}
 	}
+	#ifdef VENDOR_GALAXYXR
+	// fixed raw->grip convention shift for the Galaxy XR controllers (see
+	// GalaxyXrConfig::gripConvention): applied before the user's personal
+	// trim offsets so those keep meaning small corrections. the grip-family
+	// render model components are rebased by the inverse of exactly this
+	// transform - keep the two in sync.
+	if(driverConfig.galaxyXr.gripConvention && openVRID != vr::k_unTrackedDeviceIndex_Hmd
+			&& GetDeviceClass(openVRID) == (int)vr::TrackedDeviceClass_Controller){
+		static const double kGripConventionRotDeg[3] = {22, 0, 0};
+		double fixLocal[3] = {0, 0, 0.05};
+		double fixWorld[3];
+		QuatRotateVector(pose.qRotation, fixLocal, fixWorld);
+		pose.vecPosition[0] += fixWorld[0];
+		pose.vecPosition[1] += fixWorld[1];
+		pose.vecPosition[2] += fixWorld[2];
+		pose.qRotation = QuatMultiply(pose.qRotation, QuatFromEulerDeg(kGripConventionRotDeg));
+	}
+	#endif
 	// controller pose offsets: local frame rotation and translation, applied
 	// before velocity derivation so the ring tracks the adjusted origin.
 	// (a config change mid-session moves the origin once; the teleport guard
@@ -1057,6 +1122,24 @@ bool CustomHeadsetDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 		|| positionOffsetCm[1] != 0 || positionOffsetCm[2] != 0;
 	if((hasRotationOffset || hasPositionOffset) && openVRID != vr::k_unTrackedDeviceIndex_Hmd
 			&& GetDeviceClass(openVRID) == (int)vr::TrackedDeviceClass_Controller){
+		// mirror the left-hand-authored offsets for the right controller:
+		// physical pairs are mirror images, so the tracked-origin-to-grip
+		// displacement mirrors too (position X and rotation Y/Z negate)
+		if(controllersConfig.mirrorOffsetsForRightHand){
+			int hand = -1;
+			{
+				std::lock_guard<std::mutex> handGuard(poseLogLock);
+				auto handFound = openVRIDHand.find(openVRID);
+				if(handFound != openVRIDHand.end()){
+					hand = handFound->second;
+				}
+			}
+			if(hand == 1){
+				positionOffsetCm[0] = -positionOffsetCm[0];
+				rotationOffsetDeg[1] = -rotationOffsetDeg[1];
+				rotationOffsetDeg[2] = -rotationOffsetDeg[2];
+			}
+		}
 		if(hasPositionOffset){
 			double local[3] = {
 				positionOffsetCm[0] / 100.0,
@@ -4752,6 +4835,19 @@ bool CustomHeadsetDeviceProvider::HandleDeviceAdded(const char *&pchDeviceSerial
 			pDriver = new ShimTrackedDeviceDriver(galaxyXRShim, pDriver);
 		}
 	}
+	#ifdef VENDOR_GALAXYXR
+	if(eDeviceClass == vr::TrackedDeviceClass_Controller && driverConfig.galaxyXr.nativeIdentity){
+		// vrlink's Galaxy XR controllers; the shim verifies the tracking
+		// system at activate and stays inert on anything else
+		std::string serial = pchDeviceSerialNumber ? pchDeviceSerialNumber : "";
+		if(serial.rfind("SamsungVST-Controller", 0) == 0 ||
+			serial.rfind("VRLINKGALAXYXR_Controller_", 0) == 0){
+			GalaxyXRControllerShim* controllerShim = new GalaxyXRControllerShim(serial);
+			shims.insert(controllerShim);
+			pDriver = new ShimTrackedDeviceDriver(controllerShim, pDriver);
+		}
+	}
+	#endif
 	// you can change eDeviceClass to change what an existing device shows up as
 	
 	// if false is returned the device will not be added

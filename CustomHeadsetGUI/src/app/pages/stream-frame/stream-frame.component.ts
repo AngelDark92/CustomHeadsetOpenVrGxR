@@ -9,7 +9,8 @@ import { MatIconModule } from '@angular/material/icon';
 import { MatInputModule } from '@angular/material/input';
 import { DriverSettingService } from '../../services/driver-setting.service';
 import { DriverInfoService } from '../../services/driver-info.service';
-import { Settings, StreamFrameConfig, ControllersConfig } from '../../services/JsonFileDefines';
+import { Settings, StreamFrameConfig, ControllersConfig, GalaxyXrConfig } from '../../services/JsonFileDefines';
+import { vendor } from '../../../environment';
 import { FieldTipComponent } from '../../utilities/field-tip/field-tip.component';
 import { ResetButtonComponent } from '../../utilities/reset-button/reset-button.component';
 import { StreamFrameCurveComponent } from '../../utilities/stream-frame-curve/stream-frame-curve.component';
@@ -140,9 +141,20 @@ function defaultStreamFrame(): StreamFrameConfig {
 // fill missing fields without touching set ones, so older settings files and
 // files written before this page existed load into a complete object
 function defaultControllers(): ControllersConfig {
+  // vendor builds ship the passthrough-measured asymmetric pose residual
+  // (mirrored per hand); must match the driver's Config.h vendor defaults
+  if (vendor === 'galaxyxr') {
+    return {
+      rotationOffsetDeg: { x: 0, y: 5, z: 0 },
+      positionOffsetCm: { x: 0.5, y: 0, z: 0 },
+      mirrorOffsetsForRightHand: true,
+      aligner: { enable: false },
+    };
+  }
   return {
     rotationOffsetDeg: { x: 0, y: 0, z: 0 },
     positionOffsetCm: { x: 0, y: 0, z: 0 },
+    mirrorOffsetsForRightHand: false,
     aligner: { enable: false },
   };
 }
@@ -253,6 +265,9 @@ export class StreamFrameComponent {
         this.rootSetting.streamFrame = fillDefaults(this.rootSetting.streamFrame, defaultStreamFrame());
         this.rootSetting.controllers = fillDefaults(this.rootSetting.controllers, defaultControllers());
         this.controllerSettings = this.rootSetting.controllers;
+        if (this.controllerSettings && this.controllerSettings.mirrorOffsetsForRightHand === undefined) {
+          this.controllerSettings.mirrorOffsetsForRightHand = false;
+        }
         this.settings = this.rootSetting.streamFrame;
         this.matrixText.set((this.settings?.srgbMatrix ?? []).join(', '));
         const bands = this.settings?.distortion?.tune?.bands;
@@ -322,6 +337,36 @@ export class StreamFrameComponent {
     this.tuneBandLast = last;
     this.settings.distortion.tune.bands = bands;
     this.save();
+  }
+
+  // Galaxy XR native identity (vendor builds only; page hides it otherwise)
+  vendor = vendor;
+  get galaxyXr(): GalaxyXrConfig {
+    if (this.rootSetting) {
+      if (!this.rootSetting.galaxyXr) {
+        this.rootSetting.galaxyXr = { nativeIdentity: false, nativeInputProfile: false, nativeResolution: true, streamQuality: 'default', renderModelScale: 1.0 };
+      }
+      if (this.rootSetting.galaxyXr.nativeResolution === undefined) {
+        this.rootSetting.galaxyXr.nativeResolution = true;
+      }
+      if (this.rootSetting.galaxyXr.streamQuality === undefined) {
+        this.rootSetting.galaxyXr.streamQuality = 'default';
+      }
+      if (this.rootSetting.galaxyXr.renderModelScale === undefined) {
+        this.rootSetting.galaxyXr.renderModelScale = 1.0;
+      }
+      if (this.rootSetting.galaxyXr.skeletonOffsetXCm === undefined) {
+        this.rootSetting.galaxyXr.skeletonOffsetXCm = 0.0;
+      }
+      if (this.rootSetting.galaxyXr.skeletonOffsetYCm === undefined) {
+        this.rootSetting.galaxyXr.skeletonOffsetYCm = 0.0;
+      }
+      if (this.rootSetting.galaxyXr.skeletonOffsetZCm === undefined) {
+        this.rootSetting.galaxyXr.skeletonOffsetZCm = 0.0;
+      }
+      return this.rootSetting.galaxyXr;
+    }
+    return { nativeIdentity: false };
   }
 
   save() {

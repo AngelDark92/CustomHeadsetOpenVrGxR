@@ -458,6 +458,42 @@ void ConfigLoader::ParseConfig(){
 				if(customShaderData["colorMultiplier"]["b"].is_number()){ colorMultiplier.b = customShaderData["colorMultiplier"]["b"].get<double>(); }
 			}
 		}
+		if(data["galaxyXr"].is_object()){
+			json galaxyXrData = data["galaxyXr"];
+			if(galaxyXrData["nativeIdentity"].is_boolean()){
+				newConfig.galaxyXr.nativeIdentity = galaxyXrData["nativeIdentity"].get<bool>();
+			}
+			if(galaxyXrData["renderModelVariant"].is_string()){
+				newConfig.galaxyXr.renderModelVariant = galaxyXrData["renderModelVariant"].get<std::string>();
+			}
+			if(galaxyXrData["nativeInputProfile"].is_boolean()){
+				newConfig.galaxyXr.nativeInputProfile = galaxyXrData["nativeInputProfile"].get<bool>();
+			}
+			if(galaxyXrData["nativeResolution"].is_boolean()){
+				newConfig.galaxyXr.nativeResolution = galaxyXrData["nativeResolution"].get<bool>();
+			}
+			if(galaxyXrData["streamQuality"].is_string()){
+				newConfig.galaxyXr.streamQuality = galaxyXrData["streamQuality"].get<std::string>();
+			}
+			if(galaxyXrData["renderModelScale"].is_number()){
+				newConfig.galaxyXr.renderModelScale = galaxyXrData["renderModelScale"].get<double>();
+			}
+			if(galaxyXrData["gripConvention"].is_boolean()){
+				newConfig.galaxyXr.gripConvention = galaxyXrData["gripConvention"].get<bool>();
+			}
+			if(galaxyXrData["skeletonOffsetXCm"].is_number()){
+				newConfig.galaxyXr.skeletonOffsetXCm = galaxyXrData["skeletonOffsetXCm"].get<double>();
+			}
+			if(galaxyXrData["skeletonOffsetYCm"].is_number()){
+				newConfig.galaxyXr.skeletonOffsetYCm = galaxyXrData["skeletonOffsetYCm"].get<double>();
+			}
+			if(galaxyXrData["skeletonOffsetZCm"].is_number()){
+				newConfig.galaxyXr.skeletonOffsetZCm = galaxyXrData["skeletonOffsetZCm"].get<double>();
+			}
+			if(galaxyXrData["skeletonOffsetMirror"].is_boolean()){
+				newConfig.galaxyXr.skeletonOffsetMirror = galaxyXrData["skeletonOffsetMirror"].get<bool>();
+			}
+		}
 		if(data["streamFrame"].is_object()){
 			json streamFrameData = data["streamFrame"];
 			if(streamFrameData["enable"].is_boolean()){
@@ -1147,6 +1183,9 @@ void ConfigLoader::ParseConfig(){
 			if(controllersData["spaceVelocityFix"].is_string()){
 				std::string svMode = controllersData["spaceVelocityFix"].get<std::string>();
 				newConfig.controllers.spaceVelocityFixMode = svMode == "world" ? 1 : (svMode == "driver" ? 2 : 0);
+			}
+			if(controllersData["mirrorOffsetsForRightHand"].is_boolean()){
+				newConfig.controllers.mirrorOffsetsForRightHand = controllersData["mirrorOffsetsForRightHand"].get<bool>();
 			}
 			if(controllersData["rotationOffsetDeg"].is_object()){
 				for(int i = 0; i < 3; i++){

@@ -1,0 +1,8 @@
+newmtl GalaxyXR
+Ka 0.08 0.08 0.08
+Kd 0.75 0.75 0.75
+Ks 0.25 0.25 0.25
+Ns 64.0
+d 1.0
+illum 2
+map_Kd galaxy_xr_hmd.png

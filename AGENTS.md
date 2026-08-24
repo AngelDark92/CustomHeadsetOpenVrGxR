@@ -18,8 +18,9 @@ the runtime data flow and has a "where to make a change" table.
 - Face data is the complete Android XR 68-float frame in
   `Local\CustomHeadsetOpenVR.GalaxyXR.Face.v1`. Preserve the seqlock layout and
   all five tongue channels. VRCFT mapping belongs in `VRCFT/`, not the driver.
-- SteamVR resources use `{CustomHeadsetOpenVR}` paths. Do not write resources
-  into `driver_vrlink`.
+- Generic active-driver fallbacks use `{CustomHeadsetOpenVR}` paths. Galaxy XR
+  identity, icons, profiles, and normal render models use the resource-only
+  `{galaxyxrresources}` package. Do not write resources into `driver_vrlink`.
 - Driver builds must use `DeployToSteamVR=false` unless live deployment was
   explicitly requested. Building is not runtime proof.
 - Do not run ADB, install an APK, mutate SteamVR, or restart SteamVR merely to
@@ -36,4 +37,3 @@ the runtime data flow and has a "where to make a change" table.
 5. Run `cargo check` and the Angular production build when installer/UI code
    changes.
 6. State clearly whether a real SteamVR + Steam Link + headset session was run.
-

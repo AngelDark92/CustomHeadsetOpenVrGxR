@@ -4,7 +4,7 @@ let child_process = require("child_process")
 
 // Vendor-aware build script, adapted from CustomHeadsetOpenVR.
 // Builds the driver (MSBuild) and the GUI (npm) and stages a release folder.
-//   node build.js --vendor galaxyxr   -> GalaxyXRNative vendor driver
+//   node build.js --vendor galaxyxr   -> CustomHeadsetOpenVR with Galaxy features
 //   node build.js                     -> vendor-neutral CustomHeadsetOpenVR
 
 // Argument parsing
@@ -66,7 +66,6 @@ let driverName = "CustomHeadsetOpenVR"
 switch (vendor) {
 	case "galaxyxr":
 		vendorDefine = "VENDOR_GALAXYXR"
-		driverName = "GalaxyXRNative"
 		break
 	case "":
 	default:
@@ -79,6 +78,8 @@ let vendorTag = vendor ? `-${vendor.charAt(0).toUpperCase()}${vendor.slice(1)}` 
 let stagingFolder = `CustomHeadset-STAGING-${version}${vendorTag}-Windows`
 let outputDir = path.join(__dirname, "output", stagingFolder)
 let defaultDriverOutput = path.join(__dirname, "output", "CustomHeadsetOpenVR")
+let resourceDriverSource = path.join(__dirname, "GalaxyXRResources", "DriverFiles")
+let defaultResourceOutput = path.join(__dirname, "output", "galaxyxrresources")
 
 console.log(`Output directory: ${outputDir}`)
 
@@ -99,6 +100,19 @@ console.log("")
 console.log("=== Cleaning previous builds ===")
 removeRecursive(outputDir)
 removeRecursive(defaultDriverOutput)
+removeRecursive(defaultResourceOutput)
+
+let resourceManifest = path.join(resourceDriverSource, "driver.vrdrivermanifest")
+if (!fs.existsSync(resourceManifest)) {
+	console.error(`Missing tracked Galaxy XR companion source: ${resourceManifest}`)
+	process.exit(1)
+}
+let resourceManifestData = JSON.parse(fs.readFileSync(resourceManifest, "utf8"))
+if (resourceManifestData.name !== "galaxyxrresources" || resourceManifestData.resourceOnly !== true || resourceManifestData.alwaysActivate !== true) {
+	console.error("Invalid galaxyxrresources companion manifest.")
+	process.exit(1)
+}
+fs.cpSync(resourceDriverSource, defaultResourceOutput, { recursive: true })
 
 // Find Visual Studio installation
 function findVswhere() {
@@ -138,10 +152,12 @@ if (!fs.existsSync(msbuildPath)) {
 
 // Compute staging paths
 let driverOutput = path.join(outputDir, driverName)
+let resourceDriverOutput = path.join(outputDir, "galaxyxrresources")
 let guiOutput = path.join(outputDir, "CustomHeadsetGUI")
 
 // Create staging output directories
 fs.mkdirSync(driverOutput, { recursive: true })
+fs.cpSync(resourceDriverSource, resourceDriverOutput, { recursive: true })
 if (buildGui) {
 	fs.mkdirSync(guiOutput, { recursive: true })
 }
@@ -243,6 +259,20 @@ function buildDriverTask() {
 				}
 			}
 
+			// strip private reference assets from the staged release: any
+			// render model folder carrying a NOTFORSHIPPING.txt sentinel (left
+			// behind by the retired reference installer) is deleted with a warning
+			let stagedRm = path.join(driverOutput, "resources", "rendermodels")
+			if (fs.existsSync(stagedRm)) {
+				for (let entry of fs.readdirSync(stagedRm)) {
+					let sentinel = path.join(stagedRm, entry, "NOTFORSHIPPING.txt")
+					if (fs.existsSync(sentinel)) {
+						fs.rmSync(path.join(stagedRm, entry), { recursive: true, force: true })
+						console.warn(`WARNING: stripped private reference render model "${entry}" from staging (NOTFORSHIPPING).`)
+					}
+				}
+			}
+
 			console.log("Driver build complete.")
 			resolve()
 		})
@@ -321,6 +351,13 @@ function cleanStagingDir(dir) {
 		let fullPath = path.join(dir, entry.name)
 
 		if (entry.isDirectory()) {
+			// local reference assets (e.g. imported vst controller models) are
+			// never allowed into a release
+			if (entry.name.startsWith("NOTFORSHIPPING_")) {
+				fs.rmSync(fullPath, { recursive: true, force: true })
+				console.log(`Removed local reference: ${fullPath}`)
+				continue
+			}
 			cleanStagingDir(fullPath)
 		} else {
 			let ext = path.extname(entry.name).toLowerCase()
