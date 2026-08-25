@@ -1,38 +1,69 @@
 [CmdletBinding()]
 param(
+    [ValidateSet('x64', 'Win32')]
+    [string[]]$Platform = @('x64', 'Win32'),
+    [switch]$SkipDriver,
     [switch]$SkipGui
 )
 
 $ErrorActionPreference = 'Stop'
 $repo = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
+$solutionDirArgument = "/p:SolutionDir=$repo\"
+function Resolve-MSBuild {
+    $fromPath = Get-Command msbuild.exe -ErrorAction SilentlyContinue
+    if ($fromPath) { return $fromPath.Source }
+    $programFilesX86 = [Environment]::GetFolderPath('ProgramFilesX86')
+    $vswhere = Join-Path $programFilesX86 'Microsoft Visual Studio\Installer\vswhere.exe'
+    if (-not (Test-Path -LiteralPath $vswhere -PathType Leaf)) {
+        throw 'MSBuild was not found. Install Visual Studio with Desktop development with C++.'
+    }
+    $installation = (& $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath | Select-Object -First 1)
+    if (-not $installation) { throw 'No Visual Studio installation with the C++ x86/x64 toolset was found.' }
+    $candidate = Join-Path $installation 'MSBuild\Current\Bin\MSBuild.exe'
+    if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) { throw "MSBuild not found below $installation" }
+    return $candidate
+}
+
 $resourceSource = Join-Path $repo 'GalaxyXRResources\DriverFiles'
+$activeSource = Join-Path $repo 'CustomHeadsetOpenVR\DriverFiles'
+$activeOutput = Join-Path $repo 'output\CustomHeadsetOpenVR'
 $resourceOutput = Join-Path $repo 'output\galaxyxrresources'
+$obsoleteVrcftOutput = Join-Path $repo 'output\VRCFT'
 $outputRoot = [IO.Path]::GetFullPath((Join-Path $repo 'output')) + [IO.Path]::DirectorySeparatorChar
-$resolvedOutput = [IO.Path]::GetFullPath($resourceOutput)
-if (-not $resolvedOutput.StartsWith($outputRoot, [StringComparison]::OrdinalIgnoreCase)) {
-    throw "Refusing to replace resource package outside $outputRoot"
+$generatedPackages = @($resourceOutput, $obsoleteVrcftOutput)
+if (-not $SkipDriver) {
+    $generatedPackages += $activeOutput
+}
+foreach ($generatedPackage in $generatedPackages) {
+    $resolvedPackage = [IO.Path]::GetFullPath($generatedPackage)
+    if (-not $resolvedPackage.StartsWith($outputRoot, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Refusing to replace generated package outside $outputRoot"
+    }
+    if (Test-Path -LiteralPath $resolvedPackage) {
+        Remove-Item -LiteralPath $resolvedPackage -Recurse -Force
+    }
 }
 
 & (Join-Path $PSScriptRoot 'Test-GalaxyXRResources.ps1') `
-    -DriverFiles $resourceSource -ExpectedDriverName 'galaxyxrresources' -ResourceOnly
-if (Test-Path -LiteralPath $resolvedOutput) {
-    Remove-Item -LiteralPath $resolvedOutput -Recurse -Force
-}
-$obsoleteOutputs = @(
-    [IO.Path]::GetFullPath((Join-Path $repo 'output\CustomHeadsetOpenVR')),
-    [IO.Path]::GetFullPath((Join-Path $repo 'output\VRCFT'))
-)
-foreach ($obsoleteOutput in $obsoleteOutputs) {
-    if (-not $obsoleteOutput.StartsWith($outputRoot, [StringComparison]::OrdinalIgnoreCase)) {
-        throw "Refusing to remove obsolete package outside $outputRoot"
-    }
-    if (Test-Path -LiteralPath $obsoleteOutput) {
-        Remove-Item -LiteralPath $obsoleteOutput -Recurse -Force
-    }
-}
-Copy-Item -LiteralPath $resourceSource -Destination $resolvedOutput -Recurse
+    -DriverFiles $activeSource -ExpectedDriverName 'CustomHeadsetOpenVR'
 & (Join-Path $PSScriptRoot 'Test-GalaxyXRResources.ps1') `
-    -DriverFiles $resolvedOutput -ExpectedDriverName 'galaxyxrresources' -ResourceOnly
+    -DriverFiles $resourceSource -ExpectedDriverName 'galaxyxrresources' -ResourceOnly
+
+if (-not $SkipDriver) {
+    $msbuild = Resolve-MSBuild
+    foreach ($targetPlatform in $Platform) {
+        & $msbuild (Join-Path $repo 'CustomHeadsetOpenVR\CustomHeadsetOpenVR.vcxproj') /m $solutionDirArgument /p:Configuration=Release /p:Platform=$targetPlatform /p:ExternalCompilerOptions=/DVENDOR_GALAXYXR /p:DeployToSteamVR=false /p:SkipPostBuild=true
+        if ($LASTEXITCODE -ne 0) { throw "Driver $targetPlatform build failed." }
+    }
+} elseif (-not (Test-Path -LiteralPath $activeOutput -PathType Container)) {
+    throw "-SkipDriver requires an existing staged driver at $activeOutput"
+}
+
+Copy-Item -LiteralPath $resourceSource -Destination $resourceOutput -Recurse
+& (Join-Path $PSScriptRoot 'Test-GalaxyXRResources.ps1') `
+    -DriverFiles $activeOutput -ExpectedDriverName 'CustomHeadsetOpenVR'
+& (Join-Path $PSScriptRoot 'Test-GalaxyXRResources.ps1') `
+    -DriverFiles $resourceOutput -ExpectedDriverName 'galaxyxrresources' -ResourceOnly
 
 if (-not $SkipGui) {
     Push-Location (Join-Path $repo 'CustomHeadsetGUI')
@@ -50,4 +81,4 @@ if (-not $SkipGui) {
     }
 }
 
-Write-Host 'Galaxy XR resource-only build and validation passed. Nothing was deployed to SteamVR.'
+Write-Host 'Galaxy XR active driver, resource companion, and GUI validation passed. Nothing was deployed to SteamVR.'

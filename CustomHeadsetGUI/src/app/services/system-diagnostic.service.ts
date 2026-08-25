@@ -26,10 +26,9 @@ export class SystemDiagnosticService implements OnDestroy {
   private _driverRepairReason = signal<string | undefined>(undefined);
   public readonly driverRepairReason = this._driverRepairReason.asReadonly();
   public readonly settingFileInited = computed(() => this.dss.values() && this.dis.values());
-  public readonly systemReady = computed(() => this.steamVRinstalled() && this.driverInstalled() && (this.galaxyXrIntegration || this.settingFileInited()))
+  public readonly systemReady = computed(() => this.steamVRinstalled() && this.driverInstalled() && this.settingFileInited())
   public readonly galaxyXrIntegration = vendorUi === 'galaxyxr';
   public readonly driverVersionMismatch = computed(() => {
-    if (this.galaxyXrIntegration) return false;
     const installed = this.driverInstalled();
     const lastRun = this.dis.values()?.driverVersion;
     return !!installed && !!lastRun && installed !== lastRun;
@@ -323,39 +322,53 @@ export class SystemDiagnosticService implements OnDestroy {
       } else {
         const bundledResources = await resourceDir();
         const candidates = [
-          await join(bundledResources, 'galaxyxrresources'),
-          await join(executablePath, '../galaxyxrresources'),
-          await join(executablePath, '../../galaxyxrresources'),
+          {
+            active: await join(bundledResources, 'CustomHeadsetOpenVR'),
+            resource: await join(bundledResources, 'galaxyxrresources'),
+          },
+          {
+            active: await join(executablePath, '../CustomHeadsetOpenVR'),
+            resource: await join(executablePath, '../galaxyxrresources'),
+          },
+          {
+            active: await join(executablePath, '../../CustomHeadsetOpenVR'),
+            resource: await join(executablePath, '../../galaxyxrresources'),
+          },
         ];
+        let activeDriverDir: string | undefined;
         let resourceDriverDir: string | undefined;
         for (const candidate of candidates) {
-          if (await exists(await join(candidate, 'driver.vrdrivermanifest'))) {
-            resourceDriverDir = candidate;
+          if (await exists(await join(candidate.active, 'driver.vrdrivermanifest')) &&
+              await exists(await join(candidate.resource, 'driver.vrdrivermanifest'))) {
+            activeDriverDir = candidate.active;
+            resourceDriverDir = candidate.resource;
             break;
           }
         }
-        if (!resourceDriverDir) {
+        if (!activeDriverDir || !resourceDriverDir) {
           const locate = await this.dialog.confirm(
-            $localize`Galaxy XR resource driver not found`,
-            $localize`Unpack the complete release and retry, or locate the galaxyxrresources folder.`,
+            $localize`Galaxy XR driver package not found`,
+            $localize`Unpack the complete release and retry, or locate the CustomHeadsetOpenVR folder beside galaxyxrresources.`,
             $localize`Locate`,
             'primary',
           );
           if (!locate) return false;
           const selected = await open({ directory: true, multiple: false });
           if (typeof selected !== 'string') return false;
-          resourceDriverDir = selected;
+          activeDriverDir = selected;
+          resourceDriverDir = await join(selected, '..', 'galaxyxrresources');
         }
-        if (!await exists(await join(resourceDriverDir, 'driver.vrdrivermanifest'))) {
+        if (!await exists(await join(activeDriverDir, 'driver.vrdrivermanifest')) ||
+            !await exists(await join(resourceDriverDir, 'driver.vrdrivermanifest'))) {
           await this.dialog.message(
             $localize`Driver files not valid`,
-            $localize`The galaxyxrresources folder must contain driver.vrdrivermanifest.`,
+            $localize`CustomHeadsetOpenVR and galaxyxrresources must both contain driver.vrdrivermanifest.`,
           );
           return false;
         }
         try {
-          await preflight_driver_install(resourceDriverDir, steamVrPath);
-          await install_driver_transactional(resourceDriverDir, steamVrPath);
+          await preflight_driver_install(activeDriverDir, resourceDriverDir, steamVrPath);
+          await install_driver_transactional(activeDriverDir, resourceDriverDir, steamVrPath);
         } catch (error) {
           await this.dialog.message($localize`Install failed; make sure SteamVR is closed`, `${error}`);
           return false;
@@ -382,14 +395,14 @@ export class SystemDiagnosticService implements OnDestroy {
                   settings[field]['enable'] = false;
                 }
               }
+              const active = this.getDriverFieldName('CustomHeadsetOpenVR');
+              settings[active] ??= {};
+              settings[active]['enable'] = true;
+              delete settings[active]['blocked_by_safe_mode'];
               const resource = this.getDriverFieldName('galaxyxrresources');
               settings[resource] ??= {};
               settings[resource]['enable'] = true;
               delete settings[resource]['blocked_by_safe_mode'];
-              const obsoleteActive = this.getDriverFieldName('CustomHeadsetOpenVR');
-              if (settings[obsoleteActive]) {
-                settings[obsoleteActive]['enable'] = false;
-              }
               return true;
             });
           }

@@ -10,7 +10,7 @@ import { MatInputModule } from '@angular/material/input';
 import { DriverSettingService } from '../../services/driver-setting.service';
 import { DriverInfoService } from '../../services/driver-info.service';
 import { Settings, StreamFrameConfig, ControllersConfig, GalaxyXrConfig } from '../../services/JsonFileDefines';
-import { vendor } from '../../../environment';
+import { vendor, vendorUi } from '../../../environment';
 import { FieldTipComponent } from '../../utilities/field-tip/field-tip.component';
 import { ResetButtonComponent } from '../../utilities/reset-button/reset-button.component';
 import { StreamFrameCurveComponent } from '../../utilities/stream-frame-curve/stream-frame-curve.component';
@@ -140,10 +140,12 @@ function defaultStreamFrame(): StreamFrameConfig {
 
 // fill missing fields without touching set ones, so older settings files and
 // files written before this page existed load into a complete object
+const activeVendor = vendor || vendorUi;
+
 function defaultControllers(): ControllersConfig {
   // vendor builds ship the passthrough-measured asymmetric pose residual
   // (mirrored per hand); must match the driver's Config.h vendor defaults
-  if (vendor === 'galaxyxr') {
+  if (activeVendor === 'galaxyxr') {
     return {
       rotationOffsetDeg: { x: 0, y: 5, z: 0 },
       positionOffsetCm: { x: 0.5, y: 0, z: 0 },
@@ -340,7 +342,7 @@ export class StreamFrameComponent {
   }
 
   // Galaxy XR native identity (vendor builds only; page hides it otherwise)
-  vendor = vendor;
+  vendor = activeVendor;
   get galaxyXr(): GalaxyXrConfig {
     if (this.rootSetting) {
       if (!this.rootSetting.galaxyXR) {

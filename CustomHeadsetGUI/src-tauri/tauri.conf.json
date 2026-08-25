@@ -32,6 +32,7 @@
     "active": true,
     "targets": "all",
     "resources": {
+      "../../output/CustomHeadsetOpenVR": "CustomHeadsetOpenVR",
       "../../output/galaxyxrresources": "galaxyxrresources"
     },
     "icon": [

@@ -7,7 +7,6 @@ import { AppSettingService } from './services/app-setting.service';
 import { AppUpdateService } from './services/app-update.service';
 import { PimaxLauncherService } from './services/pimax-launcher.service';
 import { SystemDiagnosticService } from './services/system-diagnostic.service';
-import { vendorUi } from '../environment';
 @Component({
   selector: 'app-root',
   imports: [RouterOutlet, RouterModule, MatTabsModule, MatIconModule],
@@ -15,7 +14,7 @@ import { vendorUi } from '../environment';
   styleUrl: './app.component.scss'
 })
 export class AppComponent {
-  navigation = vendorUi === 'galaxyxr' ? [] : [
+  navigation = [
     {
       name: $localize`Driver Settings`,
       route: '/driver-settings',

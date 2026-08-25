@@ -118,7 +118,7 @@ struct CleanupPlan {
 }
 
 fn receipt_schema_version() -> u32 {
-    3
+    4
 }
 
 fn legacy_receipt_schema_version() -> u32 {
@@ -432,6 +432,8 @@ fn validate_receipt_shape(receipt: &InstallReceipt, legacy_source: bool) -> Resu
         2 => vec![ACTIVE_DRIVER_NAME, RESOURCE_DRIVER_NAME],
         3 if vrcft_fields_empty => vec![RESOURCE_DRIVER_NAME],
         3 => return Err("v3 resource-only receipt cannot own a VRCFT module".into()),
+        4 if vrcft_fields_empty => vec![ACTIVE_DRIVER_NAME, RESOURCE_DRIVER_NAME],
+        4 => return Err("v4 receipt cannot own a VRCFT module".into()),
         version => return Err(format!("unsupported install receipt schema {version}")),
     };
     expected.sort_unstable();
@@ -872,6 +874,7 @@ fn receipt_package_specs(schema_version: u32) -> &'static [PackageSpec] {
         1 => &[ACTIVE_SPEC],
         2 => &[ACTIVE_SPEC, RESOURCE_SPEC],
         3 => &[RESOURCE_SPEC],
+        4 => &[ACTIVE_SPEC, RESOURCE_SPEC],
         _ => unreachable!("receipt schema must be validated before selecting packages"),
     }
 }
@@ -1034,6 +1037,7 @@ fn inspect_source_package(source_dir: &str, spec: PackageSpec) -> Result<Package
 
 #[tauri::command]
 pub fn preflight_driver_install(
+    active_source_dir: String,
     resource_source_dir: String,
     steamvr_dir: String,
 ) -> Result<InstallPreflight, String> {
@@ -1062,7 +1066,10 @@ pub fn preflight_driver_install(
         &previous_packages,
         &registered,
     )?;
-    let packages = vec![inspect_source_package(&resource_source_dir, RESOURCE_SPEC)?];
+    let packages = vec![
+        inspect_source_package(&active_source_dir, ACTIVE_SPEC)?,
+        inspect_source_package(&resource_source_dir, RESOURCE_SPEC)?,
+    ];
     Ok(InstallPreflight {
         packages,
         managed_root: managed_root.to_string_lossy().into_owned(),
@@ -1083,7 +1090,7 @@ pub fn verify_driver_install(steamvr_dir: String) -> Result<bool, String> {
     let receipt = loaded.receipt;
     let managed_root = managed_drivers_root()?;
     vrpathreg_path(&steamvr_dir)?;
-    for spec in [RESOURCE_SPEC] {
+    for spec in [ACTIVE_SPEC, RESOURCE_SPEC] {
         let target = managed_root.join(spec.name);
         let Some(package) = receipt.package(spec.name) else {
             return Ok(false);
@@ -1183,10 +1190,15 @@ pub(crate) fn write_json_file_transactional_checked(
 
 #[tauri::command]
 pub fn install_driver_transactional(
+    active_source_dir: String,
     resource_source_dir: String,
     steamvr_dir: String,
 ) -> Result<InstallReceipt, String> {
-    preflight_driver_install(resource_source_dir.clone(), steamvr_dir.clone())?;
+    preflight_driver_install(
+        active_source_dir.clone(),
+        resource_source_dir.clone(),
+        steamvr_dir.clone(),
+    )?;
     let loaded_receipt = load_receipt_for_context(&steamvr_dir)?;
     let previous_receipt = loaded_receipt.as_ref().map(|loaded| loaded.receipt.clone());
     let previous_module = previous_receipt
@@ -1205,35 +1217,60 @@ pub fn install_driver_transactional(
         .unwrap_or_default();
     reject_unowned_package_conflicts(&steamvr_dir, &previous_packages)?;
 
-    let transaction = prepare_package(
+    let active_package = prepare_package(
+        &active_source_dir,
+        &drivers_root,
+        ACTIVE_SPEC,
+        previous_receipt.as_ref(),
+    )?;
+    let resource_package = match prepare_package(
         &resource_source_dir,
         &drivers_root,
         RESOURCE_SPEC,
         previous_receipt.as_ref(),
-    )?;
-    let mut packages = vec![transaction];
-    if let Err(error) = activate_package(&mut packages[0]) {
-        let rollback = rollback_packages(&packages);
-        return Err(format!(
-            "activate resource package failed: {error}; rollback={rollback:?}"
-        ));
+    ) {
+        Ok(package) => package,
+        Err(error) => {
+            let rollback = rollback_packages(std::slice::from_ref(&active_package));
+            return Err(format!(
+                "prepare resource package failed: {error}; rollback={rollback:?}"
+            ));
+        }
+    };
+    let mut packages = vec![active_package, resource_package];
+    for index in 0..packages.len() {
+        if let Err(error) = activate_package(&mut packages[index]) {
+            let failed_name = packages[index].spec.name;
+            let rollback = rollback_packages(&packages);
+            return Err(format!(
+                "activate {failed_name} package failed: {error}; rollback={rollback:?}"
+            ));
+        }
     }
 
     let mut registrations_added = Vec::new();
-    match set_exact_driver_registration(&vrpathreg, &packages[0].target, true) {
-        Ok(true) => registrations_added.push(packages[0].target.clone()),
-        Ok(false) => {}
-        Err(error) => {
-            let package_rollback = rollback_packages(&packages);
-            return Err(format!(
-                "register resource package failed: {error}; package rollback={package_rollback:?}"
-            ));
+    for package in &packages {
+        match set_exact_driver_registration(&vrpathreg, &package.target, true) {
+            Ok(true) => registrations_added.push(package.target.clone()),
+            Ok(false) => {}
+            Err(error) => {
+                let registration_rollback =
+                    rollback_registration_changes(&vrpathreg, &registrations_added, &[]);
+                let package_rollback = rollback_packages(&packages);
+                return Err(format!(
+                    "register {} package failed: {error}; registration rollback={registration_rollback:?}; package rollback={package_rollback:?}",
+                    package.spec.name
+                ));
+            }
         }
     }
 
     let mut registrations_removed = Vec::new();
     for (_, previous_target) in &previous_packages {
-        if same_canonical_path(&packages[0].target, previous_target) {
+        if packages
+            .iter()
+            .any(|package| same_canonical_path(&package.target, previous_target))
+        {
             continue;
         }
         match set_exact_driver_registration(&vrpathreg, previous_target, false) {
@@ -1255,7 +1292,10 @@ pub fn install_driver_transactional(
 
     let mut detached_previous = Vec::new();
     for (_, previous_target) in &previous_packages {
-        if same_canonical_path(&packages[0].target, previous_target) {
+        if packages
+            .iter()
+            .any(|package| same_canonical_path(&package.target, previous_target))
+        {
             continue;
         }
         let file_name = previous_target.file_name().ok_or_else(|| {
@@ -1474,18 +1514,19 @@ mod tests {
         }
     }
 
+    fn v4_receipt(active: &Path, resources: &Path) -> InstallReceipt {
+        let mut receipt = v2_receipt(active, resources);
+        receipt.schema_version = 4;
+        receipt
+    }
+
     #[test]
-    fn v3_receipt_owns_only_the_resource_package() {
-        let mut receipt = v3_receipt(Path::new("resources"));
+    fn v4_receipt_owns_both_driver_packages_without_vrcft() {
+        let mut receipt = v4_receipt(Path::new("active"), Path::new("resources"));
         validate_receipt_shape(&receipt, false).unwrap();
-        receipt.packages.push(PackageReceipt {
-            name: ACTIVE_DRIVER_NAME.into(),
-            path: "active".into(),
-            sha256: String::new(),
-            file_count: 0,
-        });
+        receipt.packages.pop();
         assert!(validate_receipt_shape(&receipt, false).is_err());
-        receipt = v3_receipt(Path::new("resources"));
+        receipt = v4_receipt(Path::new("active"), Path::new("resources"));
         receipt.vrcft_module_installed = true;
         receipt.vrcft_module_path = Some("module".into());
         receipt.vrcft_module_sha256 = Some("hash".into());
@@ -1493,11 +1534,24 @@ mod tests {
     }
 
     #[test]
-    fn v3_receipt_selects_only_the_resource_package() {
+    fn v3_resource_only_receipt_remains_valid_for_v4_upgrade() {
         let receipt = v3_receipt(Path::new("resources"));
+        validate_receipt_shape(&receipt, false).unwrap();
         let specs = receipt_package_specs(receipt.schema_version);
         assert_eq!(specs.len(), 1);
         assert_eq!(specs[0].name, RESOURCE_DRIVER_NAME);
+
+        let upgraded = v4_receipt(Path::new("active"), Path::new("resources"));
+        validate_receipt_shape(&upgraded, false).unwrap();
+    }
+
+    #[test]
+    fn v4_receipt_selects_both_driver_packages() {
+        let receipt = v4_receipt(Path::new("active"), Path::new("resources"));
+        let specs = receipt_package_specs(receipt.schema_version);
+        assert_eq!(specs.len(), 2);
+        assert_eq!(specs[0].name, ACTIVE_DRIVER_NAME);
+        assert_eq!(specs[1].name, RESOURCE_DRIVER_NAME);
     }
 
     #[test]

@@ -2,6 +2,7 @@
 
 #ifdef VENDOR_GALAXYXR
 #include "../Config/ConfigLoader.h"
+#include "../Driver/DriverLog.h"
 #include <filesystem>
 #include <fstream>
 #include <functional>

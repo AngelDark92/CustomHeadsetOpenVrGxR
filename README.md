@@ -1,9 +1,10 @@
 # CustomHeadsetOpenVR
 This is a custom headset driver for SteamVR that allows the MeganeX 8K and Dream Air to operate as native SteamVR headsets. It provides significant image customization to all native SteamVR headsets through the custom shader.  
 
-This checkout also contains the Samsung Galaxy XR resource-only SteamVR
-integration. Valve's `driver_vrlink` remains the HMD/controller owner; this
-package supplies Galaxy identity, settings, inputs, icons, and models. See
+This checkout also contains the Samsung Galaxy XR SteamVR integration. Valve's
+`driver_vrlink` remains the HMD/controller owner; `CustomHeadsetOpenVR` supplies
+the settings and frame-processing features, while `galaxyxrresources` supplies
+Galaxy identity, inputs, icons, and models. See
 [the project architecture and exact change map](Docs/PROJECT-ARCHITECTURE.md)
 before modifying or deploying it.
 
@@ -22,7 +23,8 @@ before modifying or deploying it.
 2. Extract the complete Windows release and close SteamVR.
 3. Run `CustomHeadsetGUI\custom-headset-gui.exe`, open About, and choose Install.
 
-The GUI validates and registers the `galaxyxrresources` resource-only package.
+The GUI validates and registers both `CustomHeadsetOpenVR` and the
+`galaxyxrresources` resource-only companion.
 No desktop IP, pairing token, APK hash, or private telemetry enrollment is used.
 For face and tongue tracking, install VRCFaceTracking plus the matching
 [Galaxy XR LinkFT module](https://github.com/compdoge/LinkFT), then enable OSC,

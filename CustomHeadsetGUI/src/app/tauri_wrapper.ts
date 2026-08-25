@@ -23,20 +23,23 @@ export interface DriverInstallReceipt {
 }
 
 export async function install_driver_transactional(
+    activeSourceDir: string,
     resourceSourceDir: string,
     steamvrDir: string,
 ): Promise<DriverInstallReceipt> {
     return await invoke('install_driver_transactional', {
+        activeSourceDir,
         resourceSourceDir,
         steamvrDir,
     }) as DriverInstallReceipt;
 }
 
 export async function preflight_driver_install(
+    activeSourceDir: string,
     resourceSourceDir: string,
     steamvrDir: string,
 ): Promise<void> {
-    await invoke('preflight_driver_install', { resourceSourceDir, steamvrDir });
+    await invoke('preflight_driver_install', { activeSourceDir, resourceSourceDir, steamvrDir });
 }
 
 export async function uninstall_driver_transactional(steamvrDir: string): Promise<boolean> {

@@ -58,12 +58,12 @@ vr::EVRInitError CustomHeadsetDeviceProvider::Init(vr::IVRDriverContext *pDriver
 	
 	DriverLog("Initializing %s", driverName.c_str());
 	
-	// Driver lockout: When this is a vendor-specific driver (not vendor-neutral),
-	// check if the vendor-neutral driver (CustomHeadsetOpenVR) is enabled.
-	// If the neutral driver is enabled, this vendor driver is locked out.
+	// Driver lockout only applies to separately named vendor packages. The Galaxy XR
+	// build deliberately keeps the CustomHeadsetOpenVR package name, so treating that
+	// identity as a competing neutral driver would lock the build out from itself.
 	#ifndef VENDOR_NEUTRAL
-	DriverLog("Running in vendor-specific driver mode");
-	if(IsNeutralDriverEnabled()){
+	DriverLog("Running with vendor features enabled");
+	if(driverName != "CustomHeadsetOpenVR" && IsNeutralDriverEnabled()){
 		DriverLog("Vendor-specific driver locked out because the vendor-neutral driver (CustomHeadsetOpenVR) is enabled.");
 		lockedOut = true;
 		// still write info.json so the GUI can see this driver and offer the one-click switch

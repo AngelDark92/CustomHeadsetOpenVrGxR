@@ -1,7 +1,7 @@
 @if(sds.galaxyXrIntegration){
 <div class="field">
     <div class="section-title">
-        Galaxy XR SteamVR Resources
+        Galaxy XR Driver and SteamVR Resources
     </div>
 </div>
 }@else{
@@ -67,8 +67,8 @@
     <div class="section-title" i18n>Galaxy XR Setup</div>
 </div>
 <div class="field">
-    <div class="title" i18n>SteamVR resource driver</div>
-    <div class="control">{{sds.driverInstalled() ? 'Installed' : 'Install required'}}</div>
+    <div class="title" i18n>Active driver and resource companion</div>
+    <div class="control">{{sds.driverInstalled() ? 'Both installed' : 'Install required'}}</div>
 </div>
 @if(sds.driverRepairReason(); as reason){
 <div class="field">
@@ -101,7 +101,6 @@
         </button>
     </div>
 </div>
-@if(!sds.galaxyXrIntegration){
 <div class="field">
     <div class="title" i18n>Last Run Driver Version</div>
     <div class="control">
@@ -125,7 +124,6 @@
         }
     </div>
 </div>
-}
 <div class="field">
     
     <div class="title">
